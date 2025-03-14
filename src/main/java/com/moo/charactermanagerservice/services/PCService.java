@@ -22,6 +22,7 @@ public class PCService {
 
     public PC addPC(PC pc) {
         pc.setPlayerName(pc.getPlayerName());
+        pc.setLevel((short)1);
         return pcRepository.saveAndFlush(pc);
     }
 
