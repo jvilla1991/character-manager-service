@@ -1,5 +1,6 @@
-package com.moo.charactermanagerservice.models;
+package com.moo.charactermanagerservice.dto;
 
+import com.moo.charactermanagerservice.models.Role;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -17,12 +18,8 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "_user")
 public class User implements UserDetails {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
     private UUID uuid;
     private String userName;
     private String firstName;
