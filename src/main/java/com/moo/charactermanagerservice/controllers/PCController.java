@@ -59,7 +59,8 @@ public class PCController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "User is not authorized or missing"));
         }
-        pc.setUserId(user.getUuid()); // Marrying the Payload to Model/Object
+        pc.setUserId(user.getUuid());
+        pc.setPlayerName(user.getFirstName());
         PC newPC = pcService.addPC(pc);
         return new ResponseEntity<>(newPC, HttpStatus.CREATED);
     }

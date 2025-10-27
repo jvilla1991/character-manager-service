@@ -6,8 +6,9 @@ import lombok.Getter;
 import java.io.Serializable;
 import java.util.UUID;
 
+@Getter
 @Entity
-@Table(name = "_pc", schema = "character")
+@Table(name = "pc", schema = "character_manage")
 public class PC implements Serializable {
 
     public PC() {}
@@ -21,60 +22,40 @@ public class PC implements Serializable {
         this.userId = builder.userId;
     }
 
-    @Getter
     @Id
-    @GeneratedValue(strategy = GenerationType.AUTO)
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private String clazz;
     private Short level;
     private String name;
     private String playerName;
-
     private UUID userId;   // <- scalar, no @ManyToOne
 
     public void setId(Long id) {
         this.id = id;
     }
 
-    public String getClazz() {
-        return clazz;
-    }
-
     public void setClazz(String clazz) {
         this.clazz = clazz;
-    }
-
-    public Short getLevel() {
-        return level;
     }
 
     public void setLevel(Short level) {
         this.level = level;
     }
 
-    public String getName() {
-        return name;
-    }
-
     public void setName(String name) {
         this.name = name;
-    }
-
-    public String getPlayerName() {
-        return playerName;
     }
 
     public void setPlayerName(String playerName) {
         this.playerName = playerName;
     }
 
-    public UUID getUserId() {
-        return userId;
-    }
-
     public void setUserId(UUID userId) {
         this.userId = userId;
     }
+
+
 
     public static class Builder {
         private Long id;
