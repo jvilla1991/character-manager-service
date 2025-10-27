@@ -1,7 +1,7 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
-import com.moo.charactermanagerservice.models.User;
 import com.moo.charactermanagerservice.services.PCService;
 import com.moo.charactermanagerservice.services.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +24,7 @@ public class PCController {
     @Autowired
     private UserService userService;
 
+    @CrossOrigin
     @GetMapping("/all")
     public ResponseEntity<?> getAllPCsForUser(@RequestHeader("Authorization") String authorizationHeader) {
         User user = userService.getUserDetails(authorizationHeader);
@@ -31,7 +32,7 @@ public class PCController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "User is not authorized or missing"));
         }
-        List<PC> pcs = pcService.findAllPCsForUser(user);
+        List<PC> pcs = pcService.findAllPCsForUser(user.getUuid());
         return new ResponseEntity<>(pcs, HttpStatus.OK);
     }
 
@@ -58,7 +59,8 @@ public class PCController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", "User is not authorized or missing"));
         }
-        pc.setUser(user); // Marrying the Payload to Model/Object
+        pc.setUserId(user.getUuid());
+        pc.setPlayerName(user.getFirstName());
         PC newPC = pcService.addPC(pc);
         return new ResponseEntity<>(newPC, HttpStatus.CREATED);
     }
