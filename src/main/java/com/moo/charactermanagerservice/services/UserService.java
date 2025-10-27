@@ -1,6 +1,6 @@
 package com.moo.charactermanagerservice.services;
 
-import com.moo.charactermanagerservice.models.User;
+import com.moo.charactermanagerservice.dto.User;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;

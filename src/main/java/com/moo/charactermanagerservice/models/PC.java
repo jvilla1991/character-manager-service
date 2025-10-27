@@ -1,12 +1,13 @@
 package com.moo.charactermanagerservice.models;
 
-import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
+import lombok.Getter;
 
 import java.io.Serializable;
+import java.util.UUID;
 
 @Entity
-@Table(name = "_pc")
+@Table(name = "_pc", schema = "character")
 public class PC implements Serializable {
 
     public PC() {}
@@ -17,9 +18,10 @@ public class PC implements Serializable {
         this.level = builder.level;
         this.name = builder.name;
         this.playerName = builder.playerName;
-        this.user = builder.user;
+        this.userId = builder.userId;
     }
 
+    @Getter
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
     private Long id;
@@ -28,13 +30,7 @@ public class PC implements Serializable {
     private String name;
     private String playerName;
 
-    @ManyToOne
-    @JsonBackReference
-    private User user;
-
-    public Long getId() {
-        return id;
-    }
+    private UUID userId;   // <- scalar, no @ManyToOne
 
     public void setId(Long id) {
         this.id = id;
@@ -72,12 +68,12 @@ public class PC implements Serializable {
         this.playerName = playerName;
     }
 
-    public User getUser() {
-        return user;
+    public UUID getUserId() {
+        return userId;
     }
 
-    public void setUser(User user) {
-        this.user = user;
+    public void setUserId(UUID userId) {
+        this.userId = userId;
     }
 
     public static class Builder {
@@ -86,7 +82,7 @@ public class PC implements Serializable {
         private Short level;
         private String name;
         private String playerName;
-        private User user;
+        private UUID userId;
 
         public static Builder newInstance() {
             return new Builder();
@@ -119,8 +115,8 @@ public class PC implements Serializable {
             return this;
         }
 
-        public Builder setUser(User user) {
-            this.user = user;
+        public Builder setUserId(UUID userId) {
+            this.userId = userId;
             return this;
         }
 
