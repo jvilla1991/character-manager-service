@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.models;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.Getter;
 
@@ -7,6 +8,7 @@ import java.io.Serializable;
 import java.util.UUID;
 
 @Getter
+@JsonIgnoreProperties(ignoreUnknown = true)
 @Entity
 @Table(name = "pc", schema = "character_manage")
 public class PC implements Serializable {
