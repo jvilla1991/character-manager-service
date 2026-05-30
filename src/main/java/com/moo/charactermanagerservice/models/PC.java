@@ -22,6 +22,7 @@ public class PC implements Serializable {
         this.name = builder.name;
         this.playerName = builder.playerName;
         this.userId = builder.userId;
+        this.spells = builder.spells;
     }
 
     @Id
@@ -32,6 +33,9 @@ public class PC implements Serializable {
     private String name;
     private String playerName;
     private UUID userId;   // <- scalar, no @ManyToOne
+
+    @Column(columnDefinition = "TEXT")
+    private String spells;  // JSON array string — parsed by frontend
 
     public void setId(Long id) {
         this.id = id;
@@ -57,7 +61,9 @@ public class PC implements Serializable {
         this.userId = userId;
     }
 
-
+    public void setSpells(String spells) {
+        this.spells = spells;
+    }
 
     public static class Builder {
         private Long id;
@@ -66,6 +72,7 @@ public class PC implements Serializable {
         private String name;
         private String playerName;
         private UUID userId;
+        private String spells;
 
         public static Builder newInstance() {
             return new Builder();
@@ -100,6 +107,11 @@ public class PC implements Serializable {
 
         public Builder setUserId(UUID userId) {
             this.userId = userId;
+            return this;
+        }
+
+        public Builder setSpells(String spells) {
+            this.spells = spells;
             return this;
         }
 
