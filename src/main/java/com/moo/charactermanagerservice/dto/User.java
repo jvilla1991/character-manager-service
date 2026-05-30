@@ -1,6 +1,6 @@
 package com.moo.charactermanagerservice.dto;
 
-import com.moo.charactermanagerservice.models.Role;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -18,6 +18,7 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class User implements UserDetails {
 
     private UUID uuid;
@@ -26,12 +27,13 @@ public class User implements UserDetails {
     private String lastName;
     private String email;
     private String password;
-    @Enumerated(EnumType.STRING) // Tells Spring that this is an Enum, and that we want to use it as a String, as opposed to an ordinal which will be "0, 1, 2, etc..."
-    private Role role;
+    // Auth-service returns roles as a list of strings e.g. ["USER"]
+    private List<String> roles;
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        return List.of(new SimpleGrantedAuthority(role.name()));
+        if (roles == null || roles.isEmpty()) return List.of();
+        return roles.stream().map(SimpleGrantedAuthority::new).toList();
     }
 
     public UUID getUuid() {
