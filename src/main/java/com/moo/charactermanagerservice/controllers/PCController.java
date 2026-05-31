@@ -21,15 +21,13 @@ public class PCController {
     @GetMapping("/all")
     public ResponseEntity<List<PC>> getAllPCsForUser(Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        List<PC> pcs = pcService.findAllPCsForUser(user.getUuid());
-        return new ResponseEntity<>(pcs, HttpStatus.OK);
+        return ResponseEntity.ok(pcService.findAllPCsForUser(user.getUuid()));
     }
 
     @GetMapping("/find/{id}")
-    public ResponseEntity<PC> getPC(@PathVariable Long id) {
-        PC pc = pcService.findPCById(id)
-                .orElseThrow(() -> new RuntimeException("PC not found with ID: " + id));
-        return new ResponseEntity<>(pc, HttpStatus.OK);
+    public ResponseEntity<PC> getPC(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.findPCByIdForUser(id, user.getUuid()));
     }
 
     @PostMapping("/add")
@@ -37,19 +35,21 @@ public class PCController {
         User user = (User) authentication.getPrincipal();
         pc.setUserId(user.getUuid());
         pc.setPlayerName(user.getFirstName());
-        PC newPC = pcService.addPC(pc);
-        return new ResponseEntity<>(newPC, HttpStatus.CREATED);
+        return ResponseEntity.status(HttpStatus.CREATED).body(pcService.addPC(pc));
     }
 
-    @PutMapping("/update")
-    public ResponseEntity<PC> updatePC(@RequestBody PC pc) {
-        PC updatedPC = pcService.updatePC(pc);
-        return new ResponseEntity<>(updatedPC, HttpStatus.CREATED);
+    @PutMapping("/{id}")
+    public ResponseEntity<PC> updatePC(@PathVariable Long id, Authentication authentication,
+                                       @RequestBody PC pc) {
+        User user = (User) authentication.getPrincipal();
+        pc.setId(id);
+        return ResponseEntity.ok(pcService.updatePC(pc, user.getUuid()));
     }
 
     @DeleteMapping("/delete/{id}")
-    public ResponseEntity<Void> deletePC(@PathVariable Long id) {
-        pcService.deletePC(id);
-        return new ResponseEntity<>(HttpStatus.OK);
+    public ResponseEntity<Void> deletePC(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        pcService.deletePC(id, user.getUuid());
+        return ResponseEntity.noContent().build();
     }
 }
