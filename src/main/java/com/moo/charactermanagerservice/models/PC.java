@@ -1,7 +1,13 @@
 package com.moo.charactermanagerservice.models;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.moo.charactermanagerservice.validation.ValidDndClass;
+import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 
 import java.io.Serializable;
@@ -30,8 +36,13 @@ public class PC implements Serializable {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @NotBlank(groups = OnCreate.class, message = "Character name must not be blank")
     private String name;
+
+    @NotBlank(groups = OnCreate.class, message = "Class must not be blank")
+    @ValidDndClass(groups = OnCreate.class)
     private String clazz;
+
     private Short level;
     private String playerName;
     private UUID userId;
@@ -46,11 +57,34 @@ public class PC implements Serializable {
     private String portraitInitials;
 
     // --- Ability scores (decomposed from frontend stats object) ---
+    @NotNull(groups = OnCreate.class, message = "Strength score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityStr;
+
+    @NotNull(groups = OnCreate.class, message = "Dexterity score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityDex;
+
+    @NotNull(groups = OnCreate.class, message = "Constitution score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityCon;
+
+    @NotNull(groups = OnCreate.class, message = "Intelligence score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityInt;
+
+    @NotNull(groups = OnCreate.class, message = "Wisdom score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityWis;
+
+    @NotNull(groups = OnCreate.class, message = "Charisma score is required")
+    @Min(groups = OnCreate.class, value = 3, message = "Ability scores must be at least 3")
+    @Max(groups = OnCreate.class, value = 18, message = "Ability scores cannot exceed 18")
     private Short abilityCha;
 
     // --- Combat stats (decomposed from frontend hp object) ---

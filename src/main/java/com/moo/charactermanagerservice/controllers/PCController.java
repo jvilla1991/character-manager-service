@@ -3,10 +3,12 @@ package com.moo.charactermanagerservice.controllers;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.PCService;
+import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -31,7 +33,8 @@ public class PCController {
     }
 
     @PostMapping("/add")
-    public ResponseEntity<PC> createPC(Authentication authentication, @RequestBody PC pc) {
+    public ResponseEntity<PC> createPC(Authentication authentication,
+                                       @Validated(OnCreate.class) @RequestBody PC pc) {
         User user = (User) authentication.getPrincipal();
         pc.setUserId(user.getUuid());
         pc.setPlayerName(user.getFirstName());
