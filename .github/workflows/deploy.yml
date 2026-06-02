@@ -1,0 +1,98 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 204318838594.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: character-manager-service
+
+jobs:
+  build-and-deploy:
+    name: Build, push & deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write   # required for OIDC
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── AWS / ECR ─────────────────────────────────────────────────────────────
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Build & push ──────────────────────────────────────────────────────────
+
+      - name: Build & push Docker image
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}
+        run: |
+          docker build \
+            -t "$IMAGE_URI:latest" \
+            -t "$IMAGE_URI:${{ github.sha }}" \
+            .
+          docker push "$IMAGE_URI:latest"
+          docker push "$IMAGE_URI:${{ github.sha }}"
+
+      # ── Deploy to App Runner ──────────────────────────────────────────────────
+
+      - name: Deploy to App Runner
+        run: |
+          aws apprunner update-service \
+            --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+            --source-configuration "{
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}\",
+                \"ImageRepositoryType\": \"ECR\"
+              },
+              \"AutoDeploymentsEnabled\": false
+            }" \
+            --region "$AWS_REGION"
+
+      - name: Wait for App Runner deployment
+        run: |
+          echo "Waiting for App Runner service to reach RUNNING state..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+              --query "Service.Status" \
+              --output text \
+              --region "$AWS_REGION")
+            echo "  [$i/30] Status: $STATUS"
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo "Deployment complete."
+              break
+            fi
+            if [ "$STATUS" = "CREATE_FAILED" ] || \
+               [ "$STATUS" = "UPDATE_FAILED" ] || \
+               [ "$STATUS" = "DELETE_FAILED" ]; then
+              echo "Deployment failed with status: $STATUS"
+              exit 1
+            fi
+            sleep 20
+          done
+
+      # ── Smoke test ────────────────────────────────────────────────────────────
+
+      - name: Smoke test
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://${{ secrets.APPRUNNER_SERVICE_URL }}/actuator/health")
+          echo "Health check returned HTTP $HTTP_STATUS"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Health check failed."
+            exit 1
+          fi
+          echo "Deployment verified."
