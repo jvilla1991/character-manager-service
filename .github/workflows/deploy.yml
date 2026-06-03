@@ -34,6 +34,8 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ── Build & push ──────────────────────────────────────────────────────────
+      # Multi-stage Dockerfile: Maven build inside Docker, slim JRE runtime.
+      # Tag with both :latest and :<sha> — workflow deploys the SHA-tagged image.
 
       - name: Build & push Docker image
         env:
@@ -73,7 +75,7 @@ jobs:
             echo "  [$i/30] Status: $STATUS"
             if [ "$STATUS" = "RUNNING" ]; then
               echo "Deployment complete."
-              break
+              exit 0
             fi
             if [ "$STATUS" = "CREATE_FAILED" ] || \
                [ "$STATUS" = "UPDATE_FAILED" ] || \
@@ -83,6 +85,8 @@ jobs:
             fi
             sleep 20
           done
+          echo "Timed out after 10 minutes waiting for deployment."
+          exit 1
 
       # ── Smoke test ────────────────────────────────────────────────────────────
 
