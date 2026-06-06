@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.User;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,11 @@ public class UserService {
 
     private final RestTemplate restTemplate;
 
+    // Base URL of the authentication-service. In prod this is the auth App Runner URL,
+    // supplied via the AUTH_SERVICE_URL env var (set by Terraform); defaults to local dev.
+    @Value("${auth.service.url:http://localhost:8085}")
+    private String authServiceUrl;
+
     public UserService() {
         this.restTemplate = new RestTemplate();
     }
@@ -29,7 +35,7 @@ public class UserService {
             HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
             ResponseEntity<User> response = restTemplate.exchange(
-                    "http://localhost:8085/api/v1/auth/authorize", HttpMethod.GET, requestEntity, User.class
+                    authServiceUrl + "/api/v1/auth/authorize", HttpMethod.GET, requestEntity, User.class
             );
 
             return response.getBody();
