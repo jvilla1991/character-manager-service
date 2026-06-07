@@ -52,6 +52,7 @@ public class AuthorizationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         return request.getServletPath().startsWith("/health")
+            || request.getServletPath().startsWith("/actuator")
             || "OPTIONS".equalsIgnoreCase(request.getMethod());
     }
 }
