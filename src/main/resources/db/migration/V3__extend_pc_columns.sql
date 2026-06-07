@@ -1,4 +1,4 @@
-ALTER TABLE character_manage.pc
+ALTER TABLE pc
     ADD COLUMN IF NOT EXISTS species          TEXT,
     ADD COLUMN IF NOT EXISTS background       TEXT,
     ADD COLUMN IF NOT EXISTS subclass         TEXT,
@@ -34,4 +34,4 @@ ALTER TABLE character_manage.pc
     ADD COLUMN IF NOT EXISTS bio              TEXT,
     ADD COLUMN IF NOT EXISTS notes            TEXT;
 
-CREATE INDEX IF NOT EXISTS idx_pc_user_id ON character_manage.pc (user_id);
+CREATE INDEX IF NOT EXISTS idx_pc_user_id ON pc (user_id);
