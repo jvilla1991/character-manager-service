@@ -1,2 +1,2 @@
-ALTER TABLE character_manage.pc
+ALTER TABLE pc
   ADD COLUMN IF NOT EXISTS spells TEXT;
