@@ -16,7 +16,7 @@ import java.util.UUID;
 @Getter
 @JsonIgnoreProperties(ignoreUnknown = true)
 @Entity
-@Table(name = "pc", schema = "character_manage")
+@Table(name = "pc")
 public class PC implements Serializable {
 
     public PC() {}
