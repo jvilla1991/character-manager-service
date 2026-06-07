@@ -10,13 +10,20 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.beans.factory.annotation.Value;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
 public class SecurityConfig {
 
     private final AuthorizationFilter authorizationFilter;
+
+    // Comma-separated allowed SPA origins. Supplied in prod via CORS_ALLOWED_ORIGINS
+    // (set by Terraform to the frontend CloudFront domain); defaults to local dev.
+    @Value("${cors.allowed-origins:http://localhost:4200}")
+    private String corsAllowedOrigins;
 
     public SecurityConfig(AuthorizationFilter authorizationFilter) {
         this.authorizationFilter = authorizationFilter;
@@ -29,7 +36,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/health/**", "/h2-console/**").permitAll()
+                        .requestMatchers("/health/**", "/actuator/health", "/h2-console/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()))
@@ -41,7 +48,10 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("http://localhost:4200"));
+        config.setAllowedOrigins(Arrays.stream(corsAllowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         config.setAllowCredentials(true);
