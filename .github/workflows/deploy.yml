@@ -14,6 +14,10 @@ jobs:
   build-and-deploy:
     name: Build, push & deploy
     runs-on: ubuntu-latest
+    # Runs in the "production" GitHub Environment so the OIDC token subject is
+    # repo:<org>/<repo>:environment:production — matching the deploy role's trust
+    # policy created by modules/backend-service (CONVENTIONS §8.2).
+    environment: production
 
     permissions:
       id-token: write   # required for OIDC
