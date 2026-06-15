@@ -47,6 +47,10 @@ public class PC implements Serializable {
     private String playerName;
     private UUID userId;
 
+    // Campaign this character is bound to (nullable). Set via PUT /api/v1/pc/{id}
+    // by the PC's owner; cleared to null to leave a campaign.
+    private Long campaignId;
+
     // --- Character identity ---
     private String species;
     private String background;
@@ -151,6 +155,7 @@ public class PC implements Serializable {
     public void setLevel(Short level) { this.level = level; }
     public void setPlayerName(String playerName) { this.playerName = playerName; }
     public void setUserId(UUID userId) { this.userId = userId; }
+    public void setCampaignId(Long campaignId) { this.campaignId = campaignId; }
 
     public void setSpecies(String species) { this.species = species; }
     public void setBackground(String background) { this.background = background; }
