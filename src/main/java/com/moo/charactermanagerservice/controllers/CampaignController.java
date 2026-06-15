@@ -1,7 +1,10 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
+import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.CampaignService;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +34,22 @@ public class CampaignController {
     public ResponseEntity<Campaign> getCampaign(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(campaignService.findByIdForDm(id, user.getUuid()));
+    }
+
+    /** Member projections — visible to the DM and to any player who owns a member. */
+    @GetMapping("/{id}/members")
+    public ResponseEntity<List<CampaignMemberView>> getMembers(@PathVariable Long id,
+                                                               Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(campaignService.getMembers(id, user.getUuid()));
+    }
+
+    /** A player binds their own character to a campaign via its invite code. */
+    @PostMapping("/join")
+    public ResponseEntity<PC> joinCampaign(Authentication authentication,
+                                           @RequestBody JoinCampaignRequest request) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(campaignService.joinByCode(request.code(), request.pcId(), user.getUuid()));
     }
 
     @PostMapping("/add")

@@ -8,4 +8,6 @@ import java.util.UUID;
 
 public interface PCRepository extends JpaRepository<PC, Long> {
     List<PC> findByUserId(UUID userId);
+
+    List<PC> findByCampaignId(Long campaignId);
 }

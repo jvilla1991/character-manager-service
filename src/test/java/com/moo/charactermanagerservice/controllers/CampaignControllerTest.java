@@ -1,7 +1,10 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
+import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.CampaignService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -154,5 +157,56 @@ class CampaignControllerTest {
         assertThatThrownBy(() -> campaignController.deleteCampaign(1L, auth))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- GET /{id}/members ---
+
+    @Test
+    void getMembers_returns200_withProjections() {
+        PC pc = new PC();
+        pc.setId(7L);
+        pc.setName("Lyra");
+        CampaignMemberView view = CampaignMemberView.from(pc);
+        when(campaignService.getMembers(1L, dmId)).thenReturn(List.of(view));
+
+        ResponseEntity<List<CampaignMemberView>> response = campaignController.getMembers(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsExactly(view);
+    }
+
+    @Test
+    void getMembers_propagates403_forUnrelatedUser() {
+        when(campaignService.getMembers(1L, dmId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> campaignController.getMembers(1L, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- POST /join ---
+
+    @Test
+    void joinCampaign_returns200_withBoundPc() {
+        PC bound = new PC();
+        bound.setId(7L);
+        bound.setCampaignId(1L);
+        when(campaignService.joinByCode("ABC234", 7L, dmId)).thenReturn(bound);
+
+        ResponseEntity<PC> response = campaignController.joinCampaign(auth, new JoinCampaignRequest("ABC234", 7L));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(bound);
+    }
+
+    @Test
+    void joinCampaign_propagates404_whenCodeUnknown() {
+        when(campaignService.joinByCode("ZZZZZZ", 7L, dmId))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "No campaign"));
+
+        assertThatThrownBy(() -> campaignController.joinCampaign(auth, new JoinCampaignRequest("ZZZZZZ", 7L)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
     }
 }

@@ -42,6 +42,9 @@ public class Campaign implements Serializable {
     private String arc;
     private String tint;
 
+    @Column(name = "invite_code")
+    private String inviteCode;
+
     @Column(columnDefinition = "TEXT")
     private String chronicle;
 
@@ -80,6 +83,7 @@ public class Campaign implements Serializable {
     public void setNextSession(String nextSession) { this.nextSession = nextSession; }
     public void setArc(String arc) { this.arc = arc; }
     public void setTint(String tint) { this.tint = tint; }
+    public void setInviteCode(String inviteCode) { this.inviteCode = inviteCode; }
     public void setChronicle(String chronicle) { this.chronicle = chronicle; }
     public void setSecrets(String secrets) { this.secrets = secrets; }
     public void setThreads(String threads) { this.threads = threads; }
