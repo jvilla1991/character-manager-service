@@ -13,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -166,7 +167,7 @@ class PCServiceTest {
 
     @Test
     void previewLevelUp_returnsPreview_whenOwner() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of());
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(levelUpService.preview(pc)).thenReturn(preview);
 
