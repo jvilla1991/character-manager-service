@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.progression;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -167,5 +168,48 @@ public final class ClassProgression {
             slots.put(pact[0], pact[1]);
         }
         return slots;
+    }
+
+    // ── Subclass timing & catalog (Phase 3 — mechanism only) ────────────────────
+    // The level at which each class chooses its subclass. Sorcerer/Warlock are level 1
+    // to match the app's existing creation flow; every other class is level 3 (2024 PHB).
+    // Unmapped classes default to 3.
+    //
+    // The CATALOG (valid subclass names per class) is intentionally EMPTY for now: this
+    // phase ships the selection *mechanism* (timing, preview signal, server validation,
+    // request plumbing) without authoring subclass content. The flow stays dormant — the
+    // preview reports no options and nothing is required — and activates automatically,
+    // with no code change, once a class is given catalog entries here.
+
+    private static final int DEFAULT_SUBCLASS_LEVEL = 3;
+
+    private static final Map<String, Integer> SUBCLASS_LEVEL = Map.ofEntries(
+            Map.entry("sorcerer", 1),
+            Map.entry("warlock", 1),
+            Map.entry("bard", 3),
+            Map.entry("cleric", 3),
+            Map.entry("druid", 3),
+            Map.entry("wizard", 3),
+            Map.entry("barbarian", 3),
+            Map.entry("fighter", 3),
+            Map.entry("monk", 3),
+            Map.entry("paladin", 3),
+            Map.entry("ranger", 3),
+            Map.entry("rogue", 3)
+    );
+
+    /** Valid subclass names per class. Empty until content is authored (see note above). */
+    private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.of();
+
+    /** The character level at which the given class selects its subclass. */
+    public static int subclassLevelFor(String clazz) {
+        if (clazz == null) return DEFAULT_SUBCLASS_LEVEL;
+        return SUBCLASS_LEVEL.getOrDefault(clazz.trim().toLowerCase(), DEFAULT_SUBCLASS_LEVEL);
+    }
+
+    /** Selectable subclass names for a class (empty when no catalog content exists yet). */
+    public static List<String> subclassesFor(String clazz) {
+        if (clazz == null) return List.of();
+        return SUBCLASS_CATALOG.getOrDefault(clazz.trim().toLowerCase(), List.of());
     }
 }
