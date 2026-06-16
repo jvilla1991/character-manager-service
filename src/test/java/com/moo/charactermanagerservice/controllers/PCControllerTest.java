@@ -18,6 +18,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
@@ -171,7 +172,7 @@ class PCControllerTest {
 
     @Test
     void previewLevelUp_returns200_withPreview() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of());
         when(pcService.previewLevelUp(1L, ownerId)).thenReturn(preview);
 
         ResponseEntity<LevelUpPreview> response = pcController.previewLevelUp(1L, auth);

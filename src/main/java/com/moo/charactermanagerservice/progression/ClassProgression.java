@@ -1,6 +1,8 @@
 package com.moo.charactermanagerservice.progression;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Static D&D 5e (2024) single-class progression rules.
@@ -70,5 +72,100 @@ public final class ClassProgression {
     /** Ability modifier, floored so low/odd scores resolve correctly (e.g. 3 -> -4, 9 -> -1). */
     public static int abilityModifier(int score) {
         return Math.floorDiv(score - 10, 2);
+    }
+
+    // ── Spell-slot progression (Phase 2) ────────────────────────────────────────
+    // Caster set intentionally matches what the app already models as spellcasters
+    // (frontend SPELLCASTING_CLASSES + the create wizard's starting slots): five full
+    // casters plus warlock pact magic. Paladin/Ranger are NOT included — the app does
+    // not represent them as casters, and consistency with the existing data model wins
+    // over 2024-PHB half-caster rules. Add them here (and in the app) when that changes.
+
+    private static final Set<String> FULL_CASTERS =
+            Set.of("bard", "cleric", "druid", "sorcerer", "wizard");
+
+    /** Warlock — pact magic: a single slot level with a small number of short-rest slots. */
+    public static final String PACT_CASTER = "warlock";
+
+    /**
+     * Full-caster slots by character level (rows, 1-indexed via {@code level-1}) and spell
+     * level (columns, spell levels 1-9). Standard 5e full-caster table; zeros = no slots.
+     */
+    private static final int[][] FULL_CASTER_SLOTS = {
+            //  1  2  3  4  5  6  7  8  9   <- spell level
+            {  2, 0, 0, 0, 0, 0, 0, 0, 0 }, // L1
+            {  3, 0, 0, 0, 0, 0, 0, 0, 0 }, // L2
+            {  4, 2, 0, 0, 0, 0, 0, 0, 0 }, // L3
+            {  4, 3, 0, 0, 0, 0, 0, 0, 0 }, // L4
+            {  4, 3, 2, 0, 0, 0, 0, 0, 0 }, // L5
+            {  4, 3, 3, 0, 0, 0, 0, 0, 0 }, // L6
+            {  4, 3, 3, 1, 0, 0, 0, 0, 0 }, // L7
+            {  4, 3, 3, 2, 0, 0, 0, 0, 0 }, // L8
+            {  4, 3, 3, 3, 1, 0, 0, 0, 0 }, // L9
+            {  4, 3, 3, 3, 2, 0, 0, 0, 0 }, // L10
+            {  4, 3, 3, 3, 2, 1, 0, 0, 0 }, // L11
+            {  4, 3, 3, 3, 2, 1, 0, 0, 0 }, // L12
+            {  4, 3, 3, 3, 2, 1, 1, 0, 0 }, // L13
+            {  4, 3, 3, 3, 2, 1, 1, 0, 0 }, // L14
+            {  4, 3, 3, 3, 2, 1, 1, 1, 0 }, // L15
+            {  4, 3, 3, 3, 2, 1, 1, 1, 0 }, // L16
+            {  4, 3, 3, 3, 2, 1, 1, 1, 1 }, // L17
+            {  4, 3, 3, 3, 3, 1, 1, 1, 1 }, // L18
+            {  4, 3, 3, 3, 3, 2, 1, 1, 1 }, // L19
+            {  4, 3, 3, 3, 3, 2, 2, 1, 1 }, // L20
+    };
+
+    /** Warlock pact slots by character level: {@code {pactSlotLevel, slotCount}}. */
+    private static final int[][] PACT_SLOTS = {
+            { 1, 1 }, // L1
+            { 1, 2 }, // L2
+            { 2, 2 }, // L3
+            { 2, 2 }, // L4
+            { 3, 2 }, // L5
+            { 3, 2 }, // L6
+            { 4, 2 }, // L7
+            { 4, 2 }, // L8
+            { 5, 2 }, // L9
+            { 5, 2 }, // L10
+            { 5, 3 }, // L11
+            { 5, 3 }, // L12
+            { 5, 3 }, // L13
+            { 5, 3 }, // L14
+            { 5, 3 }, // L15
+            { 5, 3 }, // L16
+            { 5, 4 }, // L17
+            { 5, 4 }, // L18
+            { 5, 4 }, // L19
+            { 5, 4 }, // L20
+    };
+
+    /** True when the class is one the app treats as a spellcaster (full or pact). */
+    public static boolean isCaster(String clazz) {
+        if (clazz == null) return false;
+        String key = clazz.trim().toLowerCase();
+        return FULL_CASTERS.contains(key) || PACT_CASTER.equals(key);
+    }
+
+    /**
+     * Maximum spell slots available at a class/level, as {@code spellLevel -> maxSlots}
+     * (insertion-ordered by spell level). Empty for non-casters. Levels are clamped to
+     * {@value #MAX_LEVEL}.
+     */
+    public static Map<Integer, Integer> spellSlotsFor(String clazz, int level) {
+        Map<Integer, Integer> slots = new LinkedHashMap<>();
+        if (clazz == null || level < 1) return slots;
+        String key = clazz.trim().toLowerCase();
+        int idx = Math.min(level, MAX_LEVEL) - 1;
+
+        if (FULL_CASTERS.contains(key)) {
+            int[] row = FULL_CASTER_SLOTS[idx];
+            for (int i = 0; i < row.length; i++) {
+                if (row[i] > 0) slots.put(i + 1, row[i]);
+            }
+        } else if (PACT_CASTER.equals(key)) {
+            int[] pact = PACT_SLOTS[idx];
+            slots.put(pact[0], pact[1]);
+        }
+        return slots;
     }
 }
