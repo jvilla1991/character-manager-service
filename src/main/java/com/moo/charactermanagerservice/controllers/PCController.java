@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.PCService;
@@ -47,6 +48,18 @@ public class PCController {
         User user = (User) authentication.getPrincipal();
         pc.setId(id);
         return ResponseEntity.ok(pcService.updatePC(pc, user.getUuid()));
+    }
+
+    @GetMapping("/{id}/level-up/preview")
+    public ResponseEntity<LevelUpPreview> previewLevelUp(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.previewLevelUp(id, user.getUuid()));
+    }
+
+    @PostMapping("/{id}/level-up")
+    public ResponseEntity<PC> levelUp(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid()));
     }
 
     @DeleteMapping("/delete/{id}")

@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.repositories.PCRepository;
@@ -24,6 +25,9 @@ class PCServiceTest {
 
     @Mock
     private PCRepository pcRepository;
+
+    @Mock
+    private LevelUpService levelUpService;
 
     @InjectMocks
     private PCService pcService;
@@ -129,6 +133,58 @@ class PCServiceTest {
                         .isEqualTo(403));
 
         verify(pcRepository, never()).save(any());
+    }
+
+    // --- levelUpPC ---
+
+    @Test
+    void levelUpPC_appliesRulesAndSaves_whenOwner() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        PC result = pcService.levelUpPC(1L, ownerId);
+
+        assertThat(result).isSameAs(pc);
+        verify(levelUpService).applyLevelUp(pc);
+        verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void levelUpPC_throws403_whenNotOwner() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> pcService.levelUpPC(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+
+        verify(levelUpService, never()).applyLevelUp(any());
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- previewLevelUp ---
+
+    @Test
+    void previewLevelUp_returnsPreview_whenOwner() {
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(levelUpService.preview(pc)).thenReturn(preview);
+
+        LevelUpPreview result = pcService.previewLevelUp(1L, ownerId);
+
+        assertThat(result).isSameAs(preview);
+    }
+
+    @Test
+    void previewLevelUp_throws403_whenNotOwner() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> pcService.previewLevelUp(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+
+        verify(levelUpService, never()).preview(any());
     }
 
     // --- deletePC ---
