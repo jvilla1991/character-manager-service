@@ -1,11 +1,13 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
@@ -15,10 +17,12 @@ import java.util.UUID;
 public class PCService {
 
     private final PCRepository pcRepository;
+    private final LevelUpService levelUpService;
 
     @Autowired
-    public PCService(PCRepository pcRepository) {
+    public PCService(PCRepository pcRepository, LevelUpService levelUpService) {
         this.pcRepository = pcRepository;
+        this.levelUpService = levelUpService;
     }
 
     public PC addPC(PC pc) {
@@ -44,6 +48,27 @@ public class PCService {
     public PC updatePC(PC pc, UUID userId) {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
+        return pcRepository.save(pc);
+    }
+
+    /**
+     * Compute, without persisting, the gains of advancing this PC one level. Enforces ownership.
+     * Drives the SPA's pre-confirmation preview so the client never computes D&D rules itself.
+     */
+    public LevelUpPreview previewLevelUp(Long id, UUID userId) {
+        PC pc = findPCByIdForUser(id, userId);
+        return levelUpService.preview(pc);
+    }
+
+    /**
+     * Advance this PC one level and persist. Ownership is enforced and the rules are applied
+     * server-side ({@link LevelUpService}); the client supplies no stats. {@code @Transactional}
+     * keeps the load-modify-save atomic so a level can't be applied twice from a single request.
+     */
+    @Transactional
+    public PC levelUpPC(Long id, UUID userId) {
+        PC pc = findPCByIdForUser(id, userId);
+        levelUpService.applyLevelUp(pc);
         return pcRepository.save(pc);
     }
 
