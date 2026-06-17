@@ -75,7 +75,8 @@ public class PCService {
         PC pc = findPCByIdForUser(id, userId);
         String subclass = request == null ? null : request.subclass();
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
-        levelUpService.applyLevelUp(pc, subclass, abilityIncreases);
+        String feat = request == null ? null : request.feat();
+        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat);
         return pcRepository.save(pc);
     }
 
