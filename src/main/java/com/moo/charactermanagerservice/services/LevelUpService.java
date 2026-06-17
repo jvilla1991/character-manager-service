@@ -116,6 +116,9 @@ public class LevelUpService {
         // above already reflects the new modifier, so only the prior levels are added here).
         int retroactiveHp = (newLevel - 1) * (newConMod - oldConMod);
 
+        // Validate the subclass choice against the new level before mutating anything.
+        applySubclassChoice(pc, newLevel, chosenSubclass);
+
         pc.setLevel((short) newLevel);
         pc.setHpMax((short) (nz(pc.getHpMax()) + hpGained + retroactiveHp));
         pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
