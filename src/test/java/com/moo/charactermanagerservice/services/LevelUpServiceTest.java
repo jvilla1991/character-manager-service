@@ -365,4 +365,58 @@ class LevelUpServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
+
+    // --- Feats (the ASI alternative) ---
+
+    @Test
+    void preview_featOptions_offeredOnlyAtAsiLevels() {
+        assertThat(service.preview(pc("Fighter", 3, 14, 28, 28)).featOptions()).isNotEmpty(); // -> 4
+        assertThat(service.preview(pc("Fighter", 4, 14, 38, 38)).featOptions()).isEmpty();    // -> 5
+    }
+
+    @Test
+    void applyLevelUp_feat_recordedAmongFeatures_andNoAsiApplied() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 16);
+
+        service.applyLevelUp(fighter, null, null, "Sentinel");
+
+        assertThat(fighter.getLevel()).isEqualTo((short) 4);
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 16); // unchanged — feat, not ASI
+        assertThat(fighter.getFeatures()).contains("Sentinel").contains("Feat (Level 4)");
+    }
+
+    @Test
+    void applyLevelUp_feat_appendsToExistingFeatures() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setFeatures("[{\"name\":\"Second Wind\",\"source\":\"Fighter 1\",\"desc\":\"Regain HP\"}]");
+
+        service.applyLevelUp(fighter, null, null, "Great Weapon Master");
+
+        assertThat(fighter.getFeatures()).contains("Second Wind").contains("Great Weapon Master");
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsUnknownFeat() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, "Superman"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsBothAsiAndFeat() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, java.util.Map.of("STR", 2), "Sentinel"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectedWhenNotAnAsiLevel() {
+        PC fighter = pc("Fighter", 4, 14, 38, 38); // -> 5, not an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, "Sentinel"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
 }
