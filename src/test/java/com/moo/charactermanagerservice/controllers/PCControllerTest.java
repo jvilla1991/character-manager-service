@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
@@ -172,7 +173,7 @@ class PCControllerTest {
 
     @Test
     void previewLevelUp_returns200_withPreview() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of());
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of());
         when(pcService.previewLevelUp(1L, ownerId)).thenReturn(preview);
 
         ResponseEntity<LevelUpPreview> response = pcController.previewLevelUp(1L, auth);
@@ -195,30 +196,39 @@ class PCControllerTest {
 
     @Test
     void levelUp_returns200_whenOwner() {
-        when(pcService.levelUpPC(1L, ownerId)).thenReturn(pc);
+        when(pcService.levelUpPC(1L, ownerId, null)).thenReturn(pc);
 
-        ResponseEntity<PC> response = pcController.levelUp(1L, auth);
+        ResponseEntity<PC> response = pcController.levelUp(1L, auth, null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isSameAs(pc);
     }
 
     @Test
+    void levelUp_passesSubclassChoiceFromBody() {
+        when(pcService.levelUpPC(1L, ownerId, "Life Domain")).thenReturn(pc);
+
+        pcController.levelUp(1L, auth, new LevelUpRequest("Life Domain"));
+
+        verify(pcService).levelUpPC(1L, ownerId, "Life Domain");
+    }
+
+    @Test
     void levelUp_propagates403_whenNotOwner() {
-        when(pcService.levelUpPC(1L, ownerId))
+        when(pcService.levelUpPC(1L, ownerId, null))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
 
-        assertThatThrownBy(() -> pcController.levelUp(1L, auth))
+        assertThatThrownBy(() -> pcController.levelUp(1L, auth, null))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
 
     @Test
     void levelUp_propagates409_whenAtMaxLevel() {
-        when(pcService.levelUpPC(1L, ownerId))
+        when(pcService.levelUpPC(1L, ownerId, null))
                 .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "Character is already at the maximum level (20)"));
 
-        assertThatThrownBy(() -> pcController.levelUp(1L, auth))
+        assertThatThrownBy(() -> pcController.levelUp(1L, auth, null))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(409));
     }

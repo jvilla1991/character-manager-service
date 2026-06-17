@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.PCService;
@@ -57,9 +58,11 @@ public class PCController {
     }
 
     @PostMapping("/{id}/level-up")
-    public ResponseEntity<PC> levelUp(@PathVariable Long id, Authentication authentication) {
+    public ResponseEntity<PC> levelUp(@PathVariable Long id, Authentication authentication,
+                                      @RequestBody(required = false) LevelUpRequest request) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid()));
+        String chosenSubclass = request == null ? null : request.subclass();
+        return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid(), chosenSubclass));
     }
 
     @DeleteMapping("/delete/{id}")

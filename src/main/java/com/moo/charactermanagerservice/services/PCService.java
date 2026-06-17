@@ -62,13 +62,16 @@ public class PCService {
 
     /**
      * Advance this PC one level and persist. Ownership is enforced and the rules are applied
-     * server-side ({@link LevelUpService}); the client supplies no stats. {@code @Transactional}
-     * keeps the load-modify-save atomic so a level can't be applied twice from a single request.
+     * server-side ({@link LevelUpService}); the client supplies only choices (e.g. a subclass
+     * selection), never computed stats. {@code @Transactional} keeps the load-modify-save atomic
+     * so a level can't be applied twice from a single request.
+     *
+     * @param chosenSubclass the player's subclass selection, or {@code null} when none applies
      */
     @Transactional
-    public PC levelUpPC(Long id, UUID userId) {
+    public PC levelUpPC(Long id, UUID userId, String chosenSubclass) {
         PC pc = findPCByIdForUser(id, userId);
-        levelUpService.applyLevelUp(pc);
+        levelUpService.applyLevelUp(pc, chosenSubclass);
         return pcRepository.save(pc);
     }
 
