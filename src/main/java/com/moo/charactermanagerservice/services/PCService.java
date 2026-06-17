@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.repositories.PCRepository;
@@ -11,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -66,12 +68,14 @@ public class PCService {
      * selection), never computed stats. {@code @Transactional} keeps the load-modify-save atomic
      * so a level can't be applied twice from a single request.
      *
-     * @param chosenSubclass the player's subclass selection, or {@code null} when none applies
+     * @param request the player's level-up choices (subclass, ASI), or {@code null} when none
      */
     @Transactional
-    public PC levelUpPC(Long id, UUID userId, String chosenSubclass) {
+    public PC levelUpPC(Long id, UUID userId, LevelUpRequest request) {
         PC pc = findPCByIdForUser(id, userId);
-        levelUpService.applyLevelUp(pc, chosenSubclass);
+        String subclass = request == null ? null : request.subclass();
+        Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
+        levelUpService.applyLevelUp(pc, subclass, abilityIncreases);
         return pcRepository.save(pc);
     }
 

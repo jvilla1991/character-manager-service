@@ -25,5 +25,6 @@ public record LevelUpPreview(
         Map<Integer, Integer> currentSpellSlots,
         Map<Integer, Integer> newSpellSlots,
         boolean subclassDue,
-        List<String> subclassOptions
+        List<String> subclassOptions,
+        boolean asiDue
 ) {}
