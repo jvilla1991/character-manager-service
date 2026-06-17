@@ -143,23 +143,33 @@ class PCServiceTest {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
-        PC result = pcService.levelUpPC(1L, ownerId);
+        PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc);
+        verify(levelUpService).applyLevelUp(pc, null);
         verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void levelUpPC_passesSubclassChoiceToRulesEngine() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, "Life Domain");
+
+        verify(levelUpService).applyLevelUp(pc, "Life Domain");
     }
 
     @Test
     void levelUpPC_throws403_whenNotOwner() {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
 
-        assertThatThrownBy(() -> pcService.levelUpPC(1L, strangerId))
+        assertThatThrownBy(() -> pcService.levelUpPC(1L, strangerId, null))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
 
-        verify(levelUpService, never()).applyLevelUp(any());
+        verify(levelUpService, never()).applyLevelUp(any(), any());
         verify(pcRepository, never()).save(any());
     }
 
@@ -167,7 +177,7 @@ class PCServiceTest {
 
     @Test
     void previewLevelUp_returnsPreview_whenOwner() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of());
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of());
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(levelUpService.preview(pc)).thenReturn(preview);
 

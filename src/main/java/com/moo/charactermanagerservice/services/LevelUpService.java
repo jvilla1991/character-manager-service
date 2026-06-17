@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -68,16 +69,25 @@ public class LevelUpService {
                 ClassProgression.proficiencyBonusForLevel(currentLevel),
                 ClassProgression.proficiencyBonusForLevel(newLevel),
                 currentMaxSlots(pc),
-                ClassProgression.spellSlotsFor(pc.getClazz(), newLevel)
+                ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
+                subclassDue(pc, newLevel),
+                ClassProgression.subclassesFor(pc.getClazz())
         );
+    }
+
+    /** Convenience overload for level-ups with no player choices. */
+    public PC applyLevelUp(PC pc) {
+        return applyLevelUp(pc, null);
     }
 
     /**
      * Mutate the given (managed) PC in place to its next level: bump level, add the HP gain to
-     * both max and current HP, recompute the proficiency bonus, and (for casters) rebuild the
-     * spell-slot map. The caller persists.
+     * both max and current HP, recompute the proficiency bonus, rebuild the spell-slot map (for
+     * casters), and apply the chosen subclass when one is due. The caller persists.
+     *
+     * @param chosenSubclass the player's subclass selection, or {@code null} when none applies
      */
-    public PC applyLevelUp(PC pc) {
+    public PC applyLevelUp(PC pc, String chosenSubclass) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
 
@@ -85,6 +95,9 @@ public class LevelUpService {
         int hitDie = ClassProgression.hitDie(pc.getClazz());
         int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hpGained = hpGain(hitDie, conMod);
+
+        // Validate the subclass choice against the new level before mutating anything.
+        applySubclassChoice(pc, newLevel, chosenSubclass);
 
         pc.setLevel((short) newLevel);
         pc.setHpMax((short) (nz(pc.getHpMax()) + hpGained));
@@ -110,6 +123,49 @@ public class LevelUpService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Character is already at the maximum level (" + ClassProgression.MAX_LEVEL + ")");
         }
+    }
+
+    // ── Subclass selection (Phase 3) ─────────────────────────────────────────────
+
+    /** A subclass choice is due when the new level is the class's grant level and none is set yet. */
+    private boolean subclassDue(PC pc, int newLevel) {
+        return newLevel == ClassProgression.subclassLevelFor(pc.getClazz())
+                && isBlank(pc.getSubclass());
+    }
+
+    /**
+     * Validate and apply the player's subclass choice for this level. Server-authoritative:
+     * a choice is only accepted when it is actually due, and (once catalog content exists) it
+     * must be a known subclass for the class. With the catalog empty, the flow is dormant — no
+     * choice is required and none is offered — so today this is effectively a no-op.
+     */
+    private void applySubclassChoice(PC pc, int newLevel, String chosen) {
+        boolean due = subclassDue(pc, newLevel);
+        List<String> options = ClassProgression.subclassesFor(pc.getClazz());
+
+        if (chosen != null && !chosen.isBlank()) {
+            String choice = chosen.trim();
+            if (!due) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "A subclass cannot be selected for " + pc.getClazz() + " at level " + newLevel);
+            }
+            if (!options.isEmpty() && options.stream().noneMatch(o -> o.equalsIgnoreCase(choice))) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "'" + choice + "' is not a valid subclass for " + pc.getClazz());
+            }
+            pc.setSubclass(choice);
+            return;
+        }
+
+        // No choice supplied: only an error when a real catalog exists and a pick is due.
+        if (due && !options.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A subclass must be selected at level " + newLevel);
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
     }
 
     // ── Spell-slot handling ──────────────────────────────────────────────────────

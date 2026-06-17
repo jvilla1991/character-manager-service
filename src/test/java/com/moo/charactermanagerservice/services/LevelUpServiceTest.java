@@ -214,4 +214,64 @@ class LevelUpServiceTest {
         // Malformed prior slots -> rebuilt fresh from the L3 table (4/2), used = 0.
         assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
     }
+
+    // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
+
+    @Test
+    void preview_subclassDue_atGrantLevelWithNoSubclass() {
+        // Cleric grant level is 3; leveling 2 -> 3 with no subclass yet.
+        LevelUpPreview p = service.preview(pc("Cleric", 2, 14, 14, 14));
+        assertThat(p.subclassDue()).isTrue();
+        assertThat(p.subclassOptions()).isEmpty(); // no catalog content yet
+    }
+
+    @Test
+    void preview_subclassNotDue_whenAlreadyHasSubclass() {
+        PC cleric = pc("Cleric", 2, 14, 14, 14);
+        cleric.setSubclass("Life Domain");
+        assertThat(service.preview(cleric).subclassDue()).isFalse();
+    }
+
+    @Test
+    void preview_subclassNotDue_atNonGrantLevel() {
+        // Cleric 4 -> 5 is past the grant level.
+        assertThat(service.preview(pc("Cleric", 4, 14, 30, 30)).subclassDue()).isFalse();
+    }
+
+    @Test
+    void applyLevelUp_setsChosenSubclass_whenDue() {
+        // Catalog empty -> server can't validate membership, so any non-blank choice is accepted.
+        PC cleric = pc("Cleric", 2, 14, 14, 14);
+
+        service.applyLevelUp(cleric, "Life Domain");
+
+        assertThat(cleric.getLevel()).isEqualTo((short) 3);
+        assertThat(cleric.getSubclass()).isEqualTo("Life Domain");
+    }
+
+    @Test
+    void applyLevelUp_rejectsSubclass_whenNotDue() {
+        PC cleric = pc("Cleric", 4, 14, 30, 30); // -> 5, past grant level
+        assertThatThrownBy(() -> service.applyLevelUp(cleric, "Life Domain"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_dueButNoChoiceAndEmptyCatalog_proceedsWithoutSubclass() {
+        // With no catalog content the flow is dormant: a level-up still succeeds with no subclass.
+        PC cleric = pc("Cleric", 2, 14, 14, 14);
+
+        service.applyLevelUp(cleric, null);
+
+        assertThat(cleric.getLevel()).isEqualTo((short) 3);
+        assertThat(cleric.getSubclass()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_pactCasterSubclassDueAtCreationLevel_neverFiresOnLevelUp() {
+        // Sorcerer/Warlock grant at level 1, so a subclass is never "due" during a level-up.
+        assertThat(service.preview(pc("Sorcerer", 4, 14, 24, 24)).subclassDue()).isFalse();
+        assertThat(service.preview(pc("Warlock", 1, 14, 9, 9)).subclassDue()).isFalse();
+    }
 }
