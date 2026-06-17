@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.repositories.PCRepository;
@@ -146,18 +147,18 @@ class PCServiceTest {
         PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null);
+        verify(levelUpService).applyLevelUp(pc, null, null);
         verify(pcRepository).save(pc);
     }
 
     @Test
-    void levelUpPC_passesSubclassChoiceToRulesEngine() {
+    void levelUpPC_passesChoicesToRulesEngine() {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
-        pcService.levelUpPC(1L, ownerId, "Life Domain");
+        pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2)));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain");
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2));
     }
 
     @Test
@@ -169,7 +170,7 @@ class PCServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
 
-        verify(levelUpService, never()).applyLevelUp(any(), any());
+        verify(levelUpService, never()).applyLevelUp(any(), any(), any());
         verify(pcRepository, never()).save(any());
     }
 
@@ -177,7 +178,7 @@ class PCServiceTest {
 
     @Test
     void previewLevelUp_returnsPreview_whenOwner() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of());
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(levelUpService.preview(pc)).thenReturn(preview);
 

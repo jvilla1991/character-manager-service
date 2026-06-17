@@ -212,4 +212,25 @@ public final class ClassProgression {
         if (clazz == null) return List.of();
         return SUBCLASS_CATALOG.getOrDefault(clazz.trim().toLowerCase(), List.of());
     }
+
+    // ── Ability Score Improvement levels (Phase 4) ──────────────────────────────
+    // Every class gains an ASI (or feat) at 4/8/12/16/19. Fighter and Rogue get extra
+    // ones (Fighter at 6 & 14, Rogue at 10) per the 2024 PHB. Feats are deferred — this
+    // phase implements the ASI choice only.
+
+    private static final Set<Integer> DEFAULT_ASI_LEVELS = Set.of(4, 8, 12, 16, 19);
+
+    private static final Map<String, Set<Integer>> ASI_LEVELS = Map.of(
+            "fighter", Set.of(4, 6, 8, 12, 14, 16, 19),
+            "rogue", Set.of(4, 8, 10, 12, 16, 19)
+    );
+
+    /** Whether the given class receives an Ability Score Improvement at the given level. */
+    public static boolean isAsiLevel(String clazz, int level) {
+        if (clazz == null) return DEFAULT_ASI_LEVELS.contains(level);
+        return ASI_LEVELS.getOrDefault(clazz.trim().toLowerCase(), DEFAULT_ASI_LEVELS).contains(level);
+    }
+
+    /** Maximum value any single ability score can reach via normal advancement. */
+    public static final int MAX_ABILITY_SCORE = 20;
 }
