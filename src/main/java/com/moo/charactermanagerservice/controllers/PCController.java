@@ -61,8 +61,7 @@ public class PCController {
     public ResponseEntity<PC> levelUp(@PathVariable Long id, Authentication authentication,
                                       @RequestBody(required = false) LevelUpRequest request) {
         User user = (User) authentication.getPrincipal();
-        String chosenSubclass = request == null ? null : request.subclass();
-        return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid(), chosenSubclass));
+        return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid(), request));
     }
 
     @DeleteMapping("/delete/{id}")

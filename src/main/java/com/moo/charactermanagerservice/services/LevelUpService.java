@@ -71,37 +71,54 @@ public class LevelUpService {
                 currentMaxSlots(pc),
                 ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
                 subclassDue(pc, newLevel),
-                ClassProgression.subclassesFor(pc.getClazz())
+                ClassProgression.subclassesFor(pc.getClazz()),
+                ClassProgression.isAsiLevel(pc.getClazz(), newLevel)
         );
     }
 
     /** Convenience overload for level-ups with no player choices. */
     public PC applyLevelUp(PC pc) {
-        return applyLevelUp(pc, null);
+        return applyLevelUp(pc, null, null);
+    }
+
+    /** Convenience overload for a subclass-only choice. */
+    public PC applyLevelUp(PC pc, String chosenSubclass) {
+        return applyLevelUp(pc, chosenSubclass, null);
     }
 
     /**
-     * Mutate the given (managed) PC in place to its next level: bump level, add the HP gain to
-     * both max and current HP, recompute the proficiency bonus, rebuild the spell-slot map (for
-     * casters), and apply the chosen subclass when one is due. The caller persists.
+     * Mutate the given (managed) PC in place to its next level: validate and apply the player's
+     * choices (subclass, Ability Score Improvement), then bump level, add HP, recompute the
+     * proficiency bonus, and rebuild the spell-slot map (for casters). The caller persists.
      *
-     * @param chosenSubclass the player's subclass selection, or {@code null} when none applies
+     * <p>HP order matters: ability scores are applied <em>before</em> HP, so the new level's gain
+     * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
+     * prior level (the 5e retroactive rule).
+     *
+     * @param chosenSubclass   the player's subclass selection, or {@code null} when none applies
+     * @param abilityIncreases the ASI allocation ({@code ABILITY -> points}), or {@code null}
      */
-    public PC applyLevelUp(PC pc, String chosenSubclass) {
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
-
         int newLevel = currentLevel + 1;
-        int hitDie = ClassProgression.hitDie(pc.getClazz());
-        int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
-        int hpGained = hpGain(hitDie, conMod);
 
-        // Validate the subclass choice against the new level before mutating anything.
+        int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
+
+        // Validate + apply choices first — the ASI can change ability scores (including CON).
         applySubclassChoice(pc, newLevel, chosenSubclass);
+        applyAbilityScoreImprovement(pc, newLevel, abilityIncreases);
+
+        int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
+        int hitDie = ClassProgression.hitDie(pc.getClazz());
+        int hpGained = hpGain(hitDie, newConMod);
+        // A rise in CON's modifier grants HP to every level you already have (this level's gain
+        // above already reflects the new modifier, so only the prior levels are added here).
+        int retroactiveHp = (newLevel - 1) * (newConMod - oldConMod);
 
         pc.setLevel((short) newLevel);
-        pc.setHpMax((short) (nz(pc.getHpMax()) + hpGained));
-        pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained));
+        pc.setHpMax((short) (nz(pc.getHpMax()) + hpGained + retroactiveHp));
+        pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
         pc.setProfBonus((short) ClassProgression.proficiencyBonusForLevel(newLevel));
 
         if (ClassProgression.isCaster(pc.getClazz())) {
@@ -166,6 +183,88 @@ public class LevelUpService {
 
     private static boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    // ── Ability Score Improvement (Phase 4) ──────────────────────────────────────
+
+    private static final List<String> ABILITIES = List.of("STR", "DEX", "CON", "INT", "WIS", "CHA");
+
+    /**
+     * Validate and apply the ASI allocation. Server-authoritative: an allocation is accepted only
+     * at an ASI level, must add exactly 2 points (+2 to one ability or +1 to two distinct ones),
+     * and may not push any score past {@value ClassProgression#MAX_ABILITY_SCORE}. A choice is
+     * required at an ASI level (feats are deferred, so ASI is the only option for now).
+     */
+    private void applyAbilityScoreImprovement(PC pc, int newLevel, Map<String, Integer> increases) {
+        boolean due = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
+        boolean provided = increases != null && !increases.isEmpty();
+
+        if (!provided) {
+            if (due) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "An ability score improvement is required at level " + newLevel);
+            }
+            return;
+        }
+        if (!due) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "An ability score improvement cannot be applied at level " + newLevel);
+        }
+
+        // Normalize keys and total the points.
+        Map<String, Integer> allocation = new LinkedHashMap<>();
+        int total = 0;
+        for (Map.Entry<String, Integer> e : increases.entrySet()) {
+            String ability = e.getKey() == null ? "" : e.getKey().trim().toUpperCase();
+            Integer points = e.getValue();
+            if (!ABILITIES.contains(ability)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown ability: " + e.getKey());
+            }
+            if (points == null || points < 1 || points > 2) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each ability increase must be 1 or 2 points");
+            }
+            allocation.merge(ability, points, Integer::sum);
+            total += points;
+        }
+        if (total != 2) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "An ability score improvement must add exactly 2 points (+2 to one ability or +1 to two)");
+        }
+
+        // Validate caps before mutating anything, so a bad allocation leaves the PC untouched.
+        allocation.forEach((ability, points) -> {
+            if (abilityScore(pc, ability) + points > ClassProgression.MAX_ABILITY_SCORE) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        ability + " cannot exceed " + ClassProgression.MAX_ABILITY_SCORE);
+            }
+        });
+        allocation.forEach((ability, points) ->
+                setAbilityScore(pc, ability, (short) (abilityScore(pc, ability) + points)));
+    }
+
+    private int abilityScore(PC pc, String ability) {
+        return switch (ability) {
+            case "STR" -> nz(pc.getAbilityStr());
+            case "DEX" -> nz(pc.getAbilityDex());
+            case "CON" -> nz(pc.getAbilityCon());
+            case "INT" -> nz(pc.getAbilityInt());
+            case "WIS" -> nz(pc.getAbilityWis());
+            case "CHA" -> nz(pc.getAbilityCha());
+            default -> 0;
+        };
+    }
+
+    private void setAbilityScore(PC pc, String ability, short value) {
+        switch (ability) {
+            case "STR" -> pc.setAbilityStr(value);
+            case "DEX" -> pc.setAbilityDex(value);
+            case "CON" -> pc.setAbilityCon(value);
+            case "INT" -> pc.setAbilityInt(value);
+            case "WIS" -> pc.setAbilityWis(value);
+            case "CHA" -> pc.setAbilityCha(value);
+            default -> { /* unreachable — validated above */ }
+        }
     }
 
     // ── Spell-slot handling ──────────────────────────────────────────────────────

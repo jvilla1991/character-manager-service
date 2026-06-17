@@ -161,14 +161,16 @@ class LevelUpServiceTest {
 
     @Test
     void applyLevelUp_fullCaster_rebuildsSlotsPreservingUsed() {
-        PC bard = pc("Bard", 7, 14, 50, 50);
-        bard.setSpellSlots("{\"1\":{\"max\":4,\"used\":2},\"4\":{\"max\":1,\"used\":1}}");
+        PC bard = pc("Bard", 8, 14, 50, 50); // 8 -> 9 (not an ASI level)
+        bard.setSpellSlots("{\"1\":{\"max\":4,\"used\":2},\"4\":{\"max\":2,\"used\":1}}");
 
         service.applyLevelUp(bard);
 
-        // L8: level-4 max grows 1 -> 2 but used (1) is preserved; level-1 used (2) preserved.
-        assertThat(bard.getSpellSlots()).contains("\"4\":{\"max\":2,\"used\":1}");
+        // L9: level-4 max grows 2 -> 3 but used (1) is preserved; level-1 used (2) preserved;
+        // a new level-5 slot appears.
+        assertThat(bard.getSpellSlots()).contains("\"4\":{\"max\":3,\"used\":1}");
         assertThat(bard.getSpellSlots()).contains("\"1\":{\"max\":4,\"used\":2}");
+        assertThat(bard.getSpellSlots()).contains("\"5\":{\"max\":1,\"used\":0}");
     }
 
     @Test
@@ -195,7 +197,7 @@ class LevelUpServiceTest {
 
     @Test
     void applyLevelUp_clampsUsedToNewMax() {
-        PC bard = pc("Bard", 7, 14, 50, 50);
+        PC bard = pc("Bard", 8, 14, 50, 50); // 8 -> 9 (not an ASI level)
         // Corrupt/overspent used count well above the table max.
         bard.setSpellSlots("{\"1\":{\"max\":4,\"used\":9}}");
 
@@ -273,5 +275,94 @@ class LevelUpServiceTest {
         // Sorcerer/Warlock grant at level 1, so a subclass is never "due" during a level-up.
         assertThat(service.preview(pc("Sorcerer", 4, 14, 24, 24)).subclassDue()).isFalse();
         assertThat(service.preview(pc("Warlock", 1, 14, 9, 9)).subclassDue()).isFalse();
+    }
+
+    // --- Ability Score Improvement (Phase 4) ---
+
+    @Test
+    void preview_asiDue_atAsiLevels() {
+        assertThat(service.preview(pc("Fighter", 3, 14, 28, 28)).asiDue()).isTrue();  // -> 4
+        assertThat(service.preview(pc("Fighter", 4, 14, 38, 38)).asiDue()).isFalse(); // -> 5
+        assertThat(service.preview(pc("Fighter", 5, 14, 44, 44)).asiDue()).isTrue();  // -> 6 (Fighter extra)
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).asiDue()).isTrue();   // -> 4
+        assertThat(service.preview(pc("Wizard", 5, 14, 30, 30)).asiDue()).isFalse();  // -> 6 (not Fighter)
+        assertThat(service.preview(pc("Rogue", 9, 14, 60, 60)).asiDue()).isTrue();    // -> 10 (Rogue extra)
+    }
+
+    @Test
+    void applyLevelUp_asi_plus2_oneAbility() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 16);
+
+        service.applyLevelUp(fighter, null, java.util.Map.of("STR", 2));
+
+        assertThat(fighter.getLevel()).isEqualTo((short) 4);
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 18);
+    }
+
+    @Test
+    void applyLevelUp_asi_plus1_twoAbilities() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 16);
+        fighter.setAbilityDex((short) 13);
+
+        service.applyLevelUp(fighter, null, java.util.Map.of("STR", 1, "DEX", 1));
+
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 17);
+        assertThat(fighter.getAbilityDex()).isEqualTo((short) 14);
+    }
+
+    @Test
+    void applyLevelUp_asi_conIncrease_grantsRetroactiveHp() {
+        // Fighter 3 -> 4, CON 15 (+2) -> 17 (+3). d10 avg 6 + new CON 3 = 9 this level;
+        // retroactive (4-1) * 1 = 3 for the prior levels; total +12.
+        PC fighter = pc("Fighter", 3, 15, 28, 28);
+
+        service.applyLevelUp(fighter, null, java.util.Map.of("CON", 2));
+
+        assertThat(fighter.getAbilityCon()).isEqualTo((short) 17);
+        assertThat(fighter.getHpMax()).isEqualTo((short) 40);
+        assertThat(fighter.getHpCurrent()).isEqualTo((short) 40);
+    }
+
+    @Test
+    void applyLevelUp_asi_requiredAtAsiLevel() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_asi_rejectedWhenNotAnAsiLevel() {
+        PC fighter = pc("Fighter", 4, 14, 38, 38); // -> 5, not an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, java.util.Map.of("STR", 2)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_asi_rejectsWrongTotal() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, java.util.Map.of("STR", 1)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_asi_rejectsExceeding20() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 19);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, java.util.Map.of("STR", 2)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_asi_rejectsUnknownAbility() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, java.util.Map.of("LUCK", 2)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 }
