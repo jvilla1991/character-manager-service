@@ -6,10 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.FeatCatalog;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +60,7 @@ public class LevelUpService {
         int hitDie = ClassProgression.hitDie(pc.getClazz());
         int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hpGained = hpGain(hitDie, conMod);
+        boolean asiDue = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
 
         return new LevelUpPreview(
                 currentLevel,
@@ -72,24 +75,31 @@ public class LevelUpService {
                 ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
                 subclassDue(pc, newLevel),
                 ClassProgression.subclassesFor(pc.getClazz()),
-                ClassProgression.isAsiLevel(pc.getClazz(), newLevel)
+                asiDue,
+                asiDue ? FeatCatalog.generalFeats() : List.of()
         );
     }
 
     /** Convenience overload for level-ups with no player choices. */
     public PC applyLevelUp(PC pc) {
-        return applyLevelUp(pc, null, null);
+        return applyLevelUp(pc, null, null, null);
     }
 
     /** Convenience overload for a subclass-only choice. */
     public PC applyLevelUp(PC pc, String chosenSubclass) {
-        return applyLevelUp(pc, chosenSubclass, null);
+        return applyLevelUp(pc, chosenSubclass, null, null);
+    }
+
+    /** Convenience overload for a subclass + ASI choice (no feat). */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, null);
     }
 
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
-     * choices (subclass, Ability Score Improvement), then bump level, add HP, recompute the
-     * proficiency bonus, and rebuild the spell-slot map (for casters). The caller persists.
+     * choices (subclass, and at an ASI level exactly one of an Ability Score Improvement or a
+     * feat), then bump level, add HP, recompute the proficiency bonus, and rebuild the spell-slot
+     * map (for casters). The caller persists.
      *
      * <p>HP order matters: ability scores are applied <em>before</em> HP, so the new level's gain
      * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
@@ -97,17 +107,19 @@ public class LevelUpService {
      *
      * @param chosenSubclass   the player's subclass selection, or {@code null} when none applies
      * @param abilityIncreases the ASI allocation ({@code ABILITY -> points}), or {@code null}
+     * @param chosenFeat       the chosen General feat (the ASI alternative), or {@code null}
      */
-    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases) {
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
 
         int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
 
-        // Validate + apply choices first — the ASI can change ability scores (including CON).
+        // Validate + apply choices first — an ASI can change ability scores (including CON).
         applySubclassChoice(pc, newLevel, chosenSubclass);
-        applyAbilityScoreImprovement(pc, newLevel, abilityIncreases);
+        applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hitDie = ClassProgression.hitDie(pc.getClazz());
@@ -185,32 +197,47 @@ public class LevelUpService {
         return s == null || s.isBlank();
     }
 
-    // ── Ability Score Improvement (Phase 4) ──────────────────────────────────────
+    // ── ASI-or-feat milestone choice (Phase 4 + feats) ───────────────────────────
 
     private static final List<String> ABILITIES = List.of("STR", "DEX", "CON", "INT", "WIS", "CHA");
 
     /**
-     * Validate and apply the ASI allocation. Server-authoritative: an allocation is accepted only
-     * at an ASI level, must add exactly 2 points (+2 to one ability or +1 to two distinct ones),
-     * and may not push any score past {@value ClassProgression#MAX_ABILITY_SCORE}. A choice is
-     * required at an ASI level (feats are deferred, so ASI is the only option for now).
+     * At an ASI level the player takes exactly one of an Ability Score Improvement or a General
+     * feat; at any other level neither is allowed. Server-authoritative gating; the chosen branch
+     * then validates and applies itself.
      */
-    private void applyAbilityScoreImprovement(PC pc, int newLevel, Map<String, Integer> increases) {
-        boolean due = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
-        boolean provided = increases != null && !increases.isEmpty();
+    private void applyMilestoneChoice(PC pc, int newLevel, Map<String, Integer> increases, String feat) {
+        boolean asiLevel = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
+        boolean hasAsi = increases != null && !increases.isEmpty();
+        boolean hasFeat = feat != null && !feat.isBlank();
 
-        if (!provided) {
-            if (due) {
+        if (!asiLevel) {
+            if (hasAsi || hasFeat) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "An ability score improvement is required at level " + newLevel);
+                        "No ability score improvement or feat is available at level " + newLevel);
             }
             return;
         }
-        if (!due) {
+        if (hasAsi && hasFeat) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "An ability score improvement cannot be applied at level " + newLevel);
+                    "Choose either an ability score improvement or a feat, not both");
         }
+        if (!hasAsi && !hasFeat) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "An ability score improvement or feat is required at level " + newLevel);
+        }
+        if (hasAsi) {
+            applyAsiAllocation(pc, increases);
+        } else {
+            applyFeatChoice(pc, newLevel, feat);
+        }
+    }
 
+    /**
+     * Validate and apply an ASI allocation: exactly 2 points (+2 to one ability or +1 to two
+     * distinct ones), no score past {@value ClassProgression#MAX_ABILITY_SCORE}.
+     */
+    private void applyAsiAllocation(PC pc, Map<String, Integer> increases) {
         // Normalize keys and total the points.
         Map<String, Integer> allocation = new LinkedHashMap<>();
         int total = 0;
@@ -241,6 +268,37 @@ public class LevelUpService {
         });
         allocation.forEach((ability, points) ->
                 setAbilityScore(pc, ability, (short) (abilityScore(pc, ability) + points)));
+    }
+
+    /** Validate the chosen feat against the catalog and record it among the PC's features. */
+    private void applyFeatChoice(PC pc, int newLevel, String feat) {
+        String name = feat.trim();
+        if (!FeatCatalog.isValidFeat(name)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "'" + name + "' is not a selectable feat");
+        }
+        List<Map<String, Object>> features = parseFeatures(pc.getFeatures());
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("name", name);
+        entry.put("source", "Feat (Level " + newLevel + ")");
+        entry.put("desc", ""); // descriptions are presentation; the SPA supplies them by name
+        features.add(entry);
+        try {
+            pc.setFeatures(objectMapper.writeValueAsString(features));
+        } catch (JsonProcessingException ex) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to serialize features");
+        }
+    }
+
+    /** Parse the features TEXT column into a mutable list; defensive about null/blank/malformed. */
+    private List<Map<String, Object>> parseFeatures(String json) {
+        if (json == null || json.isBlank()) return new ArrayList<>();
+        try {
+            List<Map<String, Object>> parsed = objectMapper.readValue(json, new TypeReference<>() {});
+            return parsed == null ? new ArrayList<>() : new ArrayList<>(parsed);
+        } catch (JsonProcessingException e) {
+            return new ArrayList<>();
+        }
     }
 
     private int abilityScore(PC pc, String ability) {
