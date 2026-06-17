@@ -1,10 +1,13 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -418,5 +421,51 @@ class LevelUpServiceTest {
         assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, "Sentinel"))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    // --- Auto-granted class features ---
+
+    @Test
+    void preview_featuresGained_atSeededLevel() {
+        // Barbarian 1 -> 2 grants Reckless Attack + Danger Sense (seeded).
+        List<String> names = service.preview(pc("Barbarian", 1, 14, 14, 14)).featuresGained()
+                .stream().map(FeatureGain::name).toList();
+        assertThat(names).contains("Reckless Attack", "Danger Sense");
+    }
+
+    @Test
+    void preview_featuresGained_emptyForUnseededClassOrLevel() {
+        assertThat(service.preview(pc("Wizard", 1, 14, 8, 8)).featuresGained()).isEmpty();   // Wizard not seeded
+        assertThat(service.preview(pc("Barbarian", 5, 14, 50, 50)).featuresGained()).isEmpty(); // -> 6 not seeded
+    }
+
+    @Test
+    void applyLevelUp_grantsClassFeatures_taggedWithClassAndLevel() {
+        PC barbarian = pc("Barbarian", 1, 14, 14, 14);
+
+        service.applyLevelUp(barbarian);
+
+        assertThat(barbarian.getLevel()).isEqualTo((short) 2);
+        assertThat(barbarian.getFeatures()).contains("Reckless Attack").contains("Barbarian 2");
+    }
+
+    @Test
+    void applyLevelUp_appendsFeaturesToExisting() {
+        PC barbarian = pc("Barbarian", 1, 14, 14, 14);
+        barbarian.setFeatures("[{\"name\":\"Rage\",\"source\":\"Barbarian 1\",\"desc\":\"...\"}]");
+
+        service.applyLevelUp(barbarian);
+
+        assertThat(barbarian.getFeatures()).contains("Rage").contains("Reckless Attack");
+    }
+
+    @Test
+    void applyLevelUp_unseededClass_leavesFeaturesUntouched() {
+        PC wizard = pc("Wizard", 1, 14, 8, 8); // -> 2, not seeded
+        wizard.setFeatures("[]");
+
+        service.applyLevelUp(wizard);
+
+        assertThat(wizard.getFeatures()).isEqualTo("[]");
     }
 }
