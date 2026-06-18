@@ -173,7 +173,7 @@ class PCControllerTest {
 
     @Test
     void previewLevelUp_returns200_withPreview() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of());
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0, 0, 0);
         when(pcService.previewLevelUp(1L, ownerId)).thenReturn(preview);
 
         ResponseEntity<LevelUpPreview> response = pcController.previewLevelUp(1L, auth);
@@ -206,7 +206,7 @@ class PCControllerTest {
 
     @Test
     void levelUp_passesChoicesFromBody() {
-        LevelUpRequest body = new LevelUpRequest("Life Domain", java.util.Map.of("STR", 2), null);
+        LevelUpRequest body = new LevelUpRequest("Life Domain", java.util.Map.of("STR", 2), null, null);
         when(pcService.levelUpPC(1L, ownerId, body)).thenReturn(pc);
 
         pcController.levelUp(1L, auth, body);

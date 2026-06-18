@@ -28,5 +28,9 @@ public record LevelUpPreview(
         List<String> subclassOptions,
         boolean asiDue,
         List<String> featOptions,
-        List<FeatureGain> featuresGained
+        List<FeatureGain> featuresGained,
+        int currentCantripsKnown,
+        int newCantripsKnown,
+        int currentSpellsKnown,
+        int newSpellsKnown
 ) {}

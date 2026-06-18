@@ -147,7 +147,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null);
         verify(pcRepository).save(pc);
     }
 
@@ -156,9 +156,10 @@ class PCServiceTest {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
-        pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel"));
+        List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
+        pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel");
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells);
     }
 
     @Test
@@ -170,7 +171,7 @@ class PCServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
 
-        verify(levelUpService, never()).applyLevelUp(any(), any(), any(), any());
+        verify(levelUpService, never()).applyLevelUp(any(), any(), any(), any(), any());
         verify(pcRepository, never()).save(any());
     }
 
@@ -178,7 +179,7 @@ class PCServiceTest {
 
     @Test
     void previewLevelUp_returnsPreview_whenOwner() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of());
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0, 0, 0);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(levelUpService.preview(pc)).thenReturn(preview);
 
