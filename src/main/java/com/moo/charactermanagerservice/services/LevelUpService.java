@@ -3,8 +3,10 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
 import org.springframework.http.HttpStatus;
@@ -76,7 +78,8 @@ public class LevelUpService {
                 subclassDue(pc, newLevel),
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
-                asiDue ? FeatCatalog.generalFeats() : List.of()
+                asiDue ? FeatCatalog.generalFeats() : List.of(),
+                ClassFeatures.featuresAt(pc.getClazz(), newLevel)
         );
     }
 
@@ -120,6 +123,7 @@ public class LevelUpService {
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         applySubclassChoice(pc, newLevel, chosenSubclass);
         applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
+        grantClassFeatures(pc, newLevel);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hitDie = ClassProgression.hitDie(pc.getClazz());
@@ -278,16 +282,28 @@ public class LevelUpService {
                     "'" + name + "' is not a selectable feat");
         }
         List<Map<String, Object>> features = parseFeatures(pc.getFeatures());
+        features.add(featureEntry(name, "Feat (Level " + newLevel + ")", ""));
+        pc.setFeatures(writeFeatures(features));
+    }
+
+    /** Append the class features (if any) gained at the new level to the PC's features list. */
+    private void grantClassFeatures(PC pc, int newLevel) {
+        List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), newLevel);
+        if (gained.isEmpty()) return;
+        List<Map<String, Object>> features = parseFeatures(pc.getFeatures());
+        String source = pc.getClazz() + " " + newLevel;
+        for (FeatureGain g : gained) {
+            features.add(featureEntry(g.name(), source, g.desc()));
+        }
+        pc.setFeatures(writeFeatures(features));
+    }
+
+    private Map<String, Object> featureEntry(String name, String source, String desc) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("name", name);
-        entry.put("source", "Feat (Level " + newLevel + ")");
-        entry.put("desc", ""); // descriptions are presentation; the SPA supplies them by name
-        features.add(entry);
-        try {
-            pc.setFeatures(objectMapper.writeValueAsString(features));
-        } catch (JsonProcessingException ex) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to serialize features");
-        }
+        entry.put("source", source);
+        entry.put("desc", desc);
+        return entry;
     }
 
     /** Parse the features TEXT column into a mutable list; defensive about null/blank/malformed. */
@@ -298,6 +314,14 @@ public class LevelUpService {
             return parsed == null ? new ArrayList<>() : new ArrayList<>(parsed);
         } catch (JsonProcessingException e) {
             return new ArrayList<>();
+        }
+    }
+
+    private String writeFeatures(List<Map<String, Object>> features) {
+        try {
+            return objectMapper.writeValueAsString(features);
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to serialize features");
         }
     }
 
