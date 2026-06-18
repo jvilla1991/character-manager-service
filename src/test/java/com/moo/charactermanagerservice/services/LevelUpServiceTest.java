@@ -468,4 +468,28 @@ class LevelUpServiceTest {
 
         assertThat(wizard.getFeatures()).isEqualTo("[]");
     }
+
+    // --- Cantrips-known progression (preview only) ---
+
+    @Test
+    void preview_cantripsKnown_bumpsAtLevel4() {
+        // Wizard base 3 cantrips; +1 at level 4.
+        LevelUpPreview p = service.preview(pc("Wizard", 3, 14, 18, 18)); // -> 4
+        assertThat(p.currentCantripsKnown()).isEqualTo(3);
+        assertThat(p.newCantripsKnown()).isEqualTo(4);
+    }
+
+    @Test
+    void preview_cantripsKnown_unchangedBetweenBreakpoints() {
+        LevelUpPreview p = service.preview(pc("Sorcerer", 5, 14, 32, 32)); // -> 6; sorcerer base 4, +1 at 4
+        assertThat(p.currentCantripsKnown()).isEqualTo(5);
+        assertThat(p.newCantripsKnown()).isEqualTo(5);
+    }
+
+    @Test
+    void preview_cantripsKnown_zeroForNonCaster() {
+        LevelUpPreview p = service.preview(pc("Fighter", 1, 14, 12, 12));
+        assertThat(p.currentCantripsKnown()).isEqualTo(0);
+        assertThat(p.newCantripsKnown()).isEqualTo(0);
+    }
 }
