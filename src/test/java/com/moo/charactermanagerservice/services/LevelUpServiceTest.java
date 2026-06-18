@@ -7,7 +7,9 @@ import com.moo.charactermanagerservice.models.PC;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -491,5 +493,76 @@ class LevelUpServiceTest {
         LevelUpPreview p = service.preview(pc("Fighter", 1, 14, 12, 12));
         assertThat(p.currentCantripsKnown()).isEqualTo(0);
         assertThat(p.newCantripsKnown()).isEqualTo(0);
+    }
+
+    // --- Spell selection (learning new spells/cantrips) ---
+
+    private static Map<String, Object> spell(int lvl, String name) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("lvl", lvl);
+        m.put("name", name);
+        return m;
+    }
+
+    @Test
+    void preview_spellsKnown_progression() {
+        // Bard prepared spells: level 4 -> 7, level 5 -> 9.
+        LevelUpPreview p = service.preview(pc("Bard", 4, 14, 30, 30));
+        assertThat(p.currentSpellsKnown()).isEqualTo(7);
+        assertThat(p.newSpellsKnown()).isEqualTo(9);
+    }
+
+    @Test
+    void applyLevelUp_appendsNewSpells_withinDelta() {
+        // Bard 4 -> 5 (not an ASI level): prepared delta 7 -> 9 = 2 spells allowed, 0 cantrips.
+        PC bard = pc("Bard", 4, 14, 30, 30);
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(1, "Hold Person"), spell(2, "Invisibility")));
+
+        assertThat(bard.getSpells()).contains("Hold Person").contains("Invisibility");
+    }
+
+    @Test
+    void applyLevelUp_appendsCantrip_atCantripBreakpoint() {
+        // Bard 9 -> 10 (not an ASI level): cantrips 3 -> 4 = 1 cantrip allowed.
+        PC bard = pc("Bard", 9, 14, 60, 60);
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(0, "Light")));
+
+        assertThat(bard.getSpells()).contains("Light");
+    }
+
+    @Test
+    void applyLevelUp_rejectsTooManySpells() {
+        PC bard = pc("Bard", 4, 14, 30, 30); // 2 spells allowed
+        assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null,
+                List.of(spell(1, "A"), spell(1, "B"), spell(1, "C"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_rejectsCantripWhenNoneAllowed() {
+        PC bard = pc("Bard", 4, 14, 30, 30); // cantrip delta 0 at level 5
+        assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null, List.of(spell(0, "Light"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_rejectsDuplicateSpell() {
+        PC bard = pc("Bard", 4, 14, 30, 30);
+        bard.setSpells("[{\"lvl\":1,\"name\":\"Hold Person\"}]");
+        assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null, List.of(spell(1, "Hold Person"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_rejectsSpellsForNonCaster() {
+        PC fighter = pc("Fighter", 1, 14, 12, 12); // -> 2, no spell allowance
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, null, List.of(spell(1, "Shield"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 }

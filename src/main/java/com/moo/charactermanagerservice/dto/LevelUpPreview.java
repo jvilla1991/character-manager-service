@@ -30,5 +30,7 @@ public record LevelUpPreview(
         List<String> featOptions,
         List<FeatureGain> featuresGained,
         int currentCantripsKnown,
-        int newCantripsKnown
+        int newCantripsKnown,
+        int currentSpellsKnown,
+        int newSpellsKnown
 ) {}

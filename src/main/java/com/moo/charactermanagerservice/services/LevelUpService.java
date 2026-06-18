@@ -81,7 +81,9 @@ public class LevelUpService {
                 asiDue ? FeatCatalog.generalFeats() : List.of(),
                 ClassFeatures.featuresAt(pc.getClazz(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
-                ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
+                ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
         );
     }
 
@@ -100,11 +102,17 @@ public class LevelUpService {
         return applyLevelUp(pc, chosenSubclass, abilityIncreases, null);
     }
 
+    /** Convenience overload for subclass + ASI + feat (no new spells). */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, null);
+    }
+
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
-     * choices (subclass, and at an ASI level exactly one of an Ability Score Improvement or a
-     * feat), then bump level, add HP, recompute the proficiency bonus, and rebuild the spell-slot
-     * map (for casters). The caller persists.
+     * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
+     * any newly-learned spells), then bump level, add HP, recompute the proficiency bonus, and
+     * rebuild the spell-slot map (for casters). The caller persists.
      *
      * <p>HP order matters: ability scores are applied <em>before</em> HP, so the new level's gain
      * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
@@ -113,9 +121,10 @@ public class LevelUpService {
      * @param chosenSubclass   the player's subclass selection, or {@code null} when none applies
      * @param abilityIncreases the ASI allocation ({@code ABILITY -> points}), or {@code null}
      * @param chosenFeat       the chosen General feat (the ASI alternative), or {@code null}
+     * @param newSpells        cantrips/spells learned this level (count-validated), or {@code null}
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
-                           String chosenFeat) {
+                           String chosenFeat, List<Map<String, Object>> newSpells) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
@@ -126,6 +135,7 @@ public class LevelUpService {
         applySubclassChoice(pc, newLevel, chosenSubclass);
         applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
+        applySpellChoices(pc, currentLevel, newLevel, newSpells);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hitDie = ClassProgression.hitDie(pc.getClazz());
@@ -283,21 +293,21 @@ public class LevelUpService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "'" + name + "' is not a selectable feat");
         }
-        List<Map<String, Object>> features = parseFeatures(pc.getFeatures());
+        List<Map<String, Object>> features = parseObjectArray(pc.getFeatures());
         features.add(featureEntry(name, "Feat (Level " + newLevel + ")", ""));
-        pc.setFeatures(writeFeatures(features));
+        pc.setFeatures(writeObjectArray(features));
     }
 
     /** Append the class features (if any) gained at the new level to the PC's features list. */
     private void grantClassFeatures(PC pc, int newLevel) {
         List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), newLevel);
         if (gained.isEmpty()) return;
-        List<Map<String, Object>> features = parseFeatures(pc.getFeatures());
+        List<Map<String, Object>> features = parseObjectArray(pc.getFeatures());
         String source = pc.getClazz() + " " + newLevel;
         for (FeatureGain g : gained) {
             features.add(featureEntry(g.name(), source, g.desc()));
         }
-        pc.setFeatures(writeFeatures(features));
+        pc.setFeatures(writeObjectArray(features));
     }
 
     private Map<String, Object> featureEntry(String name, String source, String desc) {
@@ -308,8 +318,72 @@ public class LevelUpService {
         return entry;
     }
 
-    /** Parse the features TEXT column into a mutable list; defensive about null/blank/malformed. */
-    private List<Map<String, Object>> parseFeatures(String json) {
+    // ── Spell selection (learning new cantrips/spells) ───────────────────────────
+
+    /**
+     * Append the player's newly-learned cantrips/spells to the PC's {@code spells} list.
+     *
+     * <p>Server-authoritative on <em>count</em> only: the number of new cantrips (spell level 0)
+     * may not exceed the cantrips-known delta, and the number of new leveled spells may not exceed
+     * the prepared/known-spells delta, for this level. Duplicates (by name, case-insensitive) are
+     * rejected. Individual spell <em>names</em> are NOT validated — the spell list lives in the
+     * frontend (the backend must not depend on the external D&D API), so the client-supplied spell
+     * objects are accepted as-is. Same trust posture as feats and subclasses.
+     */
+    private void applySpellChoices(PC pc, int currentLevel, int newLevel,
+                                   List<Map<String, Object>> chosen) {
+        if (chosen == null || chosen.isEmpty()) return;
+
+        int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
+                - ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel);
+        int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
+                - ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel);
+
+        int newCantrips = 0;
+        int newLeveled = 0;
+        for (Map<String, Object> spell : chosen) {
+            if (spellLevelOf(spell) == 0) newCantrips++;
+            else newLeveled++;
+        }
+        if (newCantrips > Math.max(0, cantripDelta)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "You can learn at most " + Math.max(0, cantripDelta) + " new cantrip(s) at level " + newLevel);
+        }
+        if (newLeveled > Math.max(0, spellDelta)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "You can learn at most " + Math.max(0, spellDelta) + " new spell(s) at level " + newLevel);
+        }
+
+        List<Map<String, Object>> spells = parseObjectArray(pc.getSpells());
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (Map<String, Object> existing : spells) {
+            known.add(spellName(existing).toLowerCase());
+        }
+        for (Map<String, Object> spell : chosen) {
+            String name = spellName(spell);
+            if (name.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
+            }
+            if (!known.add(name.toLowerCase())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + name + "' is already known");
+            }
+            spells.add(spell);
+        }
+        pc.setSpells(writeObjectArray(spells));
+    }
+
+    private int spellLevelOf(Map<String, Object> spell) {
+        Object lvl = spell.get("lvl");
+        return lvl instanceof Number n ? n.intValue() : 0;
+    }
+
+    private String spellName(Map<String, Object> spell) {
+        Object name = spell.get("name");
+        return name == null ? "" : name.toString();
+    }
+
+    /** Parse a JSON-array-of-objects TEXT column into a mutable list; defensive about null/blank/malformed. */
+    private List<Map<String, Object>> parseObjectArray(String json) {
         if (json == null || json.isBlank()) return new ArrayList<>();
         try {
             List<Map<String, Object>> parsed = objectMapper.readValue(json, new TypeReference<>() {});
@@ -319,7 +393,7 @@ public class LevelUpService {
         }
     }
 
-    private String writeFeatures(List<Map<String, Object>> features) {
+    private String writeObjectArray(List<Map<String, Object>> features) {
         try {
             return objectMapper.writeValueAsString(features);
         } catch (JsonProcessingException e) {
