@@ -140,6 +140,22 @@ public final class ClassProgression {
             { 5, 4 }, // L20
     };
 
+    /** Cantrips known at level 1 per caster class (2024 PHB); absent classes know none. */
+    private static final Map<String, Integer> BASE_CANTRIPS = Map.of(
+            "bard", 2, "cleric", 3, "druid", 2, "sorcerer", 4, "warlock", 2, "wizard", 3
+    );
+
+    /**
+     * Cantrips known at the given level: the class base plus the standard increases at levels
+     * 4 and 10. Returns 0 for non-casters / classes that don't learn cantrips.
+     */
+    public static int cantripsKnownFor(String clazz, int level) {
+        if (clazz == null || level < 1) return 0;
+        Integer base = BASE_CANTRIPS.get(clazz.trim().toLowerCase());
+        if (base == null) return 0;
+        return base + (level >= 4 ? 1 : 0) + (level >= 10 ? 1 : 0);
+    }
+
     /** True when the class is one the app treats as a spellcaster (full or pact). */
     public static boolean isCaster(String clazz) {
         if (clazz == null) return false;
