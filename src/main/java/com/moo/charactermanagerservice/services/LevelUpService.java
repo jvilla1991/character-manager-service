@@ -79,7 +79,9 @@ public class LevelUpService {
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
                 asiDue ? FeatCatalog.generalFeats() : List.of(),
-                ClassFeatures.featuresAt(pc.getClazz(), newLevel)
+                ClassFeatures.featuresAt(pc.getClazz(), newLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
         );
     }
 
