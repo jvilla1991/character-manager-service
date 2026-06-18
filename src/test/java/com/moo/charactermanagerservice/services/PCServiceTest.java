@@ -178,7 +178,7 @@ class PCServiceTest {
 
     @Test
     void previewLevelUp_returnsPreview_whenOwner() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of());
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(levelUpService.preview(pc)).thenReturn(preview);
 

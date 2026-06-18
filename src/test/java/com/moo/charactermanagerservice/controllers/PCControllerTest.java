@@ -173,7 +173,7 @@ class PCControllerTest {
 
     @Test
     void previewLevelUp_returns200_withPreview() {
-        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of());
         when(pcService.previewLevelUp(1L, ownerId)).thenReturn(preview);
 
         ResponseEntity<LevelUpPreview> response = pcController.previewLevelUp(1L, auth);
