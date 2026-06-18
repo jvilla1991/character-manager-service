@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.dto;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -10,7 +11,17 @@ import java.util.Map;
  * subclass-selection level). Phase 4: {@code abilityIncreases} — the Ability Score Improvement
  * allocation as {@code ABILITY -> points}, e.g. {@code {"CON":2}} or {@code {"STR":1,"DEX":1}}.
  * Feats: {@code feat} — the chosen General feat name, the alternative to an ASI at an ASI level
- * (exactly one of {@code abilityIncreases} / {@code feat} is supplied there). Later phases extend
- * this (spell selections) rather than widening the URL.
+ * (exactly one of {@code abilityIncreases} / {@code feat} is supplied there).
+ *
+ * <p>Spells: {@code newSpells} — cantrips/spells the caster learns this level, each a spell object
+ * ({@code lvl}, {@code name}, …) built by the SPA from its spell list. The server validates only
+ * the <em>count</em> against the level-up delta (and rejects duplicates); it does not validate
+ * individual spell names, because the spell list lives in the frontend (the backend must not
+ * depend on the external D&D API). Same trust posture as feats/subclasses.
  */
-public record LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases, String feat) {}
+public record LevelUpRequest(
+        String subclass,
+        Map<String, Integer> abilityIncreases,
+        String feat,
+        List<Map<String, Object>> newSpells
+) {}

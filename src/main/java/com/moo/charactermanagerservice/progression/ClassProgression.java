@@ -156,6 +156,27 @@ public final class ClassProgression {
         return base + (level >= 4 ? 1 : 0) + (level >= 10 ? 1 : 0);
     }
 
+    /**
+     * Prepared/known spells by level (2024 PHB). Full casters share the standard progression;
+     * warlock uses the smaller pact table. Returns 0 for non-casters. This is the total a caster
+     * may have prepared/known at that level; the level-up delta is how many new ones they may add.
+     */
+    private static final int[] FULL_CASTER_PREPARED = {
+            4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22
+    };
+    private static final int[] PACT_PREPARED = {
+            2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15
+    };
+
+    public static int preparedSpellsFor(String clazz, int level) {
+        if (clazz == null || level < 1) return 0;
+        String key = clazz.trim().toLowerCase();
+        int idx = Math.min(level, MAX_LEVEL) - 1;
+        if (FULL_CASTERS.contains(key)) return FULL_CASTER_PREPARED[idx];
+        if (PACT_CASTER.equals(key)) return PACT_PREPARED[idx];
+        return 0;
+    }
+
     /** True when the class is one the app treats as a spellcaster (full or pact). */
     public static boolean isCaster(String clazz) {
         if (clazz == null) return false;

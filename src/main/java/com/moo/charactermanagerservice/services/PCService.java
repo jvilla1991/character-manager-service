@@ -76,7 +76,8 @@ public class PCService {
         String subclass = request == null ? null : request.subclass();
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
         String feat = request == null ? null : request.feat();
-        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat);
+        List<Map<String, Object>> newSpells = request == null ? null : request.newSpells();
+        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells);
         return pcRepository.save(pc);
     }
 
