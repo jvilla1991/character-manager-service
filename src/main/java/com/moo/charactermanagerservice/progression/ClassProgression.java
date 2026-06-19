@@ -212,11 +212,10 @@ public final class ClassProgression {
     // to match the app's existing creation flow; every other class is level 3 (2024 PHB).
     // Unmapped classes default to 3.
     //
-    // The CATALOG (valid subclass names per class) is intentionally EMPTY for now: this
-    // phase ships the selection *mechanism* (timing, preview signal, server validation,
-    // request plumbing) without authoring subclass content. The flow stays dormant — the
-    // preview reports no options and nothing is required — and activates automatically,
-    // with no code change, once a class is given catalog entries here.
+    // The CATALOG holds the valid subclass NAMES per class (server-authoritative). Names only;
+    // descriptions are presentation and live in the frontend. Sorcerer/Warlock pick at level 1
+    // during character creation, so their entries here are never reached by the level-up flow
+    // (kept for a complete, correct catalog); every other class activates the picker at level 3.
 
     private static final int DEFAULT_SUBCLASS_LEVEL = 3;
 
@@ -235,8 +234,34 @@ public final class ClassProgression {
             Map.entry("rogue", 3)
     );
 
-    /** Valid subclass names per class. Empty until content is authored (see note above). */
-    private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.of();
+    /** Valid subclass names per class (2024 PHB). */
+    private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.ofEntries(
+            Map.entry("barbarian", List.of(
+                    "Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot")),
+            Map.entry("bard", List.of(
+                    "College of Dance", "College of Glamour", "College of Lore", "College of Valor")),
+            Map.entry("cleric", List.of(
+                    "Life Domain", "Light Domain", "Trickery Domain", "War Domain")),
+            Map.entry("druid", List.of(
+                    "Circle of the Land", "Circle of the Moon", "Circle of the Sea", "Circle of the Stars")),
+            Map.entry("fighter", List.of(
+                    "Battle Master", "Champion", "Eldritch Knight", "Psi Warrior")),
+            Map.entry("monk", List.of(
+                    "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements", "Warrior of the Open Hand")),
+            Map.entry("paladin", List.of(
+                    "Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance")),
+            Map.entry("ranger", List.of(
+                    "Beast Master", "Fey Wanderer", "Gloom Stalker", "Hunter")),
+            Map.entry("rogue", List.of(
+                    "Arcane Trickster", "Assassin", "Soulknife", "Thief")),
+            Map.entry("wizard", List.of(
+                    "Abjurer", "Diviner", "Evoker", "Illusionist")),
+            // Sorcerer/Warlock choose at level 1 (creation); listed for catalog completeness.
+            Map.entry("sorcerer", List.of(
+                    "Aberrant Sorcery", "Clockwork Sorcery", "Draconic Sorcery", "Wild Magic Sorcery")),
+            Map.entry("warlock", List.of(
+                    "Archfey Patron", "Celestial Patron", "Fiend Patron", "Great Old One Patron"))
+    );
 
     /** The character level at which the given class selects its subclass. */
     public static int subclassLevelFor(String clazz) {
