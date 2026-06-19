@@ -214,6 +214,7 @@ class LevelUpServiceTest {
     @Test
     void applyLevelUp_caster_survivesMalformedSlotJson() {
         PC wizard = pc("Wizard", 2, 14, 14, 14);
+        wizard.setSubclass("Evoker"); // already has a subclass, so none is due at level 3
         wizard.setSpellSlots("not-valid-json");
 
         service.applyLevelUp(wizard);
@@ -225,11 +226,11 @@ class LevelUpServiceTest {
     // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
 
     @Test
-    void preview_subclassDue_atGrantLevelWithNoSubclass() {
+    void preview_subclassDue_atGrantLevelWithOptions() {
         // Cleric grant level is 3; leveling 2 -> 3 with no subclass yet.
         LevelUpPreview p = service.preview(pc("Cleric", 2, 14, 14, 14));
         assertThat(p.subclassDue()).isTrue();
-        assertThat(p.subclassOptions()).isEmpty(); // no catalog content yet
+        assertThat(p.subclassOptions()).contains("Life Domain", "War Domain");
     }
 
     @Test
@@ -247,7 +248,6 @@ class LevelUpServiceTest {
 
     @Test
     void applyLevelUp_setsChosenSubclass_whenDue() {
-        // Catalog empty -> server can't validate membership, so any non-blank choice is accepted.
         PC cleric = pc("Cleric", 2, 14, 14, 14);
 
         service.applyLevelUp(cleric, "Life Domain");
@@ -265,14 +265,20 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void applyLevelUp_dueButNoChoiceAndEmptyCatalog_proceedsWithoutSubclass() {
-        // With no catalog content the flow is dormant: a level-up still succeeds with no subclass.
+    void applyLevelUp_requiresSubclassChoice_whenDue() {
+        // Catalog now has options, so a subclass must be selected at the grant level.
         PC cleric = pc("Cleric", 2, 14, 14, 14);
+        assertThatThrownBy(() -> service.applyLevelUp(cleric, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
 
-        service.applyLevelUp(cleric, null);
-
-        assertThat(cleric.getLevel()).isEqualTo((short) 3);
-        assertThat(cleric.getSubclass()).isNull();
+    @Test
+    void applyLevelUp_rejectsUnknownSubclass() {
+        PC cleric = pc("Cleric", 2, 14, 14, 14);
+        assertThatThrownBy(() -> service.applyLevelUp(cleric, "Bogus Domain"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
     @Test
