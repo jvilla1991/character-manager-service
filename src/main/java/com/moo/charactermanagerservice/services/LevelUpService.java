@@ -4,11 +4,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FeatureGain;
+import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -17,7 +19,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.TreeMap;
+import java.util.random.RandomGenerator;
 
 /**
  * Server-authoritative level-up rules engine (single-class, D&D 5e 2024).
@@ -27,8 +31,13 @@ import java.util.TreeMap;
  * here. Keeping the rules out of the controller and out of PCService means the math is unit
  * tested in isolation (no repo, no Spring context, no security).
  *
- * <p><strong>HP policy (Phase 1):</strong> fixed average — {@code averageHitDieValue + CON mod},
- * floored at {@value #MIN_HP_PER_LEVEL} per level (5e minimum). Rolled HP is a future seam.
+ * <p><strong>HP policy:</strong> per request, either the fixed average or a roll
+ * ({@link HpMode}) — {@code (averageHitDieValue | d(hitDie)) + CON mod}, floored at
+ * {@value #MIN_HP_PER_LEVEL} per level (5e minimum). The mode defaults to {@link HpMode#AVERAGE}
+ * so behaviour is unchanged when none is sent. In {@link HpMode#ROLL} the die is rolled
+ * <em>here, on the server</em> ({@link #rng}) at commit time; the client never supplies a roll
+ * result, so it cannot inflate its HP. Because a roll isn't known until commit, the
+ * {@link #preview(PC) preview} always reports the average (the floor/best-case estimate).
  *
  * <p><strong>Spell slots (Phase 2):</strong> for caster classes, the {@code spellSlots} JSON-as-TEXT
  * column is rebuilt from {@link ClassProgression#spellSlotsFor} — {@code max} is set from the table
@@ -48,9 +57,18 @@ public class LevelUpService {
     private static final int MIN_HP_PER_LEVEL = 1;
 
     private final ObjectMapper objectMapper;
+    /** Source of randomness for rolled HP. Seedable via the test constructor for determinism. */
+    private final RandomGenerator rng;
 
+    @Autowired
     public LevelUpService(ObjectMapper objectMapper) {
+        this(objectMapper, new Random());
+    }
+
+    /** Test seam: inject a seeded/fixed RNG so rolled-HP outcomes are deterministic. */
+    LevelUpService(ObjectMapper objectMapper, RandomGenerator rng) {
         this.objectMapper = objectMapper;
+        this.rng = rng;
     }
 
     /** Compute — without persisting — what advancing one level would grant. */
@@ -108,6 +126,12 @@ public class LevelUpService {
         return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, null);
     }
 
+    /** Convenience overload defaulting to {@link HpMode#AVERAGE} (existing behaviour). */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat, List<Map<String, Object>> newSpells) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, HpMode.AVERAGE);
+    }
+
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
@@ -122,9 +146,12 @@ public class LevelUpService {
      * @param abilityIncreases the ASI allocation ({@code ABILITY -> points}), or {@code null}
      * @param chosenFeat       the chosen General feat (the ASI alternative), or {@code null}
      * @param newSpells        cantrips/spells learned this level (count-validated), or {@code null}
+     * @param hpMode           average vs. rolled HP for this level; {@code null} means
+     *                         {@link HpMode#AVERAGE}. In ROLL mode the server rolls the die — the
+     *                         client supplies only the mode, never a roll result.
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
-                           String chosenFeat, List<Map<String, Object>> newSpells) {
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
@@ -139,7 +166,7 @@ public class LevelUpService {
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hitDie = ClassProgression.hitDie(pc.getClazz());
-        int hpGained = hpGain(hitDie, newConMod);
+        int hpGained = hpGain(hitDie, newConMod, hpMode);
         // A rise in CON's modifier grants HP to every level you already have (this level's gain
         // above already reflects the new modifier, so only the prior levels are added here).
         int retroactiveHp = (newLevel - 1) * (newConMod - oldConMod);
@@ -155,8 +182,26 @@ public class LevelUpService {
         return pc;
     }
 
+    /** Average-mode HP gain — used by the preview (a roll isn't known until commit). */
     private int hpGain(int hitDie, int conMod) {
-        return Math.max(MIN_HP_PER_LEVEL, ClassProgression.averageHitDieValue(hitDie) + conMod);
+        return hpGain(hitDie, conMod, HpMode.AVERAGE);
+    }
+
+    /**
+     * Per-level HP gain for the chosen mode: the hit-die value (fixed average, or a server-side
+     * roll in {@link HpMode#ROLL}) plus the CON modifier, floored at {@value #MIN_HP_PER_LEVEL}.
+     * A {@code null} mode is treated as {@link HpMode#AVERAGE}.
+     */
+    private int hpGain(int hitDie, int conMod, HpMode mode) {
+        int dieValue = (mode == HpMode.ROLL)
+                ? rollHitDie(hitDie)
+                : ClassProgression.averageHitDieValue(hitDie);
+        return Math.max(MIN_HP_PER_LEVEL, dieValue + conMod);
+    }
+
+    /** Roll a single hit die on the server: a uniform result in {@code [1, hitDie]}. */
+    private int rollHitDie(int hitDie) {
+        return rng.nextInt(hitDie) + 1;
     }
 
     private int currentLevel(PC pc) {
