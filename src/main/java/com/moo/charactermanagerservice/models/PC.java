@@ -56,7 +56,6 @@ public class PC implements Serializable {
     private String background;
     private String subclass;
     private String alignment;
-    private String party;
     private String portraitTint;
     private String portraitInitials;
 
@@ -161,7 +160,6 @@ public class PC implements Serializable {
     public void setBackground(String background) { this.background = background; }
     public void setSubclass(String subclass) { this.subclass = subclass; }
     public void setAlignment(String alignment) { this.alignment = alignment; }
-    public void setParty(String party) { this.party = party; }
     public void setPortraitTint(String portraitTint) { this.portraitTint = portraitTint; }
     public void setPortraitInitials(String portraitInitials) { this.portraitInitials = portraitInitials; }
 
