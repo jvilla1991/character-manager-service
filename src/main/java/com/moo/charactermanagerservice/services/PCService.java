@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
@@ -77,7 +78,8 @@ public class PCService {
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
         String feat = request == null ? null : request.feat();
         List<Map<String, Object>> newSpells = request == null ? null : request.newSpells();
-        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells);
+        HpMode hpMode = request == null || request.hpMode() == null ? HpMode.AVERAGE : request.hpMode();
+        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode);
         return pcRepository.save(pc);
     }
 

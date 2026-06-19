@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
@@ -147,7 +148,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
         verify(pcRepository).save(pc);
     }
 
@@ -159,7 +160,28 @@ class PCServiceTest {
         List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells);
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPC_forwardsRollHpMode() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, HpMode.ROLL));
+
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.ROLL);
+    }
+
+    @Test
+    void levelUpPC_nullHpMode_defaultsToAverage() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        // hpMode explicitly null in the request -> service coalesces to AVERAGE.
+        pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, null));
+
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
     }
 
     @Test
