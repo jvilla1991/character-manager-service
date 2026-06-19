@@ -16,7 +16,6 @@ public record CampaignMemberView(
         Short level,
         String species,
         String subclass,
-        String party,
         Long campaignId,
         String portraitTint,
         String portraitInitials,
@@ -40,7 +39,7 @@ public record CampaignMemberView(
     public static CampaignMemberView from(PC pc) {
         return new CampaignMemberView(
                 pc.getId(), pc.getName(), pc.getPlayerName(), pc.getClazz(), pc.getLevel(),
-                pc.getSpecies(), pc.getSubclass(), pc.getParty(), pc.getCampaignId(),
+                pc.getSpecies(), pc.getSubclass(), pc.getCampaignId(),
                 pc.getPortraitTint(), pc.getPortraitInitials(),
                 pc.getAbilityStr(), pc.getAbilityDex(), pc.getAbilityCon(),
                 pc.getAbilityInt(), pc.getAbilityWis(), pc.getAbilityCha(),
