@@ -442,9 +442,21 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void preview_featuresGained_emptyForUnseededClassOrLevel() {
-        assertThat(service.preview(pc("Wizard", 1, 14, 8, 8)).featuresGained()).isEmpty();   // Wizard not seeded
-        assertThat(service.preview(pc("Barbarian", 5, 14, 50, 50)).featuresGained()).isEmpty(); // -> 6 not seeded
+    void preview_featuresGained_emptyAtLevelsWithNoFeatures() {
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).featuresGained()).isEmpty();   // -> 4, no wizard feature
+        assertThat(service.preview(pc("Barbarian", 5, 14, 50, 50)).featuresGained()).isEmpty(); // -> 6, no barbarian feature
+    }
+
+    @Test
+    void preview_featuresGained_acrossClasses() {
+        assertThat(service.preview(pc("Rogue", 1, 12, 9, 9)).featuresGained()
+                .stream().map(FeatureGain::name).toList()).contains("Cunning Action");   // -> 2
+        assertThat(service.preview(pc("Wizard", 1, 12, 8, 8)).featuresGained()
+                .stream().map(FeatureGain::name).toList()).contains("Scholar");          // -> 2
+        assertThat(service.preview(pc("Sorcerer", 1, 12, 8, 8)).featuresGained()
+                .stream().map(FeatureGain::name).toList()).contains("Metamagic");        // -> 2
+        assertThat(service.preview(pc("Monk", 1, 12, 9, 9)).featuresGained()
+                .stream().map(FeatureGain::name).toList()).contains("Unarmored Movement"); // -> 2
     }
 
     @Test
@@ -468,13 +480,21 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void applyLevelUp_unseededClass_leavesFeaturesUntouched() {
-        PC wizard = pc("Wizard", 1, 14, 8, 8); // -> 2, not seeded
-        wizard.setFeatures("[]");
+    void applyLevelUp_levelWithNoFeatures_leavesFeaturesUntouched() {
+        // Sorcerer 2 -> 3 grants no generic class feature (and no choice is due).
+        PC sorcerer = pc("Sorcerer", 2, 14, 12, 12);
+        sorcerer.setFeatures("[]");
 
-        service.applyLevelUp(wizard);
+        service.applyLevelUp(sorcerer);
 
-        assertThat(wizard.getFeatures()).isEqualTo("[]");
+        assertThat(sorcerer.getFeatures()).isEqualTo("[]");
+    }
+
+    @Test
+    void applyLevelUp_acceptsNewlyAddedFeat() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28); // -> 4, an ASI level
+        service.applyLevelUp(fighter, null, null, "Crossbow Expert");
+        assertThat(fighter.getFeatures()).contains("Crossbow Expert");
     }
 
     // --- Cantrips-known progression (preview only) ---
