@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FeatureGain;
+import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.random.RandomGenerator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -570,5 +573,93 @@ class LevelUpServiceTest {
         assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, null, List.of(spell(1, "Shield"))))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    // --- Rolled HP (HpMode.ROLL) ---
+
+    /** A service whose hit-die roll always returns {@code roll} (so HP outcomes are deterministic). */
+    private static LevelUpService serviceRolling(int roll) {
+        RandomGenerator fixed = new Random() {
+            @Override
+            public int nextInt(int bound) {
+                return roll - 1; // rollHitDie() adds 1, yielding exactly `roll`
+            }
+        };
+        return new LevelUpService(new ObjectMapper(), fixed);
+    }
+
+    @Test
+    void applyLevelUp_roll_usesServerRoll_notAverage() {
+        // Fighter 4 -> 5, d10, CON 16 (+3); forced max roll 10 -> 13 HP (avg path would be 9).
+        PC fighter = pc("Fighter", 4, 16, 30, 22);
+        serviceRolling(10).applyLevelUp(fighter, null, null, null, null, HpMode.ROLL);
+
+        assertThat(fighter.getLevel()).isEqualTo((short) 5);
+        assertThat(fighter.getHpMax()).isEqualTo((short) 43);     // 30 + 13
+        assertThat(fighter.getHpCurrent()).isEqualTo((short) 35); // 22 + 13
+    }
+
+    @Test
+    void applyLevelUp_roll_minRoll_addsConMod() {
+        // Fighter 4 -> 5, d10, CON 16 (+3); forced min roll 1 -> 1 + 3 = 4 HP.
+        PC fighter = pc("Fighter", 4, 16, 30, 30);
+        serviceRolling(1).applyLevelUp(fighter, null, null, null, null, HpMode.ROLL);
+        assertThat(fighter.getHpMax()).isEqualTo((short) 34);
+    }
+
+    @Test
+    void applyLevelUp_roll_flooredAtOne_withHeavyConPenalty() {
+        // Sorcerer d6, CON 3 (-4); even a min roll of 1 -> 1 - 4 = -3, floored to 1.
+        PC sorcerer = pc("Sorcerer", 1, 3, 4, 4);
+        serviceRolling(1).applyLevelUp(sorcerer, null, null, null, null, HpMode.ROLL);
+        assertThat(sorcerer.getHpMax()).isEqualTo((short) 5); // 4 + 1
+    }
+
+    @Test
+    void applyLevelUp_roll_alwaysWithinHitDieRange_overManyRolls() {
+        // Real RNG: every rolled gain must land in [max(1, 1+conMod), max(1, hitDie+conMod)].
+        LevelUpService rolling = new LevelUpService(new ObjectMapper(), new Random(42));
+        int hitDie = 10, conMod = 3; // Fighter, CON 16
+        int min = Math.max(1, 1 + conMod);
+        int max = Math.max(1, hitDie + conMod);
+        for (int i = 0; i < 500; i++) {
+            PC fighter = pc("Fighter", 4, 16, 30, 30);
+            rolling.applyLevelUp(fighter, null, null, null, null, HpMode.ROLL);
+            int gained = fighter.getHpMax() - 30;
+            assertThat(gained).isBetween(min, max);
+        }
+    }
+
+    @Test
+    void applyLevelUp_roll_conIncrease_stillGrantsRetroactiveHp() {
+        // Fighter 3 -> 4 with ASI CON 15 (+2) -> 17 (+3); forced max roll 10.
+        // This level: rolled 10 + new CON mod 3 = 13; retroactive (4-1) * (3-2) = 3; total +16.
+        PC fighter = pc("Fighter", 3, 15, 28, 28);
+        serviceRolling(10).applyLevelUp(fighter, null, Map.of("CON", 2), null, null, HpMode.ROLL);
+
+        assertThat(fighter.getAbilityCon()).isEqualTo((short) 17);
+        assertThat(fighter.getHpMax()).isEqualTo((short) 44); // 28 + 13 + 3
+        assertThat(fighter.getHpCurrent()).isEqualTo((short) 44);
+    }
+
+    @Test
+    void applyLevelUp_averageMode_matchesDefault_unchanged() {
+        // Explicit AVERAGE must equal the legacy default path (d10 avg 6 + CON 3 = 9), and the
+        // (forced-max-roll) RNG must be ignored entirely in AVERAGE mode.
+        PC viaDefault = pc("Fighter", 4, 16, 30, 22);
+        service.applyLevelUp(viaDefault); // legacy default
+
+        PC viaExplicit = pc("Fighter", 4, 16, 30, 22);
+        serviceRolling(10).applyLevelUp(viaExplicit, null, null, null, null, HpMode.AVERAGE);
+
+        assertThat(viaExplicit.getHpMax()).isEqualTo(viaDefault.getHpMax());   // 39
+        assertThat(viaExplicit.getHpCurrent()).isEqualTo(viaDefault.getHpCurrent());
+    }
+
+    @Test
+    void preview_alwaysAverage_evenWhenServerWouldRollHigh() {
+        // Preview takes no mode: it always reports the average, regardless of the RNG.
+        LevelUpPreview p = serviceRolling(10).preview(pc("Fighter", 4, 16, 30, 30));
+        assertThat(p.hpGained()).isEqualTo(9); // d10 avg 6 + CON 3, not the forced roll of 13
     }
 }

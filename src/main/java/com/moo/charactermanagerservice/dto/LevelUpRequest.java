@@ -18,10 +18,22 @@ import java.util.Map;
  * the <em>count</em> against the level-up delta (and rejects duplicates); it does not validate
  * individual spell names, because the spell list lives in the frontend (the backend must not
  * depend on the external D&D API). Same trust posture as feats/subclasses.
+ *
+ * <p>HP: {@code hpMode} — whether this level's hit points use the fixed average or a roll. It is
+ * optional; {@code null} (or an omitted field) means {@link HpMode#AVERAGE}, so existing clients are
+ * unaffected. In {@link HpMode#ROLL} the server rolls the die — the client never sends a roll
+ * result, only the choice of mode.
  */
 public record LevelUpRequest(
         String subclass,
         Map<String, Integer> abilityIncreases,
         String feat,
-        List<Map<String, Object>> newSpells
-) {}
+        List<Map<String, Object>> newSpells,
+        HpMode hpMode
+) {
+    /** Back-compat constructor for callers that don't choose an HP mode: defaults to AVERAGE. */
+    public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
+                          String feat, List<Map<String, Object>> newSpells) {
+        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE);
+    }
+}
