@@ -37,16 +37,19 @@ public class SessionService {
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
     private final PCRepository pcRepository;
+    private final PCService pcService;
     private final CampaignService campaignService;
 
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
                           SessionParticipantRepository participantRepository,
                           PCRepository pcRepository,
+                          PCService pcService,
                           CampaignService campaignService) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
         this.pcRepository = pcRepository;
+        this.pcService = pcService;
         this.campaignService = campaignService;
     }
 
@@ -90,6 +93,70 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return buildState(session, participants, userId);
+    }
+
+    /**
+     * Seat one of the caller's own PCs in the session. The PC must already be a
+     * member of the session's campaign (players use the campaign join-by-code
+     * flow first). Idempotent: re-joining the same PC returns the current state
+     * without creating a duplicate row. New combatants are appended to the end;
+     * initiative ordering is applied later when the DM enters initiative.
+     */
+    public SessionStateView joinSession(Long sessionId, Long pcId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        // Asserts the caller owns this PC (403) and that it exists (404).
+        PC pc = pcService.findPCByIdForUser(pcId, userId);
+        if (pc.getCampaignId() == null || !pc.getCampaignId().equals(session.getCampaignId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Character is not a member of this campaign");
+        }
+
+        if (participantRepository.findBySessionIdAndPcId(sessionId, pcId).isEmpty()) {
+            int nextIndex = participantRepository
+                    .findBySessionIdOrderByOrderIndexAsc(sessionId).size();
+
+            SessionParticipant participant = new SessionParticipant();
+            participant.setSessionId(sessionId);
+            participant.setPcId(pcId);
+            participant.setOwnerUserId(userId);
+            participant.setDisplayName(pc.getName());
+            participant.setOrderIndex((short) nextIndex); // append to end
+            participantRepository.save(participant);
+
+            session.bumpVersion();
+            sessionRepository.save(session);
+        }
+        return buildState(session, userId);
+    }
+
+    /**
+     * Remove a combatant. The DM may remove anyone; a player may remove only
+     * their own PC. The participant must belong to the given session.
+     */
+    public SessionStateView removeParticipant(Long sessionId, Long participantId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        SessionParticipant participant = participantRepository.findById(participantId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
+        if (!sessionId.equals(participant.getSessionId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Participant not found in this session");
+        }
+
+        boolean isDm = userId.equals(session.getDmUserId());
+        boolean isOwner = userId.equals(participant.getOwnerUserId());
+        if (!isDm && !isOwner) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        participantRepository.delete(participant);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, userId);
     }
 
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */
