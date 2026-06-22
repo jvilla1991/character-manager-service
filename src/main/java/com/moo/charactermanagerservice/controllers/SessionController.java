@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.services.SessionService;
@@ -40,6 +41,24 @@ public class SessionController {
                                                      Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.getState(id, user.getUuid()));
+    }
+
+    /** A player seats one of their own PCs (must be a member of the campaign). */
+    @PostMapping("/session/{id}/join")
+    public ResponseEntity<SessionStateView> join(@PathVariable Long id,
+                                                 @RequestBody JoinSessionRequest request,
+                                                 Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.joinSession(id, request.pcId(), user.getUuid()));
+    }
+
+    /** Remove a combatant — the DM may remove anyone; a player only their own. */
+    @DeleteMapping("/session/{id}/participants/{participantId}")
+    public ResponseEntity<SessionStateView> removeParticipant(@PathVariable Long id,
+                                                             @PathVariable Long participantId,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.removeParticipant(id, participantId, user.getUuid()));
     }
 
     /** DM ends the session. */
