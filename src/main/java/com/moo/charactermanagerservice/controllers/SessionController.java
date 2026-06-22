@@ -37,6 +37,18 @@ public class SessionController {
                 .body(sessionService.createSession(campaignId, user.getUuid()));
     }
 
+    /**
+     * The campaign's current live session (for discovery before joining) — 204 if
+     * none. Visible to the DM and any campaign member.
+     */
+    @GetMapping("/campaign/{campaignId}/session")
+    public ResponseEntity<SessionStateView> getActiveSession(@PathVariable Long campaignId,
+                                                            Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        SessionStateView state = sessionService.getActiveSessionForCampaign(campaignId, user.getUuid());
+        return state == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(state);
+    }
+
     /** Poll snapshot — visible to the DM and to any player who owns a participant. */
     @GetMapping("/session/{id}/state")
     public ResponseEntity<SessionStateView> getState(@PathVariable Long id,

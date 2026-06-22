@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
@@ -94,6 +95,25 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         return buildState(session, participants, userId);
+    }
+
+    /**
+     * The campaign's current live (non-ended) session, or null if none. Visible
+     * to the DM and to any campaign member (a PC owner in the campaign) — broader
+     * than {@link #getState}, so a player can discover and join a session before
+     * they have a participant row.
+     */
+    public SessionStateView getActiveSessionForCampaign(Long campaignId, UUID userId) {
+        Campaign campaign = campaignService.findById(campaignId);
+        boolean isDm = userId.equals(campaign.getDmUserId());
+        boolean isMember = pcRepository.findByCampaignId(campaignId).stream()
+                .anyMatch(pc -> userId.equals(pc.getUserId()));
+        if (!isDm && !isMember) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
+                .map(session -> buildState(session, userId))
+                .orElse(null);
     }
 
     /**
