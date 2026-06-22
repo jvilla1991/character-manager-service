@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,16 +38,19 @@ public class SessionService {
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
     private final PCRepository pcRepository;
+    private final PCService pcService;
     private final CampaignService campaignService;
 
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
                           SessionParticipantRepository participantRepository,
                           PCRepository pcRepository,
+                          PCService pcService,
                           CampaignService campaignService) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
         this.pcRepository = pcRepository;
+        this.pcService = pcService;
         this.campaignService = campaignService;
     }
 
@@ -92,6 +96,145 @@ public class SessionService {
         return buildState(session, participants, userId);
     }
 
+    /**
+     * Seat one of the caller's own PCs in the session. The PC must already be a
+     * member of the session's campaign (players use the campaign join-by-code
+     * flow first). Idempotent: re-joining the same PC returns the current state
+     * without creating a duplicate row. New combatants are appended to the end;
+     * initiative ordering is applied later when the DM enters initiative.
+     */
+    public SessionStateView joinSession(Long sessionId, Long pcId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        // Asserts the caller owns this PC (403) and that it exists (404).
+        PC pc = pcService.findPCByIdForUser(pcId, userId);
+        if (pc.getCampaignId() == null || !pc.getCampaignId().equals(session.getCampaignId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Character is not a member of this campaign");
+        }
+
+        if (participantRepository.findBySessionIdAndPcId(sessionId, pcId).isEmpty()) {
+            int nextIndex = participantRepository
+                    .findBySessionIdOrderByOrderIndexAsc(sessionId).size();
+
+            SessionParticipant participant = new SessionParticipant();
+            participant.setSessionId(sessionId);
+            participant.setPcId(pcId);
+            participant.setOwnerUserId(userId);
+            participant.setDisplayName(pc.getName());
+            participant.setOrderIndex((short) nextIndex); // append to end
+            participantRepository.save(participant);
+
+            session.bumpVersion();
+            sessionRepository.save(session);
+        }
+        return buildState(session, userId);
+    }
+
+    /**
+     * Remove a combatant. The DM may remove anyone; a player may remove only
+     * their own PC. The participant must belong to the given session.
+     */
+    public SessionStateView removeParticipant(Long sessionId, Long participantId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        SessionParticipant participant = participantRepository.findById(participantId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
+        if (!sessionId.equals(participant.getSessionId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Participant not found in this session");
+        }
+
+        boolean isDm = userId.equals(session.getDmUserId());
+        boolean isOwner = userId.equals(participant.getOwnerUserId());
+        if (!isDm && !isOwner) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        participantRepository.delete(participant);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, userId);
+    }
+
+    /**
+     * The DM enters (or re-enters) a combatant's initiative. Recomputes the
+     * whole turn order server-side: initiative descending, ties broken by the
+     * PC's Dexterity score (descending), then by id for stability. NPCs and
+     * not-yet-entered combatants sort last. DM only.
+     */
+    public SessionStateView setInitiative(Long sessionId, Long participantId, Short value, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        SessionParticipant target = participantRepository.findById(participantId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
+        if (!sessionId.equals(target.getSessionId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Participant not found in this session");
+        }
+
+        target.setInitiative(value);
+        target.setInitRolled(Boolean.TRUE);
+        participantRepository.save(target);
+
+        recomputeOrder(sessionId);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * Re-sort a session's combatants and persist their order_index. Order:
+     * initiative desc (unset last), then Dexterity desc (NPC/unknown last),
+     * then id asc for a stable result.
+     */
+    private void recomputeOrder(Long sessionId) {
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        if (participants.isEmpty()) return;
+
+        Map<Long, PC> pcsById = loadPcs(participants);
+
+        Comparator<SessionParticipant> byInitiative = Comparator.comparing(
+                SessionParticipant::getInitiative, Comparator.nullsLast(Comparator.reverseOrder()));
+        Comparator<SessionParticipant> byDex = Comparator.comparing(
+                p -> dexOf(p, pcsById), Comparator.nullsLast(Comparator.reverseOrder()));
+        Comparator<SessionParticipant> byId = Comparator.comparing(SessionParticipant::getId);
+
+        participants.sort(byInitiative.thenComparing(byDex).thenComparing(byId));
+
+        for (short i = 0; i < participants.size(); i++) {
+            participants.get(i).setOrderIndex(i);
+        }
+        participantRepository.saveAll(participants);
+    }
+
+    /** A PC participant's Dexterity score (the initiative tie-breaker); null for NPCs. */
+    private Short dexOf(SessionParticipant p, Map<Long, PC> pcsById) {
+        if (p.getPcId() == null) return null;
+        PC pc = pcsById.get(p.getPcId());
+        return pc == null ? null : pc.getAbilityDex();
+    }
+
+    /** Load the canonical PCs for a set of participants, keyed by id (NPCs excluded). */
+    private Map<Long, PC> loadPcs(List<SessionParticipant> participants) {
+        List<Long> pcIds = participants.stream()
+                .map(SessionParticipant::getPcId)
+                .filter(Objects::nonNull)
+                .toList();
+        return pcRepository.findAllById(pcIds).stream()
+                .collect(Collectors.toMap(PC::getId, Function.identity()));
+    }
+
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */
     public SessionStateView endSession(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
@@ -130,12 +273,7 @@ public class SessionService {
     private SessionStateView buildState(CombatSession session,
                                         List<SessionParticipant> participants,
                                         UUID requesterId) {
-        List<Long> pcIds = participants.stream()
-                .map(SessionParticipant::getPcId)
-                .filter(Objects::nonNull)
-                .toList();
-        Map<Long, PC> pcsById = pcRepository.findAllById(pcIds).stream()
-                .collect(Collectors.toMap(PC::getId, Function.identity()));
+        Map<Long, PC> pcsById = loadPcs(participants);
 
         boolean isDm = requesterId.equals(session.getDmUserId());
         boolean active = session.getStatus() == SessionStatus.ACTIVE;
