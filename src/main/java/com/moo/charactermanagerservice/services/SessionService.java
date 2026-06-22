@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
@@ -97,6 +98,25 @@ public class SessionService {
     }
 
     /**
+     * The campaign's current live (non-ended) session, or null if none. Visible
+     * to the DM and to any campaign member (a PC owner in the campaign) — broader
+     * than {@link #getState}, so a player can discover and join a session before
+     * they have a participant row.
+     */
+    public SessionStateView getActiveSessionForCampaign(Long campaignId, UUID userId) {
+        Campaign campaign = campaignService.findById(campaignId);
+        boolean isDm = userId.equals(campaign.getDmUserId());
+        boolean isMember = pcRepository.findByCampaignId(campaignId).stream()
+                .anyMatch(pc -> userId.equals(pc.getUserId()));
+        if (!isDm && !isMember) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        return sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
+                .map(session -> buildState(session, userId))
+                .orElse(null);
+    }
+
+    /**
      * Seat one of the caller's own PCs in the session. The PC must already be a
      * member of the session's campaign (players use the campaign join-by-code
      * flow first). Idempotent: re-joining the same PC returns the current state
@@ -140,13 +160,7 @@ public class SessionService {
      */
     public SessionStateView removeParticipant(Long sessionId, Long participantId, UUID userId) {
         CombatSession session = findSession(sessionId);
-        SessionParticipant participant = participantRepository.findById(participantId)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
-        if (!sessionId.equals(participant.getSessionId())) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "Participant not found in this session");
-        }
+        SessionParticipant participant = requireParticipant(sessionId, participantId);
 
         boolean isDm = userId.equals(session.getDmUserId());
         boolean isOwner = userId.equals(participant.getOwnerUserId());
@@ -173,13 +187,7 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
 
-        SessionParticipant target = participantRepository.findById(participantId)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
-        if (!sessionId.equals(target.getSessionId())) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "Participant not found in this session");
-        }
+        SessionParticipant target = requireParticipant(sessionId, participantId);
 
         target.setInitiative(value);
         target.setInitRolled(Boolean.TRUE);
@@ -233,6 +241,79 @@ public class SessionService {
                 .toList();
         return pcRepository.findAllById(pcIds).stream()
                 .collect(Collectors.toMap(PC::getId, Function.identity()));
+    }
+
+    /**
+     * Apply damage (positive amount) or healing (negative amount) to a combatant.
+     * DM only. For a PC this writes through to the canonical pc row so the change
+     * persists after the session ends — temporary HP absorbs damage first, and
+     * healing is capped at max HP. For an NPC the change lands on the participant
+     * row. Current HP never drops below zero.
+     */
+    public SessionStateView applyDamage(Long sessionId, Long participantId, Integer amount, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (amount == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "amount is required");
+        }
+
+        SessionParticipant participant = requireParticipant(sessionId, participantId);
+
+        if (participant.getPcId() != null) {
+            // Write through to the canonical character — this is the source of truth.
+            PC pc = pcService.findPCById(participant.getPcId());
+            int[] hp = applyHpDelta(pc.getHpCurrent(), pc.getHpTemp(), pc.getHpMax(), amount);
+            pc.setHpCurrent((short) hp[0]);
+            pc.setHpTemp((short) hp[1]);
+            pcRepository.save(pc);
+        } else {
+            int[] hp = applyHpDelta(participant.getNpcHpCurrent(), participant.getNpcHpTemp(),
+                    participant.getNpcHpMax(), amount);
+            participant.setNpcHpCurrent((short) hp[0]);
+            participant.setNpcHpTemp((short) hp[1]);
+            participantRepository.save(participant);
+        }
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * Resolve an HP change. Returns {@code [newCurrent, newTemp]}. Positive
+     * {@code amount} is damage (temp HP absorbs first, current floored at 0);
+     * negative is healing (current capped at max, temp untouched).
+     */
+    private int[] applyHpDelta(Short curShort, Short tempShort, Short maxShort, int amount) {
+        int cur = curShort == null ? 0 : curShort;
+        int temp = tempShort == null ? 0 : tempShort;
+
+        if (amount > 0) {
+            int absorbed = Math.min(temp, amount);
+            temp -= absorbed;
+            cur = Math.max(0, cur - (amount - absorbed));
+        } else if (amount < 0) {
+            cur += -amount;
+            if (maxShort != null) {
+                cur = Math.min(cur, maxShort);
+            }
+        }
+        return new int[]{cur, temp};
+    }
+
+    /** Load a participant and assert it belongs to the given session (404 otherwise). */
+    private SessionParticipant requireParticipant(Long sessionId, Long participantId) {
+        SessionParticipant participant = participantRepository.findById(participantId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Participant not found with id " + participantId));
+        if (!sessionId.equals(participant.getSessionId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Participant not found in this session");
+        }
+        return participant;
     }
 
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */

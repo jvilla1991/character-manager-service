@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
@@ -34,6 +35,18 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(sessionService.createSession(campaignId, user.getUuid()));
+    }
+
+    /**
+     * The campaign's current live session (for discovery before joining) — 204 if
+     * none. Visible to the DM and any campaign member.
+     */
+    @GetMapping("/campaign/{campaignId}/session")
+    public ResponseEntity<SessionStateView> getActiveSession(@PathVariable Long campaignId,
+                                                            Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        SessionStateView state = sessionService.getActiveSessionForCampaign(campaignId, user.getUuid());
+        return state == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(state);
     }
 
     /** Poll snapshot — visible to the DM and to any player who owns a participant. */
@@ -71,6 +84,17 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.setInitiative(id, participantId, request.value(), user.getUuid()));
+    }
+
+    /** DM damages (positive) or heals (negative) a combatant; PC HP writes through. */
+    @PostMapping("/session/{id}/participants/{participantId}/damage")
+    public ResponseEntity<SessionStateView> applyDamage(@PathVariable Long id,
+                                                       @PathVariable Long participantId,
+                                                       @RequestBody DamageRequest request,
+                                                       Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.applyDamage(id, participantId, request.amount(), user.getUuid()));
     }
 
     /** DM ends the session. */
