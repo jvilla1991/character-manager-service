@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
@@ -71,6 +72,17 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.setInitiative(id, participantId, request.value(), user.getUuid()));
+    }
+
+    /** DM damages (positive) or heals (negative) a combatant; PC HP writes through. */
+    @PostMapping("/session/{id}/participants/{participantId}/damage")
+    public ResponseEntity<SessionStateView> applyDamage(@PathVariable Long id,
+                                                       @PathVariable Long participantId,
+                                                       @RequestBody DamageRequest request,
+                                                       Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.applyDamage(id, participantId, request.amount(), user.getUuid()));
     }
 
     /** DM ends the session. */
