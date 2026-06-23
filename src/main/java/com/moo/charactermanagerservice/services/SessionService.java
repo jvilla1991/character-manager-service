@@ -15,10 +15,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -35,6 +38,9 @@ import java.util.stream.Collectors;
  */
 @Service
 public class SessionService {
+
+    /** A session idle longer than this is auto-ended on next access (no scheduler). */
+    private static final Duration SESSION_TTL = Duration.ofHours(4);
 
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
@@ -64,11 +70,10 @@ public class SessionService {
         // Asserts the campaign exists (404) and the caller is its DM (403).
         campaignService.findByIdForDm(campaignId, dmUserId);
 
-        sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
-                .ifPresent(existing -> {
-                    throw new ResponseStatusException(HttpStatus.CONFLICT,
-                            "A session is already live for this campaign");
-                });
+        activeSession(campaignId).ifPresent(existing -> {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A session is already live for this campaign");
+        });
 
         CombatSession session = new CombatSession();
         session.setCampaignId(campaignId);
@@ -111,9 +116,34 @@ public class SessionService {
         if (!isDm && !isMember) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
-        return sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
+        return activeSession(campaignId)
                 .map(session -> buildState(session, userId))
                 .orElse(null);
+    }
+
+    /**
+     * The campaign's live session, auto-ending it first if it has been idle past
+     * {@link #SESSION_TTL}. Returns empty when there is none — or it just expired —
+     * so callers treat an abandoned session as gone rather than blocking on it.
+     * This is lazy expiry: the cleanup happens on access, no background job.
+     */
+    private Optional<CombatSession> activeSession(Long campaignId) {
+        return sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
+                .filter(session -> {
+                    if (isExpired(session)) {
+                        session.setStatus(SessionStatus.ENDED);
+                        session.bumpVersion();
+                        sessionRepository.save(session);
+                        return false;
+                    }
+                    return true;
+                });
+    }
+
+    /** True once a session has gone untouched (no edits) for longer than the TTL. */
+    private boolean isExpired(CombatSession session) {
+        Instant lastActivity = session.getUpdatedAt();
+        return lastActivity != null && lastActivity.isBefore(Instant.now().minus(SESSION_TTL));
     }
 
     /**
