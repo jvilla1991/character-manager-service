@@ -51,6 +51,26 @@ public class PCController {
         return ResponseEntity.ok(pcService.updatePC(pc, user.getUuid()));
     }
 
+    /**
+     * Full sheet of a campaign member, for the DM who runs its campaign.
+     * Authorized by campaign-DM ownership (not PC ownership), so the DM can edit
+     * the complete character rather than the privacy-limited member projection.
+     */
+    @GetMapping("/{id}/as-dm")
+    public ResponseEntity<PC> getPCAsDm(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.findPCByIdForDm(id, user.getUuid()));
+    }
+
+    /** DM-authorized update of a campaign member's PC (campaign-DM ownership). */
+    @PutMapping("/{id}/as-dm")
+    public ResponseEntity<PC> updatePCAsDm(@PathVariable Long id, Authentication authentication,
+                                           @RequestBody PC pc) {
+        User user = (User) authentication.getPrincipal();
+        pc.setId(id);
+        return ResponseEntity.ok(pcService.updatePCAsDm(pc, user.getUuid()));
+    }
+
     @GetMapping("/{id}/level-up/preview")
     public ResponseEntity<LevelUpPreview> previewLevelUp(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();

@@ -169,6 +169,54 @@ class PCControllerTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
 
+    // --- GET /{id}/as-dm ---
+
+    @Test
+    void getPCAsDm_returns200_whenCallerRunsTheCampaign() {
+        when(pcService.findPCByIdForDm(1L, ownerId)).thenReturn(pc);
+
+        ResponseEntity<PC> response = pcController.getPCAsDm(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(pc);
+    }
+
+    @Test
+    void getPCAsDm_propagates403_whenNotTheDm() {
+        when(pcService.findPCByIdForDm(1L, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> pcController.getPCAsDm(1L, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- PUT /{id}/as-dm ---
+
+    @Test
+    void updatePCAsDm_returns200_andStampsId() {
+        PC incoming = new PC();
+        incoming.setName("Aelindra Updated");
+
+        when(pcService.updatePCAsDm(any(PC.class), eq(ownerId))).thenReturn(pc);
+
+        ResponseEntity<PC> response = pcController.updatePCAsDm(1L, auth, incoming);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // Controller must stamp the path id onto the body before delegating
+        verify(pcService).updatePCAsDm(argThat(p -> Long.valueOf(1L).equals(p.getId())), eq(ownerId));
+    }
+
+    @Test
+    void updatePCAsDm_propagates403_whenNotTheDm() {
+        when(pcService.updatePCAsDm(any(PC.class), eq(ownerId)))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> pcController.updatePCAsDm(1L, auth, pc))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
     // --- GET /{id}/level-up/preview ---
 
     @Test

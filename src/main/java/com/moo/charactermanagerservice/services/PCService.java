@@ -4,7 +4,9 @@ import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -21,11 +23,14 @@ public class PCService {
 
     private final PCRepository pcRepository;
     private final LevelUpService levelUpService;
+    private final CampaignRepository campaignRepository;
 
     @Autowired
-    public PCService(PCRepository pcRepository, LevelUpService levelUpService) {
+    public PCService(PCRepository pcRepository, LevelUpService levelUpService,
+                     CampaignRepository campaignRepository) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
+        this.campaignRepository = campaignRepository;
     }
 
     public PC addPC(PC pc) {
@@ -52,6 +57,34 @@ public class PCService {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
         return pcRepository.save(pc);
+    }
+
+    /**
+     * Load a campaign member's full PC for the Dungeon Master who runs its
+     * campaign. Authorized by campaign-DM ownership rather than PC ownership, so
+     * the DM can see the complete sheet (not the privacy-limited member
+     * projection). 403 if the PC is in no campaign or the caller does not run it.
+     */
+    public PC findPCByIdForDm(Long id, UUID dmUserId) {
+        PC pc = findPCById(id);
+        assertCampaignDm(pc, dmUserId);
+        return pc;
+    }
+
+    /**
+     * DM-authorized update of a campaign member's PC. Mirrors
+     * {@link com.moo.charactermanagerservice.services.SessionService#applyDamage}'s
+     * write-through to the canonical pc row: the DM is authorized at the campaign
+     * level, not by PC ownership. The character's owner ({@code userId}) and its
+     * campaign binding are immutable on a DM edit — the incoming body cannot
+     * reassign them (mirrors {@link CampaignService#updateCampaign}).
+     */
+    public PC updatePCAsDm(PC incoming, UUID dmUserId) {
+        PC existing = findPCById(incoming.getId());
+        assertCampaignDm(existing, dmUserId);
+        incoming.setUserId(existing.getUserId());
+        incoming.setCampaignId(existing.getCampaignId());
+        return pcRepository.save(incoming);
     }
 
     /**
@@ -91,6 +124,24 @@ public class PCService {
 
     private void assertOwnership(PC pc, UUID userId) {
         if (!userId.equals(pc.getUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+    }
+
+    /**
+     * Assert the caller is the DM of the campaign this PC belongs to. A PC bound
+     * to no campaign has no DM, so access is denied. (One PC has one campaign; one
+     * campaign has one DM — so this single check fully authorizes the edit.)
+     */
+    private void assertCampaignDm(PC pc, UUID dmUserId) {
+        Long campaignId = pc.getCampaignId();
+        if (campaignId == null) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Character is not part of a campaign");
+        }
+        Campaign campaign = campaignRepository.findById(campaignId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+        if (!dmUserId.equals(campaign.getDmUserId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
     }
