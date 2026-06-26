@@ -4,7 +4,9 @@ import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,23 +34,36 @@ class PCServiceTest {
     @Mock
     private LevelUpService levelUpService;
 
+    @Mock
+    private CampaignRepository campaignRepository;
+
     @InjectMocks
     private PCService pcService;
 
     private UUID ownerId;
     private UUID strangerId;
+    private UUID dmId;
     private PC pc;
 
     @BeforeEach
     void setUp() {
         ownerId = UUID.randomUUID();
         strangerId = UUID.randomUUID();
+        dmId = UUID.randomUUID();
 
         pc = new PC();
         pc.setId(1L);
         pc.setName("Aelindra");
         pc.setClazz("Wizard");
         pc.setUserId(ownerId);
+    }
+
+    /** A campaign owned by {@link #dmId}, used by the DM-authorization tests. */
+    private Campaign campaignOwnedByDm() {
+        Campaign campaign = new Campaign();
+        campaign.setId(7L);
+        campaign.setDmUserId(dmId);
+        return campaign;
     }
 
     // --- addPC ---
@@ -131,6 +146,91 @@ class PCServiceTest {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
 
         assertThatThrownBy(() -> pcService.updatePC(pc, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- findPCByIdForDm ---
+
+    @Test
+    void findPCByIdForDm_returnsPC_whenCallerRunsTheCampaign() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC result = pcService.findPCByIdForDm(1L, dmId);
+
+        assertThat(result).isSameAs(pc);
+    }
+
+    @Test
+    void findPCByIdForDm_throws403_whenCallerIsNotTheDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.findPCByIdForDm(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+    }
+
+    @Test
+    void findPCByIdForDm_throws403_whenPcInNoCampaign() {
+        pc.setCampaignId(null);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> pcService.findPCByIdForDm(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+
+        verify(campaignRepository, never()).findById(any());
+    }
+
+    // --- updatePCAsDm ---
+
+    @Test
+    void updatePCAsDm_savesAndReturns_whenCallerRunsTheCampaign() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Incoming body tries to reassign owner and campaign — both must be ignored.
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setUserId(strangerId);
+        incoming.setCampaignId(999L);
+        incoming.setHpCurrent((short) 12);
+
+        PC result = pcService.updatePCAsDm(incoming, dmId);
+
+        assertThat(result.getHpCurrent()).isEqualTo((short) 12);
+        assertThat(result.getUserId()).isEqualTo(ownerId);     // owner preserved
+        assertThat(result.getCampaignId()).isEqualTo(7L);      // campaign preserved
+        verify(pcRepository).save(incoming);
+    }
+
+    @Test
+    void updatePCAsDm_throws403_whenCallerIsNotTheDm() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+
+        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
