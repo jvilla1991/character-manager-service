@@ -1,11 +1,14 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.CreateNoteRequest;
 import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
+import com.moo.charactermanagerservice.dto.SessionNoteView;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.CampaignService;
+import com.moo.charactermanagerservice.services.SessionNoteService;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -22,6 +25,9 @@ public class CampaignController {
 
     @Autowired
     private CampaignService campaignService;
+
+    @Autowired
+    private SessionNoteService sessionNoteService;
 
     /** All campaigns owned by the current DM. */
     @GetMapping("/mine")
@@ -72,6 +78,32 @@ public class CampaignController {
     public ResponseEntity<Void> deleteCampaign(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         campaignService.deleteCampaign(id, user.getUuid());
+        return ResponseEntity.noContent().build();
+    }
+
+    // --- DM session notes (campaign-scoped, DM-only) -------------------------
+
+    /** Append a session note. The DM may add one from the campaign menu or in-session. */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<SessionNoteView> addNote(@PathVariable Long id, Authentication authentication,
+                                                   @RequestBody CreateNoteRequest request) {
+        User user = (User) authentication.getPrincipal();
+        SessionNoteView note = sessionNoteService.addNote(id, request.body(), request.sessionId(), user.getUuid());
+        return ResponseEntity.status(HttpStatus.CREATED).body(note);
+    }
+
+    /** All notes for a campaign, newest first (DM only). */
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<List<SessionNoteView>> getNotes(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionNoteService.listNotes(id, user.getUuid()));
+    }
+
+    @DeleteMapping("/{id}/notes/{noteId}")
+    public ResponseEntity<Void> deleteNote(@PathVariable Long id, @PathVariable Long noteId,
+                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        sessionNoteService.deleteNote(id, noteId, user.getUuid());
         return ResponseEntity.noContent().build();
     }
 }
