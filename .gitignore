@@ -32,6 +32,9 @@ build/
 ### VS Code ###
 .vscode/
 
+### Claude Code (worktrees, local agent state) ###
+.claude/
+
 ### Secrets ###
 .env
 src/main/resources/application-dev.properties
