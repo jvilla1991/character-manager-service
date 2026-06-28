@@ -8,6 +8,12 @@ import java.util.List;
  * this says and never compute turn order themselves. {@code version} lets a
  * poller skip re-rendering when nothing has changed; {@code dm} tells the caller
  * whether they are the session's DM (and so may use DM controls).
+ *
+ * <p>The {@code shop*} fields are the targeted-sync signal for the shopping
+ * feature: {@code shopOpen} is true when a shop is active in the session, and
+ * {@code shopForMe} is true only for the DM or a targeted attendee — that caller
+ * then fetches the full catalog from {@code GET /session/{id}/shop}. Non-targeted
+ * players see {@code shopForMe = false} and render nothing.
  */
 public record SessionStateView(
         Long sessionId,
@@ -17,5 +23,8 @@ public record SessionStateView(
         Short currentTurnIndex,
         Long version,
         boolean dm,
+        boolean shopOpen,
+        boolean shopForMe,
+        String shopCategory,
         List<ParticipantView> participants
 ) {}

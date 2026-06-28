@@ -6,9 +6,12 @@ import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
+import com.moo.charactermanagerservice.repositories.SessionShopRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -44,6 +47,8 @@ public class SessionService {
 
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
+    private final SessionShopRepository shopRepository;
+    private final SessionShopAttendeeRepository shopAttendeeRepository;
     private final PCRepository pcRepository;
     private final PCService pcService;
     private final CampaignService campaignService;
@@ -51,11 +56,15 @@ public class SessionService {
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
                           SessionParticipantRepository participantRepository,
+                          SessionShopRepository shopRepository,
+                          SessionShopAttendeeRepository shopAttendeeRepository,
                           PCRepository pcRepository,
                           PCService pcService,
                           CampaignService campaignService) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
+        this.shopRepository = shopRepository;
+        this.shopAttendeeRepository = shopAttendeeRepository;
         this.pcRepository = pcRepository;
         this.pcService = pcService;
         this.campaignService = campaignService;
@@ -399,6 +408,14 @@ public class SessionService {
             return ParticipantView.from(p, pc, ownedByMe, currentTurn);
         }).toList();
 
+        // Targeted-shop signal: a shop is open, and it's visible to the DM or to a
+        // targeted attendee. The full catalog is fetched separately from /shop.
+        SessionShop shop = shopRepository.findBySessionId(session.getId()).orElse(null);
+        boolean shopOpen = shop != null;
+        boolean shopForMe = shopOpen && (isDm || shopAttendeeRepository.findBySessionShopId(shop.getId())
+                .stream().anyMatch(a -> requesterId.equals(a.getOwnerUserId())));
+        String shopCategory = shopForMe ? shop.getCategory() : null;
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -407,6 +424,9 @@ public class SessionService {
                 session.getCurrentTurnIndex(),
                 session.getVersion(),
                 isDm,
+                shopOpen,
+                shopForMe,
+                shopCategory,
                 views
         );
     }

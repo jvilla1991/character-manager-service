@@ -44,6 +44,26 @@ class PcJsonColumns {
         }
     }
 
+    /** Parse a JSON-object TEXT column (e.g. the coins purse) into a mutable map; defensive about null/blank/malformed. */
+    Map<String, Object> parseObject(String json) {
+        if (json == null || json.isBlank()) return new LinkedHashMap<>();
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(json, new TypeReference<>() {});
+            return parsed == null ? new LinkedHashMap<>() : new LinkedHashMap<>(parsed);
+        } catch (JsonProcessingException e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** Serialize a JSON-object TEXT column back to text; failing loud on a serialization error. */
+    String writeObject(Map<String, ?> map) {
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to serialize object column");
+        }
+    }
+
     /** Build a {@code name/source/desc} feature entry for the features column. */
     Map<String, Object> featureEntry(String name, String source, String desc) {
         Map<String, Object> entry = new LinkedHashMap<>();

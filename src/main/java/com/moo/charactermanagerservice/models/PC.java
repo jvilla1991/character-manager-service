@@ -124,6 +124,11 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String gear;
 
+    // Structured inventory (purchased items land here). Mirrors the spells column:
+    // a JSON array of objects, (de)serialized by the service/frontend, not Hibernate.
+    @Column(columnDefinition = "TEXT")
+    private String inventory;
+
     @Column(columnDefinition = "TEXT")
     private String features;
 
@@ -186,6 +191,7 @@ public class PC implements Serializable {
     public void setCoins(String coins) { this.coins = coins; }
     public void setWeapons(String weapons) { this.weapons = weapons; }
     public void setGear(String gear) { this.gear = gear; }
+    public void setInventory(String inventory) { this.inventory = inventory; }
     public void setFeatures(String features) { this.features = features; }
     public void setTraits(String traits) { this.traits = traits; }
     public void setLanguages(String languages) { this.languages = languages; }

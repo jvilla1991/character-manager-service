@@ -1,11 +1,14 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.CreateNoteRequest;
 import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
+import com.moo.charactermanagerservice.dto.SessionNoteView;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.services.CampaignService;
+import com.moo.charactermanagerservice.services.SessionNoteService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -33,6 +36,9 @@ class CampaignControllerTest {
 
     @Mock
     private CampaignService campaignService;
+
+    @Mock
+    private SessionNoteService sessionNoteService;
 
     private UUID dmId;
     private User dm;
@@ -208,5 +214,66 @@ class CampaignControllerTest {
         assertThatThrownBy(() -> campaignController.joinCampaign(auth, new JoinCampaignRequest("ZZZZZZ", 7L)))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
+    }
+
+    // --- POST /{id}/notes ---
+
+    @Test
+    void addNote_returns201_withCreatedNote() {
+        SessionNoteView view = new SessionNoteView(5L, 1L, null, "A new clue surfaces", java.time.Instant.now());
+        when(sessionNoteService.addNote(1L, "A new clue surfaces", null, dmId)).thenReturn(view);
+
+        ResponseEntity<SessionNoteView> response =
+                campaignController.addNote(1L, auth, new CreateNoteRequest("A new clue surfaces", null));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isSameAs(view);
+    }
+
+    @Test
+    void addNote_passesSessionId_whenTakenInSession() {
+        SessionNoteView view = new SessionNoteView(6L, 1L, 9L, "Mid-combat ruling", java.time.Instant.now());
+        when(sessionNoteService.addNote(1L, "Mid-combat ruling", 9L, dmId)).thenReturn(view);
+
+        ResponseEntity<SessionNoteView> response =
+                campaignController.addNote(1L, auth, new CreateNoteRequest("Mid-combat ruling", 9L));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        verify(sessionNoteService).addNote(1L, "Mid-combat ruling", 9L, dmId);
+    }
+
+    // --- GET /{id}/notes ---
+
+    @Test
+    void getNotes_returns200_withList() {
+        SessionNoteView view = new SessionNoteView(5L, 1L, null, "Recap", java.time.Instant.now());
+        when(sessionNoteService.listNotes(1L, dmId)).thenReturn(List.of(view));
+
+        ResponseEntity<List<SessionNoteView>> response = campaignController.getNotes(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsExactly(view);
+    }
+
+    @Test
+    void getNotes_propagates403_whenNotOwner() {
+        when(sessionNoteService.listNotes(1L, dmId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> campaignController.getNotes(1L, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- DELETE /{id}/notes/{noteId} ---
+
+    @Test
+    void deleteNote_returns204_whenOwner() {
+        doNothing().when(sessionNoteService).deleteNote(1L, 5L, dmId);
+
+        ResponseEntity<Void> response = campaignController.deleteNote(1L, 5L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        verify(sessionNoteService).deleteNote(1L, 5L, dmId);
     }
 }
