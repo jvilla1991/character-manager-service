@@ -14,7 +14,11 @@ import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
+import com.moo.charactermanagerservice.models.Shop;
+import com.moo.charactermanagerservice.models.ShopItem;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
+import com.moo.charactermanagerservice.repositories.ShopItemRepository;
+import com.moo.charactermanagerservice.repositories.ShopRepository;
 import com.moo.charactermanagerservice.repositories.SrdItemRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +43,8 @@ class ShopServiceTest {
     @Mock private SessionShopAttendeeRepository attendeeRepository;
     @Mock private SessionParticipantRepository participantRepository;
     @Mock private SrdItemRepository srdItemRepository;
+    @Mock private ShopRepository curatedShopRepository;
+    @Mock private ShopItemRepository curatedItemRepository;
     @Mock private PCRepository pcRepository;
 
     private ShopService shopService;
@@ -52,7 +58,8 @@ class ShopServiceTest {
     @BeforeEach
     void setUp() {
         shopService = new ShopService(sessionRepository, shopRepository, attendeeRepository,
-                participantRepository, srdItemRepository, pcRepository, new ObjectMapper());
+                participantRepository, srdItemRepository, curatedShopRepository, curatedItemRepository,
+                pcRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -60,6 +67,7 @@ class ShopServiceTest {
 
         session = new CombatSession();
         session.setId(1L);
+        session.setCampaignId(1L);
         session.setDmUserId(dmId);
         session.setStatus(SessionStatus.ACTIVE);
 
@@ -271,7 +279,116 @@ class ShopServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
+    // --- curated shop activation + browse ---
+
+    @Test
+    void openCuratedShop_activatesCuratedShop_andResolvesItems() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(curatedShopRepository.findById(50L)).thenReturn(Optional.of(curatedShop()));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.empty());
+        when(shopRepository.save(any(SessionShop.class))).thenAnswer(inv -> {
+            SessionShop s = inv.getArgument(0);
+            s.setId(10L);
+            return s;
+        });
+        when(attendeeRepository.findBySessionShopId(10L)).thenReturn(List.of());
+        // openCuratedShop validates the shop; buildShopView re-reads it for name + items.
+        when(curatedItemRepository.findByShopId(50L)).thenReturn(List.of(curatedLine(1L, "longsword", 1200L)));
+        when(srdItemRepository.findByItemKeyIn(any())).thenReturn(List.of(longsword()));
+
+        ShopView view = shopService.openCuratedShop(1L, 50L, null, List.of(), dmId);
+
+        assertThat(view.curatedShopId()).isEqualTo(50L);
+        assertThat(view.shopName()).isEqualTo("The Smithy");
+        assertThat(view.category()).isNull();
+        assertThat(view.items()).hasSize(1);
+        assertThat(view.items().get(0).costCp()).isEqualTo(1200L); // price override applied
+    }
+
+    @Test
+    void openCuratedShop_throws403_whenNotShopOwner() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        Shop other = curatedShop();
+        other.setDmUserId(strangerId);
+        when(curatedShopRepository.findById(50L)).thenReturn(Optional.of(other));
+        assertThatThrownBy(() -> shopService.openCuratedShop(1L, 50L, null, List.of(), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void openCuratedShop_throws400_whenDifferentCampaign() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        Shop other = curatedShop();
+        other.setCampaignId(999L);
+        when(curatedShopRepository.findById(50L)).thenReturn(Optional.of(other));
+        assertThatThrownBy(() -> shopService.openCuratedShop(1L, 50L, null, List.of(), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void purchase_fromCuratedShop_usesOverridePrice() {
+        SessionShop curatedSession = new SessionShop();
+        curatedSession.setId(10L);
+        curatedSession.setSessionId(1L);
+        curatedSession.setShopId(50L); // curated
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(curatedSession));
+        when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L))
+                .thenReturn(Optional.of(attendee(7L, playerId)));
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        when(curatedItemRepository.findByShopIdAndCatalogItemKey(50L, "longsword"))
+                .thenReturn(Optional.of(curatedLine(1L, "longsword", 1200L)));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "longsword", 1, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(1200L); // override, not 1500 catalog
+        assertThat(result.coins()).containsEntry("gp", 8);  // 20 gp - 12 gp
+        assertThat(result.inventory().get(0)).containsEntry("unitCostCp", 1200L);
+    }
+
+    @Test
+    void purchase_fromCuratedShop_throws400_whenItemNotaLine() {
+        SessionShop curatedSession = new SessionShop();
+        curatedSession.setId(10L);
+        curatedSession.setSessionId(1L);
+        curatedSession.setShopId(50L);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(curatedSession));
+        when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L))
+                .thenReturn(Optional.of(attendee(7L, playerId)));
+        when(srdItemRepository.findByItemKey("dagger")).thenReturn(Optional.of(longsword()));
+        when(curatedItemRepository.findByShopIdAndCatalogItemKey(50L, "dagger")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> shopService.purchase(1L, 7L, "dagger", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
     // --- helpers ---
+
+    private Shop curatedShop() {
+        Shop s = new Shop();
+        s.setId(50L);
+        s.setCampaignId(1L);
+        s.setDmUserId(dmId);
+        s.setName("The Smithy");
+        s.setSettlement("Phandalin");
+        return s;
+    }
+
+    private static ShopItem curatedLine(Long id, String key, Long priceCp) {
+        ShopItem i = new ShopItem();
+        i.setId(id);
+        i.setShopId(50L);
+        i.setCatalogItemKey(key);
+        i.setPriceCp(priceCp);
+        return i;
+    }
 
     private void stubActiveShopWithAttendee() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
