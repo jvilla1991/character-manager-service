@@ -13,6 +13,7 @@ import com.moo.charactermanagerservice.repositories.SrdItemRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
@@ -191,6 +192,35 @@ class CuratedShopServiceTest {
         when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(srd("longsword", "Longsword", 1500)));
         when(shopItemRepository.findByShopIdAndCatalogItemKey(5L, "longsword")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.addItem(5L, "longsword", -10L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- importCategory ---
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void importCategory_addsMissingCatalogItems_skippingExisting() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findByShopId(5L)).thenReturn(List.of(shopItem(1L, "longsword", null)));
+        when(srdItemRepository.findByCategoryOrderByNameAsc("WEAPON")).thenReturn(List.of(
+                srd("longsword", "Longsword", 1500), srd("dagger", "Dagger", 200)));
+        when(srdItemRepository.findByItemKeyIn(any())).thenReturn(List.of(srd("longsword", "Longsword", 1500)));
+
+        service.importCategory(5L, "weapon", dmId);
+
+        ArgumentCaptor<List<ShopItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(shopItemRepository).saveAll(captor.capture());
+        List<ShopItem> added = captor.getValue();
+        assertThat(added).hasSize(1); // longsword already present, only dagger added
+        assertThat(added.get(0).getCatalogItemKey()).isEqualTo("dagger");
+        assertThat(added.get(0).getPriceCp()).isNull(); // inherits catalog price
+    }
+
+    @Test
+    void importCategory_throws400_forUnsupportedCategory() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        assertThatThrownBy(() -> service.importCategory(5L, "potions", dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }

@@ -19,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -34,6 +35,9 @@ import java.util.stream.Collectors;
  */
 @Service
 public class CuratedShopService {
+
+    /** Categories the import-template helper accepts (the seeded catalog slices). */
+    private static final Set<String> IMPORTABLE_CATEGORIES = Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT");
 
     private final ShopRepository shopRepository;
     private final ShopItemRepository shopItemRepository;
@@ -120,6 +124,35 @@ public class CuratedShopService {
         item.setPriceCp(priceCp);
         shopItemRepository.save(item);
 
+        touch(shop);
+        return buildView(shop);
+    }
+
+    /**
+     * Bulk-add every catalog item of a category to the shop — the "start from a
+     * standard template" helper. Items already present are skipped; added lines
+     * inherit the catalog price (no override), ready for the DM to tweak.
+     */
+    @Transactional
+    public CuratedShopView importCategory(Long shopId, String category, UUID dmUserId) {
+        Shop shop = requireOwnedShop(shopId, dmUserId);
+        String normalized = category == null ? "" : category.trim().toUpperCase();
+        if (!IMPORTABLE_CATEGORIES.contains(normalized)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported category: " + category);
+        }
+        Set<String> existing = shopItemRepository.findByShopId(shopId).stream()
+                .map(ShopItem::getCatalogItemKey).collect(Collectors.toSet());
+        List<ShopItem> toAdd = srdItemRepository.findByCategoryOrderByNameAsc(normalized).stream()
+                .filter(c -> !existing.contains(c.getItemKey()))
+                .map(c -> {
+                    ShopItem item = new ShopItem();
+                    item.setShopId(shopId);
+                    item.setCatalogItemKey(c.getItemKey());
+                    item.setPriceCp(null); // inherit catalog price
+                    return item;
+                })
+                .toList();
+        shopItemRepository.saveAll(toAdd);
         touch(shop);
         return buildView(shop);
     }

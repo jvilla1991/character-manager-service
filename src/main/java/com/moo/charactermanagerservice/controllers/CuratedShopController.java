@@ -76,6 +76,15 @@ public class CuratedShopController {
                 curatedShopService.addItem(shopId, request.catalogItemKey(), request.priceCp(), user.getUuid()));
     }
 
+    /** Bulk-add a standard catalog category to the shop (template starting point). */
+    @PostMapping("/shops/{shopId}/import")
+    public ResponseEntity<CuratedShopView> importCategory(@PathVariable Long shopId,
+                                                          @RequestParam String category,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(curatedShopService.importCategory(shopId, category, user.getUuid()));
+    }
+
     @PutMapping("/shops/{shopId}/items/{itemId}")
     public ResponseEntity<CuratedShopView> updateItem(@PathVariable Long shopId,
                                                       @PathVariable Long itemId,
