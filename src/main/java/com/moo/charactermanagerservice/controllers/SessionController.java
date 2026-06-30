@@ -5,6 +5,8 @@ import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.User;
+import com.moo.charactermanagerservice.dto.XpAwardRequest;
+import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.services.SessionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -95,6 +97,27 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.applyDamage(id, participantId, request.amount(), user.getUuid()));
+    }
+
+    /** DM awards XP to a single combatant (PC only); writes through to the character. */
+    @PostMapping("/session/{id}/participants/{participantId}/xp")
+    public ResponseEntity<XpAwardResult> awardXp(@PathVariable Long id,
+                                                 @PathVariable Long participantId,
+                                                 @RequestBody XpAwardRequest request,
+                                                 Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.awardXp(id, participantId, request.amount(), user.getUuid()));
+    }
+
+    /** DM awards the same XP amount to every seated PC in the session. */
+    @PostMapping("/session/{id}/xp")
+    public ResponseEntity<XpAwardResult> awardXpToAll(@PathVariable Long id,
+                                                      @RequestBody XpAwardRequest request,
+                                                      Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.awardXpToAll(id, request.amount(), user.getUuid()));
     }
 
     /** DM ends the session. */
