@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.repositories;
 import com.moo.charactermanagerservice.models.SrdItem;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -13,4 +14,7 @@ public interface SrdItemRepository extends JpaRepository<SrdItem, Long> {
 
     /** Resolve a single catalog entry by its stable slug (used at purchase). */
     Optional<SrdItem> findByItemKey(String itemKey);
+
+    /** Batch-resolve catalog entries by slug (used to render curated shop lines). */
+    List<SrdItem> findByItemKeyIn(Collection<String> itemKeys);
 }

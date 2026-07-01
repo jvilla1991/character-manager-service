@@ -26,14 +26,22 @@ public class ShopController {
     @Autowired
     private ShopService shopService;
 
-    /** DM activates a shop (replaces any already open) and targets characters. */
+    /**
+     * DM activates a shop (replaces any already open) and targets characters.
+     * A {@code curatedShopId} activates a pre-built curated shop; otherwise a
+     * standard catalog shop for the given {@code category}.
+     */
     @PostMapping("/session/{id}/shop")
     public ResponseEntity<ShopView> openShop(@PathVariable Long id,
                                              @RequestBody OpenShopRequest request,
                                              Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(shopService.openShop(
-                id, request.category(), request.settlement(), request.pcIds(), user.getUuid()));
+        ShopView view = request.curatedShopId() != null
+                ? shopService.openCuratedShop(
+                        id, request.curatedShopId(), request.settlement(), request.pcIds(), user.getUuid())
+                : shopService.openShop(
+                        id, request.category(), request.settlement(), request.pcIds(), user.getUuid());
+        return ResponseEntity.ok(view);
     }
 
     /** DM re-targets the characters at the active shop. */

@@ -44,6 +44,10 @@ public class PC implements Serializable {
     private String clazz;
 
     private Short level;
+    // Experience points. Accumulates only (DM awards in Session Mode); level-up
+    // stays the explicit player-driven flow. Defaults to 0 so inserts never send
+    // null against the NOT NULL column (see V17).
+    private Integer xp = 0;
     private String playerName;
     private UUID userId;
 
@@ -157,6 +161,7 @@ public class PC implements Serializable {
     public void setName(String name) { this.name = name; }
     public void setClazz(String clazz) { this.clazz = clazz; }
     public void setLevel(Short level) { this.level = level; }
+    public void setXp(Integer xp) { this.xp = xp; }
     public void setPlayerName(String playerName) { this.playerName = playerName; }
     public void setUserId(UUID userId) { this.userId = userId; }
     public void setCampaignId(Long campaignId) { this.campaignId = campaignId; }

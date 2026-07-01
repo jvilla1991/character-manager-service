@@ -13,5 +13,7 @@ public record ShopView(
         String category,
         String settlement,
         List<Long> attendeePcIds,
-        List<ShopItemView> items
+        List<ShopItemView> items,
+        Long curatedShopId,
+        String shopName
 ) {}

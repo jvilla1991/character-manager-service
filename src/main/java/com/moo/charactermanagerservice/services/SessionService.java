@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
@@ -20,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -341,6 +343,78 @@ public class SessionService {
             }
         }
         return new int[]{cur, temp};
+    }
+
+    /**
+     * Award XP to a single combatant. DM only. Writes through to the canonical pc
+     * row — the same source-of-truth rule as {@link #applyDamage} — and floors the
+     * total at 0 so a negative correction can't drive XP below zero. XP is not on
+     * the session snapshot, so the result carries the new total for the DM's
+     * confirmation toast. Bumps the session version.
+     */
+    public XpAwardResult awardXp(Long sessionId, Long participantId, Integer amount, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (amount == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "amount is required");
+        }
+
+        SessionParticipant participant = requireParticipant(sessionId, participantId);
+        if (participant.getPcId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Cannot award XP to a non-PC combatant");
+        }
+
+        PC pc = pcService.findPCById(participant.getPcId());
+        XpAwardResult.Entry entry = applyXpDelta(pc, amount);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new XpAwardResult(List.of(entry));
+    }
+
+    /**
+     * Award the same XP amount to every seated PC in the session — NPC participants
+     * are skipped. DM only. Each PC's total is written through and floored at 0, and
+     * the version bumps once. Returns one entry per awarded PC for the DM toast.
+     */
+    public XpAwardResult awardXpToAll(Long sessionId, Integer amount, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (amount == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "amount is required");
+        }
+
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        Map<Long, PC> pcsById = loadPcs(participants);
+
+        List<XpAwardResult.Entry> awarded = new ArrayList<>();
+        for (SessionParticipant p : participants) {
+            if (p.getPcId() == null) continue;        // NPCs have no XP
+            PC pc = pcsById.get(p.getPcId());
+            if (pc == null) continue;
+            awarded.add(applyXpDelta(pc, amount));
+        }
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new XpAwardResult(awarded);
+    }
+
+    /** Apply an XP delta to a PC (floored at 0), persist it, and report the result. */
+    private XpAwardResult.Entry applyXpDelta(PC pc, int amount) {
+        int current = pc.getXp() == null ? 0 : pc.getXp();
+        int updated = Math.max(0, current + amount);
+        pc.setXp(updated);
+        pcRepository.save(pc);
+        return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, updated - current);
     }
 
     /** Load a participant and assert it belongs to the given session (404 otherwise). */
