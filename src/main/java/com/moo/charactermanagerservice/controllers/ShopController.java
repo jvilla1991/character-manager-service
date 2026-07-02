@@ -3,6 +3,8 @@ package com.moo.charactermanagerservice.controllers;
 import com.moo.charactermanagerservice.dto.OpenShopRequest;
 import com.moo.charactermanagerservice.dto.PurchaseRequest;
 import com.moo.charactermanagerservice.dto.PurchaseResult;
+import com.moo.charactermanagerservice.dto.SellRequest;
+import com.moo.charactermanagerservice.dto.SellResult;
 import com.moo.charactermanagerservice.dto.SetShopAttendeesRequest;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.dto.User;
@@ -77,5 +79,15 @@ public class ShopController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(shopService.purchase(
                 id, request.pcId(), request.itemKey(), request.qty(), user.getUuid()));
+    }
+
+    /** A player sells an inventory item back to the shop for one of their characters. */
+    @PostMapping("/session/{id}/shop/sell")
+    public ResponseEntity<SellResult> sell(@PathVariable Long id,
+                                           @RequestBody SellRequest request,
+                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(shopService.sell(
+                id, request.pcId(), request.index(), user.getUuid()));
     }
 }

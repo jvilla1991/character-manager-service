@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.ShopItemView;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.dto.PurchaseResult;
+import com.moo.charactermanagerservice.dto.SellResult;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
@@ -256,6 +257,79 @@ public class ShopService {
         pcRepository.save(pc);
 
         return new PurchaseResult(newCoins, inventory, totalCostCp);
+    }
+
+    /**
+     * Sell the entire stack at inventory position {@code index} back to the
+     * active shop for half its value. Atomic: item removed and coins credited on
+     * the pc row, under the same pessimistic lock as {@link #purchase}.
+     *
+     * <p>Sell price prefers the live catalog price (via the item's catalogKey) so
+     * a player can't inflate what they claim to have paid; items with no catalog
+     * match (ad-hoc/DM-granted items) fall back to the price snapshot already on
+     * the line ({@code unitCostCp}). Standard shops only buy back items in their
+     * open category (mirrors what they sell); curated shops buy anything, since
+     * they have no category of their own. Dropped items and equipped items are
+     * otherwise ordinary — dropped items can't be sold (use Discard instead);
+     * equipped items sell fine and are simply removed, no explicit unequip step
+     * needed.
+     */
+    @Transactional
+    public SellResult sell(Long sessionId, Long pcId, Integer index, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        SessionShop shop = requireShop(sessionId);
+
+        attendeeRepository.findBySessionShopIdAndPcId(shop.getId(), pcId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.FORBIDDEN, "Character is not at this shop"));
+
+        PC pc = pcRepository.findByIdForUpdate(pcId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "PC not found with id " + pcId));
+        if (!userId.equals(pc.getUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
+        if (index == null || index < 0 || index >= inventory.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid item index");
+        }
+        Map<String, Object> entry = inventory.get(index);
+
+        if ("dropped".equals(entry.get("status"))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Dropped items can't be sold");
+        }
+        if (shop.getShopId() == null && !categoryLabel(shop.getCategory()).equals(entry.get("category"))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "This shop doesn't buy that kind of item");
+        }
+
+        Long baseUnitCp = null;
+        Object catalogKey = entry.get("catalogKey");
+        if (catalogKey instanceof String key) {
+            baseUnitCp = srdItemRepository.findByItemKey(key).map(SrdItem::getCostCp).orElse(null);
+        }
+        if (baseUnitCp == null && entry.get("unitCostCp") instanceof Number n) {
+            baseUnitCp = n.longValue();
+        }
+        if (baseUnitCp == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Item has no resolvable price and can't be sold");
+        }
+
+        int qty = entry.get("qty") instanceof Number n ? n.intValue() : 1;
+        long totalGainCp = (baseUnitCp * qty) / 2;
+
+        inventory.remove(index.intValue());
+        Map<String, Object> coins = json.parseObject(pc.getCoins());
+        Map<String, Integer> newCoins = CoinPurse.add(coins, totalGainCp);
+
+        pc.setCoins(json.writeObject(newCoins));
+        pc.setInventory(json.write(inventory));
+        pcRepository.save(pc);
+
+        return new SellResult(newCoins, inventory, totalGainCp);
     }
 
     // --- internals -----------------------------------------------------------
