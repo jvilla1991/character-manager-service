@@ -143,6 +143,18 @@ public class SessionController {
     }
 
     /**
+     * DM ends the encounter (ACTIVE → LOBBY): turn tracking stops, initiative
+     * clears for the next encounter; HP/XP changes already persisted stand.
+     * The session itself stays open — see {@code /end} for closing the table.
+     */
+    @PostMapping("/session/{id}/encounter/end")
+    public ResponseEntity<SessionStateView> endEncounter(@PathVariable Long id,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.endEncounter(id, user.getUuid()));
+    }
+
+    /**
      * Advance the turn (wraps past the end and increments the round). DM Next,
      * or a player ending their own turn — the server checks the active combatant
      * is theirs. Carries the caller's expected active-participant ID so a stale

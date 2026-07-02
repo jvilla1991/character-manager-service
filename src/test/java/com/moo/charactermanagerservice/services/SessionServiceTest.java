@@ -246,6 +246,63 @@ class SessionServiceTest {
         assertThat(session.getCurrentTurnParticipantId()).isEqualTo(2L);
     }
 
+    // --- endEncounter ---
+
+    @Test
+    void endEncounter_returnsToLobby_clearsPointerAndInitiative() {
+        List<SessionParticipant> list = combatants(2);
+        arm(session, 1L, list);
+        session.setRound((short) 3);
+
+        SessionStateView state = sessionService.endEncounter(1L, dmId);
+
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.LOBBY);
+        assertThat(session.getCurrentTurnParticipantId()).isNull();
+        assertThat(session.getRound()).isEqualTo((short) 1);
+        assertThat(state.activeParticipantId()).isNull();
+        assertThat(list).allSatisfy(p -> {
+            assertThat(p.getInitiative()).isNull();
+            assertThat(p.getInitRolled()).isFalse();
+        });
+        verify(participantRepository).saveAll(list);
+    }
+
+    @Test
+    void endEncounter_throws409_whenNotActive() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.endEncounter(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void endEncounter_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.endEncounter(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void restartAfterEndEncounter_opensOnRoundOne() {
+        // Encounter 1 ended on round 3; encounter 2 must not inherit the count.
+        List<SessionParticipant> list = combatants(2);
+        arm(session, 1L, list);
+        session.setRound((short) 3);
+        sessionService.endEncounter(1L, dmId);
+
+        list.get(0).setInitiative((short) 10);
+        list.get(0).setInitRolled(true);
+        sessionService.startEncounter(1L, dmId);
+
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.ACTIVE);
+        assertThat(session.getRound()).isEqualTo((short) 1);
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(1L);
+    }
+
     // --- advanceTurn ---
 
     @Test

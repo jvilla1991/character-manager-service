@@ -261,6 +261,37 @@ public class SessionService {
 
         session.setStatus(SessionStatus.ACTIVE);
         session.setCurrentTurnParticipantId(ordered.get(0).getId());
+        session.setRound((short) 1); // a fresh encounter always opens on round 1
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * End the encounter (not the session): ACTIVE → back to LOBBY. What
+     * happened stands — HP, conditions, and XP were written through live — but
+     * turn tracking stops: the pointer clears, and every combatant's initiative
+     * resets so the next encounter at this table rolls fresh (players may enter
+     * again because init_rolled is back to false). DM only.
+     */
+    public SessionStateView endEncounter(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() != SessionStatus.ACTIVE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No encounter is running");
+        }
+
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        for (SessionParticipant p : participants) {
+            p.setInitiative(null);
+            p.setInitRolled(Boolean.FALSE);
+        }
+        participantRepository.saveAll(participants);
+
+        session.setStatus(SessionStatus.LOBBY);
+        session.setCurrentTurnParticipantId(null);
+        session.setRound((short) 1);
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
