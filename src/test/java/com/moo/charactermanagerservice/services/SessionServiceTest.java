@@ -6,7 +6,11 @@ import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
+import com.moo.charactermanagerservice.models.Encounter;
+import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
+import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
+import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
@@ -44,6 +48,8 @@ class SessionServiceTest {
     @Mock private PCRepository pcRepository;
     @Mock private PCService pcService;
     @Mock private CampaignService campaignService;
+    @Mock private EncounterRepository encounterRepository;
+    @Mock private EncounterCreatureRepository encounterCreatureRepository;
 
     private SessionService sessionService;
 
@@ -55,7 +61,8 @@ class SessionServiceTest {
     @BeforeEach
     void setUp() {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
-                shopAttendeeRepository, pcRepository, pcService, campaignService);
+                shopAttendeeRepository, pcRepository, pcService, campaignService,
+                encounterRepository, encounterCreatureRepository);
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -594,6 +601,87 @@ class SessionServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
+    // --- loadEncounter ---
+
+    @Test
+    void loadEncounter_appendsCreatures_expandsQuantity_numbersRows_noInitiative() {
+        List<SessionParticipant> list = new ArrayList<>();
+        list.add(combatant(1L, (short) 15, 0)); // an existing combatant, left untouched
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(encounterRepository.findById(2L)).thenReturn(Optional.of(encounter(2L, 1L, dmId)));
+        when(encounterCreatureRepository.findByEncounterIdOrderByIdAsc(2L)).thenReturn(List.of(
+                creature("Goblin", (short) 2, (short) 7, 4),
+                creature("Goblin Boss", (short) 1, (short) 21, 1)));
+        when(participantRepository.save(any(SessionParticipant.class))).thenAnswer(inv -> {
+            SessionParticipant p = inv.getArgument(0);
+            if (p.getId() == null) {
+                p.setId(100L + list.size());
+                list.add(p);
+            }
+            return p;
+        });
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(list);
+
+        sessionService.loadEncounter(1L, 2L, dmId);
+
+        assertThat(list).hasSize(6); // 1 existing + 4 goblins + 1 boss
+        List<SessionParticipant> enemies = list.stream()
+                .filter(p -> p.getId() != null && p.getId() >= 100L).toList();
+        assertThat(enemies).hasSize(5); // 4 goblins + 1 boss appended
+        assertThat(enemies).extracting(SessionParticipant::getDisplayName)
+                .containsExactly("Goblin 1", "Goblin 2", "Goblin 3", "Goblin 4", "Goblin Boss");
+        // Single-quantity creature is not suffixed; multi-quantity is numbered.
+        assertThat(enemies).allSatisfy(e -> assertThat(e.getInitiative()).isNull());
+        SessionParticipant boss = enemies.stream()
+                .filter(e -> "Goblin Boss".equals(e.getDisplayName())).findFirst().orElseThrow();
+        assertThat(boss.getDexModifier()).isEqualTo((short) 1);
+        assertThat(boss.getNpcHpMax()).isEqualTo((short) 21);
+        assertThat(boss.getNpcHpCurrent()).isEqualTo((short) 21);
+        verify(sessionRepository).save(session); // version bumped once
+    }
+
+    @Test
+    void loadEncounter_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.loadEncounter(1L, 2L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(participantRepository, never()).save(any());
+    }
+
+    @Test
+    void loadEncounter_throws403_forEncounterFromAnotherCampaign() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(encounterRepository.findById(2L)).thenReturn(Optional.of(encounter(2L, 99L, dmId)));
+
+        assertThatThrownBy(() -> sessionService.loadEncounter(1L, 2L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(participantRepository, never()).save(any());
+    }
+
+    @Test
+    void loadEncounter_throws404_whenEncounterMissing() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(encounterRepository.findById(2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.loadEncounter(1L, 2L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
+    }
+
+    @Test
+    void loadEncounter_throws409_whenSessionEnded() {
+        session.setStatus(SessionStatus.ENDED);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.loadEncounter(1L, 2L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(participantRepository, never()).save(any());
+    }
+
     @Test
     void enemyDexModifier_breaksInitiativeTie_againstPcModifier() {
         session.setStatus(SessionStatus.LOBBY);
@@ -765,6 +853,24 @@ class SessionServiceTest {
         p.setInitRolled(initiative != null);
         p.setOrderIndex((short) orderIndex);
         return p;
+    }
+
+    private static Encounter encounter(Long id, Long campaignId, UUID dmUserId) {
+        Encounter e = new Encounter();
+        e.setId(id);
+        e.setCampaignId(campaignId);
+        e.setDmUserId(dmUserId);
+        e.setName("Ambush");
+        return e;
+    }
+
+    private static EncounterCreature creature(String name, Short dexModifier, Short hpMax, int quantity) {
+        EncounterCreature c = new EncounterCreature();
+        c.setName(name);
+        c.setDexModifier(dexModifier);
+        c.setHpMax(hpMax);
+        c.setQuantity(quantity);
+        return c;
     }
 
     /** n NPC combatants, ids 1..n, initiative descending, already in order. */
