@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -118,6 +119,28 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.awardXpToAll(id, request.amount(), user.getUuid()));
+    }
+
+    /** DM starts the encounter (LOBBY → ACTIVE); turn points at the top of the order. */
+    @PostMapping("/session/{id}/start")
+    public ResponseEntity<SessionStateView> startEncounter(@PathVariable Long id,
+                                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.startEncounter(id, user.getUuid()));
+    }
+
+    /**
+     * Advance the turn (wraps past the end and increments the round). DM only
+     * for now; carries the caller's expected active-participant ID so a stale
+     * advance is rejected with 409 instead of double-advancing.
+     */
+    @PostMapping("/session/{id}/advance")
+    public ResponseEntity<SessionStateView> advanceTurn(@PathVariable Long id,
+                                                        @RequestBody AdvanceRequest request,
+                                                        Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.advanceTurn(id, request.expectedActiveParticipantId(), user.getUuid()));
     }
 
     /** DM ends the session. */
