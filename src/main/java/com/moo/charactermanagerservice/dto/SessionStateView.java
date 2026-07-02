@@ -8,6 +8,8 @@ import java.util.List;
  * this says and never compute turn order themselves. {@code version} lets a
  * poller skip re-rendering when nothing has changed; {@code dm} tells the caller
  * whether they are the session's DM (and so may use DM controls).
+ * {@code activeParticipantId} is the stable turn pointer — the participant whose
+ * turn it is — and is null unless the encounter is ACTIVE.
  *
  * <p>The {@code shop*} fields are the targeted-sync signal for the shopping
  * feature: {@code shopOpen} is true when a shop is active in the session, and
@@ -26,7 +28,7 @@ public record SessionStateView(
         Long campaignId,
         String status,
         Short round,
-        Short currentTurnIndex,
+        Long activeParticipantId,
         Long version,
         boolean dm,
         boolean shopOpen,

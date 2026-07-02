@@ -36,7 +36,10 @@ public class CombatSession implements Serializable {
 
     private Short round = 1;
 
-    private Short currentTurnIndex = 0;
+    // Stable turn pointer: the participant whose turn it is. Never moves when the
+    // order re-sorts (it's an ID, not a position). Null until the encounter starts;
+    // left in place on END so history records where combat stopped.
+    private Long currentTurnParticipantId;
 
     // Monotonic counter bumped on every mutation so pollers can skip unchanged state.
     private Long version = 0L;
@@ -71,6 +74,6 @@ public class CombatSession implements Serializable {
     public void setDmUserId(UUID dmUserId) { this.dmUserId = dmUserId; }
     public void setStatus(SessionStatus status) { this.status = status; }
     public void setRound(Short round) { this.round = round; }
-    public void setCurrentTurnIndex(Short currentTurnIndex) { this.currentTurnIndex = currentTurnIndex; }
+    public void setCurrentTurnParticipantId(Long currentTurnParticipantId) { this.currentTurnParticipantId = currentTurnParticipantId; }
     public void setVersion(Long version) { this.version = version; }
 }

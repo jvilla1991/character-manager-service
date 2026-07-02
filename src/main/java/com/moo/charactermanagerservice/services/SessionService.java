@@ -90,7 +90,8 @@ public class SessionService {
         session.setCampaignId(campaignId);
         session.setDmUserId(dmUserId);
         session.setStatus(SessionStatus.LOBBY);
-        // round, currentTurnIndex, and version use their entity defaults (1, 0, 0).
+        // round and version use their entity defaults (1, 0); the turn pointer
+        // stays null until startEncounter.
         CombatSession saved = sessionRepository.saveAndFlush(session);
         return buildState(saved, dmUserId);
     }
@@ -197,7 +198,10 @@ public class SessionService {
 
     /**
      * Remove a combatant. The DM may remove anyone; a player may remove only
-     * their own PC. The participant must belong to the given session.
+     * their own PC. The participant must belong to the given session. If the
+     * combatant being removed holds the turn pointer, the pointer advances off
+     * them first (wrapping and incrementing the round if they were last in
+     * order) so it never dangles on a deleted row.
      */
     public SessionStateView removeParticipant(Long sessionId, Long participantId, UUID userId) {
         CombatSession session = findSession(sessionId);
@@ -209,6 +213,16 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
+        if (participantId.equals(session.getCurrentTurnParticipantId())) {
+            List<SessionParticipant> ordered =
+                    participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+            if (ordered.size() <= 1) {
+                session.setCurrentTurnParticipantId(null); // last combatant leaves
+            } else {
+                movePointerToNext(session, ordered);
+            }
+        }
+
         participantRepository.delete(participant);
         session.bumpVersion();
         sessionRepository.save(session);
@@ -216,10 +230,102 @@ public class SessionService {
     }
 
     /**
+     * Start the encounter: LOBBY → ACTIVE. DM only. Recomputes the order (so
+     * combatants without initiative sit at the bottom, per the nulls-last sort)
+     * and points the turn at the top of it. Requires at least one combatant —
+     * an empty encounter has no turn to point at.
+     */
+    public SessionStateView startEncounter(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() != SessionStatus.LOBBY) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Encounter can only be started from the lobby");
+        }
+
+        List<SessionParticipant> ordered = recomputeOrder(sessionId);
+        if (ordered.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Cannot start an encounter with no combatants");
+        }
+
+        session.setStatus(SessionStatus.ACTIVE);
+        session.setCurrentTurnParticipantId(ordered.get(0).getId());
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * Advance the turn to the next combatant in order, wrapping past the end to
+     * the top and incrementing the round. DM only for now (a player ending
+     * their own turn arrives in a later feature — the authorization branch is
+     * the only planned difference).
+     *
+     * <p>Optimistic concurrency: the caller sends the participant ID they
+     * believe is active. A mismatch means they acted on a stale snapshot (e.g.
+     * DM Next and a player End Turn racing) — the request is rejected with 409
+     * and the client refetches instead of retrying, so the turn can never
+     * double-advance.
+     */
+    public SessionStateView advanceTurn(Long sessionId, Long expectedActiveParticipantId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, userId);
+        if (session.getStatus() != SessionStatus.ACTIVE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Encounter is not active");
+        }
+        if (expectedActiveParticipantId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "expectedActiveParticipantId is required");
+        }
+        if (!expectedActiveParticipantId.equals(session.getCurrentTurnParticipantId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Turn has already advanced — refresh and try again");
+        }
+
+        List<SessionParticipant> ordered =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        movePointerToNext(session, ordered);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, userId);
+    }
+
+    /**
+     * Move the pointer to the combatant after the current one in the given
+     * order, wrapping to the top and incrementing the round when the current
+     * combatant is last. A pointer not found in the list (defensive — removal
+     * keeps it valid) counts as "before the top", so the next combatant is the
+     * first one and the round does not increment.
+     */
+    private void movePointerToNext(CombatSession session, List<SessionParticipant> ordered) {
+        int currentIdx = -1;
+        for (int i = 0; i < ordered.size(); i++) {
+            if (ordered.get(i).getId().equals(session.getCurrentTurnParticipantId())) {
+                currentIdx = i;
+                break;
+            }
+        }
+
+        int nextIdx = currentIdx + 1;
+        if (nextIdx >= ordered.size()) {
+            nextIdx = 0;
+            session.setRound((short) (session.getRound() + 1));
+        }
+        session.setCurrentTurnParticipantId(ordered.get(nextIdx).getId());
+    }
+
+    /**
      * The DM enters (or re-enters) a combatant's initiative. Recomputes the
-     * whole turn order server-side: initiative descending, ties broken by the
-     * PC's Dexterity score (descending), then by id for stability. NPCs and
-     * not-yet-entered combatants sort last. DM only.
+     * whole turn order server-side: initiative descending, ties broken by
+     * Dexterity modifier (descending), then by id (insertion order) for
+     * stability. NPCs and not-yet-entered combatants sort last. DM only.
+     *
+     * <p>The turn pointer is untouched — it is a participant ID, so a
+     * combatant whose new initiative sorts them above the current turn lands in
+     * territory already passed this round and is only reached after the wrap,
+     * i.e. they act starting next round.
      */
     public SessionStateView setInitiative(Long sessionId, Long participantId, Short value, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
@@ -242,36 +348,45 @@ public class SessionService {
     }
 
     /**
-     * Re-sort a session's combatants and persist their order_index. Order:
-     * initiative desc (unset last), then Dexterity desc (NPC/unknown last),
-     * then id asc for a stable result.
+     * Re-sort a session's combatants, persist their order_index, and return
+     * them in the new order. Order: initiative desc (unset last), then DEX
+     * modifier desc (NPC/unknown last), then id asc — id is BIGSERIAL, so that
+     * final fallback is insertion order and keeps full ties from reshuffling.
      */
-    private void recomputeOrder(Long sessionId) {
+    private List<SessionParticipant> recomputeOrder(Long sessionId) {
         List<SessionParticipant> participants =
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
-        if (participants.isEmpty()) return;
+        if (participants.isEmpty()) return participants;
 
         Map<Long, PC> pcsById = loadPcs(participants);
 
         Comparator<SessionParticipant> byInitiative = Comparator.comparing(
                 SessionParticipant::getInitiative, Comparator.nullsLast(Comparator.reverseOrder()));
-        Comparator<SessionParticipant> byDex = Comparator.comparing(
-                p -> dexOf(p, pcsById), Comparator.nullsLast(Comparator.reverseOrder()));
+        Comparator<SessionParticipant> byDexMod = Comparator.comparing(
+                p -> dexModOf(p, pcsById), Comparator.nullsLast(Comparator.reverseOrder()));
         Comparator<SessionParticipant> byId = Comparator.comparing(SessionParticipant::getId);
 
-        participants.sort(byInitiative.thenComparing(byDex).thenComparing(byId));
+        participants.sort(byInitiative.thenComparing(byDexMod).thenComparing(byId));
 
         for (short i = 0; i < participants.size(); i++) {
             participants.get(i).setOrderIndex(i);
         }
         participantRepository.saveAll(participants);
+        return participants;
     }
 
-    /** A PC participant's Dexterity score (the initiative tie-breaker); null for NPCs. */
-    private Short dexOf(SessionParticipant p, Map<Long, PC> pcsById) {
+    /**
+     * A combatant's Dexterity modifier, the initiative tie-breaker. Derived
+     * from the PC's ability score; null for NPCs (a DM-entered enemy modifier
+     * arrives in a later feature). The comparator works on the modifier — not
+     * the raw score — so PC and enemy values will be commensurable.
+     * {@code Math.floorDiv} keeps odd scores below 10 correct (9 → -1, not 0).
+     */
+    private Integer dexModOf(SessionParticipant p, Map<Long, PC> pcsById) {
         if (p.getPcId() == null) return null;
         PC pc = pcsById.get(p.getPcId());
-        return pc == null ? null : pc.getAbilityDex();
+        if (pc == null || pc.getAbilityDex() == null) return null;
+        return Math.floorDiv(pc.getAbilityDex() - 10, 2);
     }
 
     /** Load the canonical PCs for a set of participants, keyed by id (NPCs excluded). */
@@ -471,14 +586,12 @@ public class SessionService {
 
         boolean isDm = requesterId.equals(session.getDmUserId());
         boolean active = session.getStatus() == SessionStatus.ACTIVE;
-        Short turnIndex = session.getCurrentTurnIndex();
+        Long activeId = session.getCurrentTurnParticipantId();
 
         List<ParticipantView> views = participants.stream().map(p -> {
             PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
             boolean ownedByMe = requesterId.equals(p.getOwnerUserId());
-            boolean currentTurn = active
-                    && p.getOrderIndex() != null
-                    && p.getOrderIndex().equals(turnIndex);
+            boolean currentTurn = active && p.getId().equals(activeId);
             return ParticipantView.from(p, pc, ownedByMe, currentTurn);
         }).toList();
 
@@ -504,7 +617,7 @@ public class SessionService {
                 session.getCampaignId(),
                 session.getStatus().name(),
                 session.getRound(),
-                session.getCurrentTurnIndex(),
+                active ? activeId : null,
                 session.getVersion(),
                 isDm,
                 shopOpen,
