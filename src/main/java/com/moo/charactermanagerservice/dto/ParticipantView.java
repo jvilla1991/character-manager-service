@@ -25,6 +25,7 @@ public record ParticipantView(
         String portraitInitials,
         Short initiative,
         boolean initRolled,
+        Short dexModifier,
         Short orderIndex,
         Short hpMax,
         Short hpCurrent,
@@ -48,7 +49,7 @@ public record ParticipantView(
             return new ParticipantView(
                     p.getId(), null, true, ownedByMe, currentTurn,
                     p.getDisplayName(), null, null, null, null,
-                    p.getInitiative(), rolled, p.getOrderIndex(),
+                    p.getInitiative(), rolled, p.getDexModifier(), p.getOrderIndex(),
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), null,
                     p.getNpcConditions(),
                     p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
@@ -59,7 +60,7 @@ public record ParticipantView(
                 p.getId(), pc.getId(), false, ownedByMe, currentTurn,
                 pc.getName(), pc.getClazz(), pc.getLevel(),
                 pc.getPortraitTint(), pc.getPortraitInitials(),
-                p.getInitiative(), rolled, p.getOrderIndex(),
+                p.getInitiative(), rolled, null, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
                 pc.getConditions(),
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
