@@ -14,6 +14,12 @@ import java.util.List;
  * {@code shopForMe} is true only for the DM or a targeted attendee — that caller
  * then fetches the full catalog from {@code GET /session/{id}/shop}. Non-targeted
  * players see {@code shopForMe = false} and render nothing.
+ *
+ * <p>{@code myXp} is deliberately caller-scoped rather than living on
+ * {@link ParticipantView} (which is broadcast to every participant): it carries
+ * the requester's own seated PC's current XP total so their sheet can update
+ * live, without exposing teammates' XP to each other. Null for the DM or for a
+ * player with no seated PC in this session.
  */
 public record SessionStateView(
         Long sessionId,
@@ -26,5 +32,6 @@ public record SessionStateView(
         boolean shopOpen,
         boolean shopForMe,
         String shopCategory,
+        Integer myXp,
         List<ParticipantView> participants
 ) {}

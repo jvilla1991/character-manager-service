@@ -490,6 +490,15 @@ public class SessionService {
                 .stream().anyMatch(a -> requesterId.equals(a.getOwnerUserId())));
         String shopCategory = shopForMe ? shop.getCategory() : null;
 
+        // Caller-scoped XP: only the requester's own seated PC, never a teammate's
+        // (ParticipantView is broadcast to everyone, so XP can't live there).
+        Integer myXp = participants.stream()
+                .filter(p -> requesterId.equals(p.getOwnerUserId()) && p.getPcId() != null)
+                .findFirst()
+                .map(p -> pcsById.get(p.getPcId()))
+                .map(PC::getXp)
+                .orElse(null);
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -501,6 +510,7 @@ public class SessionService {
                 shopOpen,
                 shopForMe,
                 shopCategory,
+                myXp,
                 views
         );
     }
