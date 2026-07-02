@@ -48,6 +48,7 @@ class SessionServiceTest {
     private SessionService sessionService;
 
     private UUID dmId;
+    private UUID playerId;
     private UUID strangerId;
     private CombatSession session;
 
@@ -57,6 +58,7 @@ class SessionServiceTest {
                 shopAttendeeRepository, pcRepository, pcService, campaignService);
 
         dmId = UUID.randomUUID();
+        playerId = UUID.randomUUID();
         strangerId = UUID.randomUUID();
 
         session = new CombatSession();
@@ -244,6 +246,63 @@ class SessionServiceTest {
         assertThat(session.getCurrentTurnParticipantId()).isEqualTo(2L);
     }
 
+    // --- endEncounter ---
+
+    @Test
+    void endEncounter_returnsToLobby_clearsPointerAndInitiative() {
+        List<SessionParticipant> list = combatants(2);
+        arm(session, 1L, list);
+        session.setRound((short) 3);
+
+        SessionStateView state = sessionService.endEncounter(1L, dmId);
+
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.LOBBY);
+        assertThat(session.getCurrentTurnParticipantId()).isNull();
+        assertThat(session.getRound()).isEqualTo((short) 1);
+        assertThat(state.activeParticipantId()).isNull();
+        assertThat(list).allSatisfy(p -> {
+            assertThat(p.getInitiative()).isNull();
+            assertThat(p.getInitRolled()).isFalse();
+        });
+        verify(participantRepository).saveAll(list);
+    }
+
+    @Test
+    void endEncounter_throws409_whenNotActive() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.endEncounter(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void endEncounter_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.endEncounter(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void restartAfterEndEncounter_opensOnRoundOne() {
+        // Encounter 1 ended on round 3; encounter 2 must not inherit the count.
+        List<SessionParticipant> list = combatants(2);
+        arm(session, 1L, list);
+        session.setRound((short) 3);
+        sessionService.endEncounter(1L, dmId);
+
+        list.get(0).setInitiative((short) 10);
+        list.get(0).setInitRolled(true);
+        sessionService.startEncounter(1L, dmId);
+
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.ACTIVE);
+        assertThat(session.getRound()).isEqualTo((short) 1);
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(1L);
+    }
+
     // --- advanceTurn ---
 
     @Test
@@ -311,8 +370,9 @@ class SessionServiceTest {
     }
 
     @Test
-    void advance_throws403_whenNotDm() {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+    void advance_throws403_whenCallerNeitherDmNorOwnerOfActiveCombatant() {
+        // Active combatant is an unowned NPC — only the DM may advance its turn.
+        arm(session, 1L, combatants(2));
 
         assertThatThrownBy(() -> sessionService.advanceTurn(1L, 1L, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
@@ -384,6 +444,298 @@ class SessionServiceTest {
         verify(participantRepository).delete(second);
     }
 
+    // --- setInitiative: player self-entry rules ---
+
+    @Test
+    void player_setsOwnInitiative_inLobby() {
+        session.setStatus(SessionStatus.LOBBY);
+        SessionParticipant mine = combatant(1L, null, 0);
+        mine.setOwnerUserId(playerId);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(1L)).thenReturn(Optional.of(mine));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(mine)));
+
+        sessionService.setInitiative(1L, 1L, (short) 17, playerId);
+
+        assertThat(mine.getInitiative()).isEqualTo((short) 17);
+        assertThat(mine.getInitRolled()).isTrue();
+    }
+
+    @Test
+    void player_entersOwnInitiative_firstTime_whileActive() {
+        // Late joiner: encounter running, their initiative still unset.
+        SessionParticipant mine = combatant(2L, null, 1);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant other = combatant(1L, (short) 20, 0);
+        arm(session, 1L, new ArrayList<>(List.of(other, mine)));
+        when(participantRepository.findById(2L)).thenReturn(Optional.of(mine));
+
+        sessionService.setInitiative(1L, 2L, (short) 12, playerId);
+
+        assertThat(mine.getInitRolled()).isTrue();
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(1L); // pointer untouched
+    }
+
+    @Test
+    void player_cannotAlterOwnInitiative_onceActive() {
+        SessionParticipant mine = combatant(1L, (short) 15, 0);
+        mine.setOwnerUserId(playerId);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // ACTIVE
+        when(participantRepository.findById(1L)).thenReturn(Optional.of(mine));
+
+        assertThatThrownBy(() -> sessionService.setInitiative(1L, 1L, (short) 20, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThat(mine.getInitiative()).isEqualTo((short) 15);
+    }
+
+    @Test
+    void player_cannotSetSomeoneElsesInitiative() {
+        session.setStatus(SessionStatus.LOBBY);
+        SessionParticipant theirs = combatant(1L, null, 0);
+        theirs.setOwnerUserId(strangerId);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(1L)).thenReturn(Optional.of(theirs));
+
+        assertThatThrownBy(() -> sessionService.setInitiative(1L, 1L, (short) 20, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void dm_canAlterAnyInitiative_whileActive() {
+        SessionParticipant locked = combatant(1L, (short) 15, 0);
+        locked.setOwnerUserId(playerId);
+        arm(session, 1L, new ArrayList<>(List.of(locked)));
+        when(participantRepository.findById(1L)).thenReturn(Optional.of(locked));
+
+        sessionService.setInitiative(1L, 1L, (short) 22, dmId);
+
+        assertThat(locked.getInitiative()).isEqualTo((short) 22);
+    }
+
+    // --- advanceTurn: player End Turn ---
+
+    @Test
+    void player_endsOwnTurn_advances() {
+        List<SessionParticipant> list = combatants(2);
+        list.get(0).setOwnerUserId(playerId);
+        arm(session, 1L, list);
+
+        sessionService.advanceTurn(1L, 1L, playerId);
+
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(2L);
+    }
+
+    @Test
+    void player_cannotEndSomeoneElsesTurn() {
+        List<SessionParticipant> list = combatants(2);
+        list.get(0).setOwnerUserId(strangerId);
+        arm(session, 1L, list);
+
+        assertThatThrownBy(() -> sessionService.advanceTurn(1L, 1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(1L);
+        verify(sessionRepository, never()).save(any());
+    }
+
+    // --- addEnemy ---
+
+    @Test
+    void addEnemy_parksAtBottomUntilInitiativeEntered() {
+        List<SessionParticipant> list = new ArrayList<>();
+        SessionParticipant pc = combatant(1L, (short) 3, 0); // low initiative, but entered
+        list.add(pc);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(list);
+        when(participantRepository.save(any(SessionParticipant.class))).thenAnswer(inv -> {
+            SessionParticipant p = inv.getArgument(0);
+            if (p.getId() == null) {
+                p.setId(99L);
+                list.add(p);
+            }
+            return p;
+        });
+
+        sessionService.addEnemy(1L, "Goblin Boss", (short) 2, (short) 21, dmId);
+
+        SessionParticipant enemy = list.stream()
+                .filter(p -> Long.valueOf(99L).equals(p.getId())).findFirst().orElseThrow();
+        assertThat(enemy.getPcId()).isNull();
+        assertThat(enemy.getDexModifier()).isEqualTo((short) 2);
+        assertThat(enemy.getNpcHpMax()).isEqualTo((short) 21);
+        assertThat(enemy.getNpcHpCurrent()).isEqualTo((short) 21);
+        assertThat(enemy.getInitiative()).isNull();
+        // No initiative yet → below even the lowest entered initiative.
+        assertThat(enemy.getOrderIndex()).isEqualTo((short) 1);
+        assertThat(pc.getOrderIndex()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void addEnemy_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.addEnemy(1L, "Goblin", (short) 2, null, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void addEnemy_throws400_withoutNameOrDexModifier() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.addEnemy(1L, "  ", (short) 2, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> sessionService.addEnemy(1L, "Goblin", null, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void enemyDexModifier_breaksInitiativeTie_againstPcModifier() {
+        session.setStatus(SessionStatus.LOBBY);
+        // Same initiative: enemy +3 must beat PC dex 12 (+1) — modifiers compare
+        // against modifiers, never raw scores.
+        SessionParticipant pc = pcCombatant(1L, 7L, (short) 15, 0);
+        SessionParticipant enemy = combatant(2L, (short) 15, 1);
+        enemy.setDexModifier((short) 3);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(pc, enemy)));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pcWithDex(7L, "Rogue", 12)));
+
+        sessionService.startEncounter(1L, dmId);
+
+        assertThat(enemy.getOrderIndex()).isEqualTo((short) 0);
+        assertThat(pc.getOrderIndex()).isEqualTo((short) 1);
+    }
+
+    // --- visibility + sound settings ---
+
+    @Test
+    void setVisibility_togglesFlag_andBumpsVersion() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>());
+
+        SessionStateView state = sessionService.setVisibility(1L, false, dmId);
+
+        assertThat(session.getEnemiesHidden()).isFalse();
+        assertThat(state.enemiesHidden()).isFalse();
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void setVisibility_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.setVisibility(1L, false, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void setTurnSound_setsAndClears() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>());
+
+        assertThat(sessionService.setTurnSound(1L, "chime", dmId).turnSound()).isEqualTo("chime");
+        assertThat(sessionService.setTurnSound(1L, null, dmId).turnSound()).isNull();
+        assertThat(session.getVersion()).isEqualTo(2L);
+    }
+
+    // --- per-viewer snapshot: visibility, glow targets, on-deck ---
+
+    @Test
+    void playerView_omitsHiddenEnemies_entirely() {
+        // enemies_hidden defaults TRUE. A(PC, mine) → enemy → B(PC, other).
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcs();
+
+        SessionStateView state = sessionService.getState(1L, playerId, null);
+
+        assertThat(state.participants()).extracting("participantId").containsExactly(1L, 3L);
+        assertThat(state.enemiesHidden()).isTrue();
+    }
+
+    @Test
+    void playerView_onDeck_skipsHiddenEnemy_toNextVisible() {
+        // Active = my PC (id 1); true next is the hidden enemy (id 2); the player's
+        // yellow must land on B (id 3) while the DM's stays on the enemy.
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcs();
+
+        SessionStateView playerState = sessionService.getState(1L, playerId, null);
+        SessionStateView dmState = sessionService.getState(1L, dmId, null);
+
+        assertThat(playerState.activeParticipantId()).isEqualTo(1L);
+        assertThat(playerState.onDeckParticipantId()).isEqualTo(3L);
+        assertThat(dmState.activeParticipantId()).isEqualTo(1L);
+        assertThat(dmState.onDeckParticipantId()).isEqualTo(2L);
+        assertThat(dmState.participants()).hasSize(3);
+    }
+
+    @Test
+    void playerView_noGlowTarget_whileHiddenEnemyActs() {
+        // Turn sits on the hidden enemy: player gets no active (no green, no
+        // sound), and yellow points at the next combatant they can see.
+        arm(session, 2L, hiddenEnemySetup());
+        stubPcs();
+
+        SessionStateView playerState = sessionService.getState(1L, playerId, null);
+        SessionStateView dmState = sessionService.getState(1L, dmId, null);
+
+        assertThat(playerState.activeParticipantId()).isNull();
+        assertThat(playerState.onDeckParticipantId()).isEqualTo(3L);
+        assertThat(playerState.participants()).allSatisfy(p -> assertThat(p.currentTurn()).isFalse());
+        assertThat(dmState.activeParticipantId()).isEqualTo(2L);
+        assertThat(dmState.onDeckParticipantId()).isEqualTo(3L);
+    }
+
+    @Test
+    void playerView_seesEnemies_whenVisibilityToggledOff() {
+        session.setEnemiesHidden(false);
+        arm(session, 2L, hiddenEnemySetup());
+        stubPcs();
+
+        SessionStateView state = sessionService.getState(1L, playerId, null);
+
+        assertThat(state.participants()).hasSize(3);
+        assertThat(state.activeParticipantId()).isEqualTo(2L);
+        assertThat(state.onDeckParticipantId()).isEqualTo(3L);
+    }
+
+    @Test
+    void onDeck_isNull_whenOnlyOneVisibleCombatant() {
+        // My PC and one hidden enemy: green on me, never yellow on me too.
+        SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant enemy = combatant(2L, (short) 10, 1);
+        arm(session, 1L, new ArrayList<>(List.of(mine, enemy)));
+        stubPcs();
+
+        SessionStateView state = sessionService.getState(1L, playerId, null);
+
+        assertThat(state.activeParticipantId()).isEqualTo(1L);
+        assertThat(state.onDeckParticipantId()).isNull();
+    }
+
+    @Test
+    void getState_returns204Signal_whenVersionUnchanged() {
+        SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
+        mine.setOwnerUserId(playerId);
+        arm(session, 1L, new ArrayList<>(List.of(mine)));
+
+        assertThat(sessionService.getState(1L, playerId, session.getVersion())).isNull();
+        stubPcs();
+        assertThat(sessionService.getState(1L, playerId, session.getVersion() - 1)).isNotNull();
+        assertThat(sessionService.getState(1L, playerId, null)).isNotNull();
+    }
+
     // --- helpers ---
 
     private static int status(Throwable e) {
@@ -429,6 +781,27 @@ class SessionServiceTest {
         session.setCurrentTurnParticipantId(activeParticipantId);
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(ordered);
+    }
+
+    /**
+     * The canonical visibility fixture: my PC (init 20) → enemy (init 15) →
+     * another player's PC (init 10), already in turn order. enemies_hidden is
+     * TRUE by default on the session.
+     */
+    private List<SessionParticipant> hiddenEnemySetup() {
+        SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant enemy = combatant(2L, (short) 15, 1);
+        enemy.setDexModifier((short) 2);
+        SessionParticipant theirs = pcCombatant(3L, 8L, (short) 10, 2);
+        theirs.setOwnerUserId(strangerId);
+        return new ArrayList<>(List.of(mine, enemy, theirs));
+    }
+
+    /** Canonical PCs for {@link #hiddenEnemySetup()}'s PC combatants. */
+    private void stubPcs() {
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pcWithDex(7L, "Mine", 10), pcWithDex(8L, "Theirs", 10)));
     }
 
     private static PC pcWithDex(Long id, String name, int dex) {

@@ -44,6 +44,14 @@ public class CombatSession implements Serializable {
     // Monotonic counter bumped on every mutation so pollers can skip unchanged state.
     private Long version = 0L;
 
+    // DM checkbox: when true (default), players' snapshots omit enemy combatants
+    // entirely — glow/on-deck are computed per viewer against what they can see.
+    private Boolean enemiesHidden = true;
+
+    // Encounter-level turn-cue key chosen by the DM; clients play it on turn
+    // change (each device can mute locally). Null = no sound.
+    private String turnSound;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -76,4 +84,6 @@ public class CombatSession implements Serializable {
     public void setRound(Short round) { this.round = round; }
     public void setCurrentTurnParticipantId(Long currentTurnParticipantId) { this.currentTurnParticipantId = currentTurnParticipantId; }
     public void setVersion(Long version) { this.version = version; }
+    public void setEnemiesHidden(Boolean enemiesHidden) { this.enemiesHidden = enemiesHidden; }
+    public void setTurnSound(String turnSound) { this.turnSound = turnSound; }
 }

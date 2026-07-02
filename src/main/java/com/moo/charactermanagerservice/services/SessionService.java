@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -99,8 +100,14 @@ public class SessionService {
     /**
      * The poll snapshot. Readable by the DM or by any player who owns a
      * participating PC; everyone else is denied (mirrors campaign member access).
+     *
+     * <p>{@code sinceVersion} is the poll short-circuit: when it matches the
+     * session's current version nothing has changed since the caller's last
+     * snapshot, so this returns null and the controller replies 204 — the 2s
+     * poll then costs a couple of DB reads and an empty response instead of the
+     * full payload.
      */
-    public SessionStateView getState(Long sessionId, UUID userId) {
+    public SessionStateView getState(Long sessionId, UUID userId, Long sinceVersion) {
         CombatSession session = findSession(sessionId);
         List<SessionParticipant> participants =
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
@@ -110,6 +117,9 @@ public class SessionService {
                 .anyMatch(p -> userId.equals(p.getOwnerUserId()));
         if (!isDm && !isMemberOwner) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+        if (sinceVersion != null && sinceVersion.equals(session.getVersion())) {
+            return null;
         }
         return buildState(session, participants, userId);
     }
@@ -251,6 +261,37 @@ public class SessionService {
 
         session.setStatus(SessionStatus.ACTIVE);
         session.setCurrentTurnParticipantId(ordered.get(0).getId());
+        session.setRound((short) 1); // a fresh encounter always opens on round 1
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * End the encounter (not the session): ACTIVE → back to LOBBY. What
+     * happened stands — HP, conditions, and XP were written through live — but
+     * turn tracking stops: the pointer clears, and every combatant's initiative
+     * resets so the next encounter at this table rolls fresh (players may enter
+     * again because init_rolled is back to false). DM only.
+     */
+    public SessionStateView endEncounter(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() != SessionStatus.ACTIVE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No encounter is running");
+        }
+
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        for (SessionParticipant p : participants) {
+            p.setInitiative(null);
+            p.setInitRolled(Boolean.FALSE);
+        }
+        participantRepository.saveAll(participants);
+
+        session.setStatus(SessionStatus.LOBBY);
+        session.setCurrentTurnParticipantId(null);
+        session.setRound((short) 1);
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -258,19 +299,20 @@ public class SessionService {
 
     /**
      * Advance the turn to the next combatant in order, wrapping past the end to
-     * the top and incrementing the round. DM only for now (a player ending
-     * their own turn arrives in a later feature — the authorization branch is
-     * the only planned difference).
+     * the top and incrementing the round. The DM may advance anyone's turn
+     * (Next); a player may only end <em>their own</em> — the advance is allowed
+     * only when the combatant currently holding the turn is owned by the caller.
      *
      * <p>Optimistic concurrency: the caller sends the participant ID they
      * believe is active. A mismatch means they acted on a stale snapshot (e.g.
      * DM Next and a player End Turn racing) — the request is rejected with 409
      * and the client refetches instead of retrying, so the turn can never
-     * double-advance.
+     * double-advance. The stale check runs before the ownership check: by the
+     * time a player's End Turn loses a race, it no longer matters whether the
+     * turn was theirs.
      */
     public SessionStateView advanceTurn(Long sessionId, Long expectedActiveParticipantId, UUID userId) {
         CombatSession session = findSession(sessionId);
-        assertDmOwnership(session, userId);
         if (session.getStatus() != SessionStatus.ACTIVE) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Encounter is not active");
         }
@@ -285,6 +327,18 @@ public class SessionService {
 
         List<SessionParticipant> ordered =
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+
+        boolean isDm = userId.equals(session.getDmUserId());
+        if (!isDm) {
+            boolean ownsActiveCombatant = ordered.stream()
+                    .filter(p -> p.getId().equals(session.getCurrentTurnParticipantId()))
+                    .anyMatch(p -> userId.equals(p.getOwnerUserId()));
+            if (!ownsActiveCombatant) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "You can only end your own turn");
+            }
+        }
+
         movePointerToNext(session, ordered);
 
         session.bumpVersion();
@@ -317,24 +371,42 @@ public class SessionService {
     }
 
     /**
-     * The DM enters (or re-enters) a combatant's initiative. Recomputes the
-     * whole turn order server-side: initiative descending, ties broken by
-     * Dexterity modifier (descending), then by id (insertion order) for
-     * stability. NPCs and not-yet-entered combatants sort last. DM only.
+     * Enter (or re-enter) a combatant's initiative. Recomputes the whole turn
+     * order server-side: initiative descending, ties broken by Dexterity
+     * modifier (descending), then by id (insertion order) for stability. NPCs
+     * and not-yet-entered combatants sort last.
+     *
+     * <p>Authorization: the DM may edit any combatant at any time. A player may
+     * only touch their own combatant, and only to <em>enter</em> initiative —
+     * freely in the lobby, and once the encounter is active only while theirs
+     * is still unset (so a late joiner can slot in mid-encounter, but nobody
+     * revises a bad roll after the fact).
      *
      * <p>The turn pointer is untouched — it is a participant ID, so a
      * combatant whose new initiative sorts them above the current turn lands in
      * territory already passed this round and is only reached after the wrap,
      * i.e. they act starting next round.
      */
-    public SessionStateView setInitiative(Long sessionId, Long participantId, Short value, UUID dmUserId) {
+    public SessionStateView setInitiative(Long sessionId, Long participantId, Short value, UUID userId) {
         CombatSession session = findSession(sessionId);
-        assertDmOwnership(session, dmUserId);
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
 
         SessionParticipant target = requireParticipant(sessionId, participantId);
+
+        boolean isDm = userId.equals(session.getDmUserId());
+        if (!isDm) {
+            if (!userId.equals(target.getOwnerUserId())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+            }
+            boolean locked = session.getStatus() == SessionStatus.ACTIVE
+                    && Boolean.TRUE.equals(target.getInitRolled());
+            if (locked) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Initiative is locked once the encounter starts — ask the DM to change it");
+            }
+        }
 
         target.setInitiative(value);
         target.setInitRolled(Boolean.TRUE);
@@ -344,7 +416,7 @@ public class SessionService {
 
         session.bumpVersion();
         sessionRepository.save(session);
-        return buildState(session, dmUserId);
+        return buildState(session, userId);
     }
 
     /**
@@ -376,14 +448,16 @@ public class SessionService {
     }
 
     /**
-     * A combatant's Dexterity modifier, the initiative tie-breaker. Derived
-     * from the PC's ability score; null for NPCs (a DM-entered enemy modifier
-     * arrives in a later feature). The comparator works on the modifier — not
-     * the raw score — so PC and enemy values will be commensurable.
+     * A combatant's Dexterity modifier, the initiative tie-breaker. For an
+     * enemy it is the DM-entered {@code dexModifier}; for a PC it is derived
+     * from the canonical ability score, so there is no stored copy to drift.
+     * Both sides of the comparison are modifiers, never raw scores.
      * {@code Math.floorDiv} keeps odd scores below 10 correct (9 → -1, not 0).
      */
     private Integer dexModOf(SessionParticipant p, Map<Long, PC> pcsById) {
-        if (p.getPcId() == null) return null;
+        if (p.getPcId() == null) {
+            return p.getDexModifier() == null ? null : p.getDexModifier().intValue();
+        }
         PC pc = pcsById.get(p.getPcId());
         if (pc == null || pc.getAbilityDex() == null) return null;
         return Math.floorDiv(pc.getAbilityDex() - 10, 2);
@@ -544,6 +618,73 @@ public class SessionService {
         return participant;
     }
 
+    /**
+     * DM adds an enemy combatant, in the lobby or mid-encounter. The DM
+     * calculates and enters the DEX modifier (the initiative tie-breaker); the
+     * enemy starts with no initiative, so the re-sort parks it at the bottom of
+     * the order until the DM enters one — at which point the normal late-entry
+     * rule applies (sorted above the pointer means it acts next round).
+     */
+    public SessionStateView addEnemy(Long sessionId, String name, Short dexModifier, Short hpMax,
+                                     UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required");
+        }
+        if (dexModifier == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dexModifier is required");
+        }
+
+        SessionParticipant enemy = new SessionParticipant();
+        enemy.setSessionId(sessionId);
+        enemy.setDisplayName(name.trim());
+        enemy.setDexModifier(dexModifier);
+        enemy.setNpcHpMax(hpMax);
+        enemy.setNpcHpCurrent(hpMax);
+        participantRepository.save(enemy);
+
+        recomputeOrder(sessionId);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /** DM toggles whether players can see enemy combatants at all. */
+    public SessionStateView setVisibility(Long sessionId, Boolean enemiesHidden, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (enemiesHidden == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "enemiesHidden is required");
+        }
+
+        session.setEnemiesHidden(enemiesHidden);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /** DM sets (or clears, with null) the encounter-level turn-cue sound. */
+    public SessionStateView setTurnSound(Long sessionId, String turnSound, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        session.setTurnSound(turnSound);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */
     public SessionStateView endSession(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
@@ -578,6 +719,14 @@ public class SessionService {
     /**
      * Compose the snapshot. PC HP/conditions are read from the canonical pc rows
      * (loaded in one batch); NPC stats come from the participant rows.
+     *
+     * <p>This is the single place visibility is resolved. A player's view with
+     * enemies hidden: enemy rows are omitted from the list (their data never
+     * enters the payload), {@code activeParticipantId} is null while the turn
+     * sits on a combatant they cannot see (no glow, no sound cue), and the
+     * on-deck target is the next combatant in TRUE turn order that they are
+     * allowed to see. The DM always gets the full list and the true next. Turn
+     * order itself is never affected — only what each viewer is shown.
      */
     private SessionStateView buildState(CombatSession session,
                                         List<SessionParticipant> participants,
@@ -586,12 +735,29 @@ public class SessionService {
 
         boolean isDm = requesterId.equals(session.getDmUserId());
         boolean active = session.getStatus() == SessionStatus.ACTIVE;
-        Long activeId = session.getCurrentTurnParticipantId();
+        boolean enemiesHidden = Boolean.TRUE.equals(session.getEnemiesHidden());
 
-        List<ParticipantView> views = participants.stream().map(p -> {
+        List<SessionParticipant> visible = (isDm || !enemiesHidden)
+                ? participants
+                : participants.stream().filter(p -> p.getPcId() != null).toList();
+
+        Long pointerId = active ? session.getCurrentTurnParticipantId() : null;
+        Long activeId = null;
+        Long onDeckId = null;
+        if (pointerId != null) {
+            boolean pointerVisible = visible.stream().anyMatch(p -> pointerId.equals(p.getId()));
+            activeId = pointerVisible ? pointerId : null;
+            onDeckId = nextVisibleAfter(pointerId, participants, visible);
+            if (pointerId.equals(onDeckId)) {
+                onDeckId = null; // one visible combatant — never green and yellow at once
+            }
+        }
+
+        final Long activeIdForViews = activeId;
+        List<ParticipantView> views = visible.stream().map(p -> {
             PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
             boolean ownedByMe = requesterId.equals(p.getOwnerUserId());
-            boolean currentTurn = active && p.getId().equals(activeId);
+            boolean currentTurn = p.getId().equals(activeIdForViews);
             return ParticipantView.from(p, pc, ownedByMe, currentTurn);
         }).toList();
 
@@ -617,14 +783,46 @@ public class SessionService {
                 session.getCampaignId(),
                 session.getStatus().name(),
                 session.getRound(),
-                active ? activeId : null,
+                activeId,
+                onDeckId,
                 session.getVersion(),
                 isDm,
+                enemiesHidden,
+                session.getTurnSound(),
                 shopOpen,
                 shopForMe,
                 shopCategory,
                 myXp,
                 views
         );
+    }
+
+    /**
+     * The next combatant in true cyclic turn order after the pointer that the
+     * viewer is allowed to see — hidden enemies are stepped over, never shown as
+     * a masked slot. Walks at most one full loop, so with a single visible
+     * combatant it returns the pointer itself (the caller nulls that out).
+     */
+    private Long nextVisibleAfter(Long pointerId, List<SessionParticipant> ordered,
+                                  List<SessionParticipant> visible) {
+        int idx = -1;
+        for (int i = 0; i < ordered.size(); i++) {
+            if (pointerId.equals(ordered.get(i).getId())) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) return null;
+
+        Set<Long> visibleIds = visible.stream()
+                .map(SessionParticipant::getId)
+                .collect(Collectors.toSet());
+        for (int step = 1; step <= ordered.size(); step++) {
+            SessionParticipant candidate = ordered.get((idx + step) % ordered.size());
+            if (visibleIds.contains(candidate.getId())) {
+                return candidate.getId();
+            }
+        }
+        return null;
     }
 }

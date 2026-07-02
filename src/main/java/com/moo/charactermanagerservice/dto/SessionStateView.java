@@ -11,6 +11,16 @@ import java.util.List;
  * {@code activeParticipantId} is the stable turn pointer — the participant whose
  * turn it is — and is null unless the encounter is ACTIVE.
  *
+ * <p>Visibility is resolved server-side, per viewer, in one place: when the DM
+ * hides enemies, a player's {@code participants} list omits enemy rows entirely
+ * (their names and initiatives never leave the server), {@code
+ * activeParticipantId} is null while the turn sits on a combatant the viewer
+ * cannot see, and {@code onDeckParticipantId} is the next combatant in true
+ * cyclic order that the viewer IS allowed to see (null when that would be the
+ * active combatant itself, so a single visible combatant never glows twice).
+ * The DM always receives the full list and the true next combatant. Clients
+ * render these two IDs verbatim and never re-derive visibility.</p>
+ *
  * <p>The {@code shop*} fields are the targeted-sync signal for the shopping
  * feature: {@code shopOpen} is true when a shop is active in the session, and
  * {@code shopForMe} is true only for the DM or a targeted attendee — that caller
@@ -29,8 +39,11 @@ public record SessionStateView(
         String status,
         Short round,
         Long activeParticipantId,
+        Long onDeckParticipantId,
         Long version,
         boolean dm,
+        boolean enemiesHidden,
+        String turnSound,
         boolean shopOpen,
         boolean shopForMe,
         String shopCategory,
