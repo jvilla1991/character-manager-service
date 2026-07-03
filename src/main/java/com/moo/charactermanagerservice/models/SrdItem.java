@@ -32,6 +32,7 @@ public class SrdItem implements Serializable {
     private String category;
     private Long costCp;
     private BigDecimal weight;
+    private BigDecimal bulk;   // Darker Dungeons object bulk (0.2/1/2/3/6/9); null = derive from weight
     private String source;
 
     @Column(columnDefinition = "TEXT")
@@ -43,6 +44,7 @@ public class SrdItem implements Serializable {
     public void setCategory(String category) { this.category = category; }
     public void setCostCp(Long costCp) { this.costCp = costCp; }
     public void setWeight(BigDecimal weight) { this.weight = weight; }
+    public void setBulk(BigDecimal bulk) { this.bulk = bulk; }
     public void setSource(String source) { this.source = source; }
     public void setDetails(String details) { this.details = details; }
 }
