@@ -130,6 +130,32 @@ class CampaignServiceTest {
     }
 
     @Test
+    void updateCampaign_preservesGameTime_whenBodyOmitsOrAltersIt() {
+        campaign.setGameTime("{\"year\":1,\"month\":2,\"day\":3,\"timeOfDay\":\"dusk\"}");
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(campaignRepository.save(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign incoming = new Campaign();
+        incoming.setId(1L);
+        incoming.setName("Renamed");
+        incoming.setGameTime("{\"year\":999}"); // tampered body — only the session endpoints move time
+
+        Campaign result = campaignService.updateCampaign(incoming, dmId);
+
+        assertThat(result.getGameTime()).isEqualTo("{\"year\":1,\"month\":2,\"day\":3,\"timeOfDay\":\"dusk\"}");
+    }
+
+    @Test
+    void isVariantEnabled_readsAnyKeyFromTheRulesJson() {
+        campaign.setVariantRules("{\"survivalConditions\":true,\"slotInventory\":false}");
+        assertThat(campaignService.isVariantEnabled(campaign, "survivalConditions")).isTrue();
+        assertThat(campaignService.isVariantEnabled(campaign, "slotInventory")).isFalse();
+
+        campaign.setVariantRules(null);
+        assertThat(campaignService.isVariantEnabled(campaign, "survivalConditions")).isFalse();
+    }
+
+    @Test
     void createCampaign_passesVariantRulesThrough() {
         when(campaignRepository.findByInviteCode(anyString())).thenReturn(Optional.empty());
         when(campaignRepository.saveAndFlush(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));

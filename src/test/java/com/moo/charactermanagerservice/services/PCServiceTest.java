@@ -153,6 +153,57 @@ class PCServiceTest {
         verify(pcRepository, never()).save(any());
     }
 
+    // --- survival preservation (an update omitting it must not wipe it) ---
+
+    @Test
+    void updatePC_preservesSurvival_whenTheBodyOmitsIt() {
+        pc.setSurvival("{\"hunger\":3,\"thirst\":1,\"fatigue\":2}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setName("Renamed"); // survival null — a stale client's payload
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSurvival()).isEqualTo("{\"hunger\":3,\"thirst\":1,\"fatigue\":2}");
+    }
+
+    @Test
+    void updatePC_acceptsAnExplicitSurvival() {
+        pc.setSurvival("{\"hunger\":3,\"thirst\":1,\"fatigue\":2}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setSurvival("{\"hunger\":2,\"thirst\":1,\"fatigue\":2}"); // player ate a ration
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSurvival()).isEqualTo("{\"hunger\":2,\"thirst\":1,\"fatigue\":2}");
+    }
+
+    @Test
+    void updatePCAsDm_preservesSurvival_whenTheBodyOmitsIt() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setSurvival("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+
+        PC result = pcService.updatePCAsDm(incoming, dmId);
+
+        assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
+    }
+
     // --- findPCByIdForDm ---
 
     @Test

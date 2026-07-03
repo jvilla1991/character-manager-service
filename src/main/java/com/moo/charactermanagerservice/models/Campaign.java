@@ -57,6 +57,11 @@ public class Campaign implements Serializable {
     @Column(name = "variant_rules", columnDefinition = "TEXT")
     private String variantRules;   // JSON object of variant-rule opt-ins, set at creation only
 
+    // In-world clock: {"year":1492,"month":3,"day":12,"timeOfDay":"dawn"}; NULL = never set.
+    // Written at creation and by the session time endpoints; pinned on campaign updates.
+    @Column(name = "game_time", columnDefinition = "TEXT")
+    private String gameTime;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -91,4 +96,5 @@ public class Campaign implements Serializable {
     public void setSecrets(String secrets) { this.secrets = secrets; }
     public void setThreads(String threads) { this.threads = threads; }
     public void setVariantRules(String variantRules) { this.variantRules = variantRules; }
+    public void setGameTime(String gameTime) { this.gameTime = gameTime; }
 }
