@@ -91,7 +91,12 @@ public class CampaignService {
 
     /** True when this campaign has opted into slot-based inventory. */
     private boolean slotInventoryEnabled(Campaign campaign) {
-        return Boolean.TRUE.equals(json.parseObject(campaign.getVariantRules()).get("slotInventory"));
+        return isVariantEnabled(campaign, "slotInventory");
+    }
+
+    /** True when this campaign has opted into the named variant rule. */
+    public boolean isVariantEnabled(Campaign campaign, String key) {
+        return Boolean.TRUE.equals(json.parseObject(campaign.getVariantRules()).get(key));
     }
 
     /**

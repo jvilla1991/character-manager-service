@@ -1,13 +1,16 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
+import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
@@ -48,6 +51,7 @@ class SessionServiceTest {
     @Mock private PCRepository pcRepository;
     @Mock private PCService pcService;
     @Mock private CampaignService campaignService;
+    @Mock private CampaignRepository campaignRepository;
     @Mock private EncounterRepository encounterRepository;
     @Mock private EncounterCreatureRepository encounterCreatureRepository;
 
@@ -57,12 +61,13 @@ class SessionServiceTest {
     private UUID playerId;
     private UUID strangerId;
     private CombatSession session;
+    private Campaign campaign;
 
     @BeforeEach
     void setUp() {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
-                shopAttendeeRepository, pcRepository, pcService, campaignService,
-                encounterRepository, encounterCreatureRepository);
+                shopAttendeeRepository, pcRepository, pcService, campaignService, campaignRepository,
+                encounterRepository, encounterCreatureRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -73,6 +78,20 @@ class SessionServiceTest {
         session.setCampaignId(1L);
         session.setDmUserId(dmId);
         session.setStatus(SessionStatus.ACTIVE);
+
+        // buildState reads the campaign clock on every snapshot; variant checks
+        // read variantRules. Lenient: not every test path builds a snapshot.
+        campaign = new Campaign();
+        campaign.setId(1L);
+        campaign.setDmUserId(dmId);
+        lenient().when(campaignService.findById(1L)).thenReturn(campaign);
+        lenient().when(campaignService.isVariantEnabled(any(Campaign.class), anyString()))
+                .thenAnswer(inv -> {
+                    Campaign c = inv.getArgument(0);
+                    String key = inv.getArgument(1);
+                    String rules = c.getVariantRules();
+                    return rules != null && rules.contains("\"" + key + "\":true");
+                });
     }
 
     // --- awardXp (single) ---

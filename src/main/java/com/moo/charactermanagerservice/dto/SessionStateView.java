@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.dto;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The full, server-authoritative snapshot of a live session — the payload of the
@@ -32,6 +33,10 @@ import java.util.List;
  * the requester's own seated PC's current XP total so their sheet can update
  * live, without exposing teammates' XP to each other. Null for the DM or for a
  * player with no seated PC in this session.
+ *
+ * <p>{@code gameTime} is the campaign's in-world clock
+ * ({@code {year, month, day, timeOfDay}}), or null when the DM has never set or
+ * advanced it. Broadcast to every viewer; only the DM may change it.
  */
 public record SessionStateView(
         Long sessionId,
@@ -48,5 +53,6 @@ public record SessionStateView(
         boolean shopForMe,
         String shopCategory,
         Integer myXp,
+        Map<String, Object> gameTime,
         List<ParticipantView> participants
 ) {}

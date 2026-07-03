@@ -1,7 +1,11 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.dto.SetTimeRequest;
+import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
@@ -11,6 +15,7 @@ import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
+import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
@@ -28,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -60,8 +66,10 @@ public class SessionService {
     private final PCRepository pcRepository;
     private final PCService pcService;
     private final CampaignService campaignService;
+    private final CampaignRepository campaignRepository;
     private final EncounterRepository encounterRepository;
     private final EncounterCreatureRepository encounterCreatureRepository;
+    private final PcJsonColumns json;
 
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
@@ -71,8 +79,10 @@ public class SessionService {
                           PCRepository pcRepository,
                           PCService pcService,
                           CampaignService campaignService,
+                          CampaignRepository campaignRepository,
                           EncounterRepository encounterRepository,
-                          EncounterCreatureRepository encounterCreatureRepository) {
+                          EncounterCreatureRepository encounterCreatureRepository,
+                          ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
         this.shopRepository = shopRepository;
@@ -80,8 +90,10 @@ public class SessionService {
         this.pcRepository = pcRepository;
         this.pcService = pcService;
         this.campaignService = campaignService;
+        this.campaignRepository = campaignRepository;
         this.encounterRepository = encounterRepository;
         this.encounterCreatureRepository = encounterCreatureRepository;
+        this.json = new PcJsonColumns(objectMapper);
     }
 
     /**
@@ -506,9 +518,16 @@ public class SessionService {
         if (participant.getPcId() != null) {
             // Write through to the canonical character — this is the source of truth.
             PC pc = pcService.findPCById(participant.getPcId());
+            int before = pc.getHpCurrent() == null ? 0 : pc.getHpCurrent();
             int[] hp = applyHpDelta(pc.getHpCurrent(), pc.getHpTemp(), pc.getHpMax(), amount);
             pc.setHpCurrent((short) hp[0]);
             pc.setHpTemp((short) hp[1]);
+            // Darker Dungeons: dropping to 0 HP is an exhausting shock — +1 fatigue.
+            // Only on the transition into 0 so repeated hits at 0 don't stack.
+            if (before > 0 && hp[0] == 0 && survivalConditionsEnabled(session)) {
+                pc.setSurvival(json.writeObject(
+                        SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", 1)));
+            }
             pcRepository.save(pc);
         } else {
             int[] hp = applyHpDelta(participant.getNpcHpCurrent(), participant.getNpcHpTemp(),
@@ -615,6 +634,166 @@ public class SessionService {
         pc.setXp(updated);
         pcRepository.save(pc);
         return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, updated - current);
+    }
+
+    /** True when the session's campaign runs the survival-conditions variant. */
+    private boolean survivalConditionsEnabled(CombatSession session) {
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        return campaignService.isVariantEnabled(campaign, "survivalConditions");
+    }
+
+    /**
+     * DM advances the campaign clock one segment (dawn → noon → dusk → night →
+     * next day's dawn). The clock is campaign state, so it persists between
+     * sessions. When the campaign runs the survival-conditions variant, entering
+     * dawn/noon/dusk applies the book's condition bumps to EVERY campaign-member
+     * PC — the party stays in sync whether or not each player is seated.
+     *
+     * <p>A campaign whose clock was never set is initialized to day 1 dawn with
+     * NO bumps: the first click establishes the clock, it doesn't pass time.
+     */
+    @Transactional
+    public SessionStateView advanceTime(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        String stored = campaign.getGameTime();
+        if (stored == null || stored.isBlank()) {
+            campaign.setGameTime(json.writeObject(GameClock.initial()));
+        } else {
+            Map<String, Object> advanced = GameClock.advanceSegment(json.parseObject(stored));
+            campaign.setGameTime(json.writeObject(advanced));
+            String segment = String.valueOf(advanced.get("timeOfDay"));
+            boolean bumps = !"night".equals(segment)
+                    && campaignService.isVariantEnabled(campaign, "survivalConditions");
+            if (bumps) {
+                // Lock member rows one at a time in ascending-id order — the same
+                // row lock purchase/sell/consume take, so a concurrent buy can't
+                // be overwritten and lock acquisition can't deadlock.
+                List<Long> memberIds = pcRepository.findByCampaignId(campaign.getId()).stream()
+                        .map(PC::getId)
+                        .sorted()
+                        .toList();
+                for (Long pcId : memberIds) {
+                    pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> {
+                        pc.setSurvival(json.writeObject(
+                                SurvivalRules.applyTimeBump(json.parseObject(pc.getSurvival()), segment)));
+                        pcRepository.save(pc);
+                    });
+                }
+            }
+        }
+        campaignRepository.save(campaign);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * DM sets the campaign clock directly (correcting the date or matching a
+     * homebrew calendar). No condition bumps — only {@link #advanceTime} passes
+     * time. Validates the simplified calendar (12 months of 30 days).
+     */
+    @Transactional
+    public SessionStateView setTime(Long sessionId, SetTimeRequest request, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (request == null
+                || request.year() == null || request.year() < 0
+                || request.month() == null || request.month() < 1 || request.month() > GameClock.MONTHS_PER_YEAR
+                || request.day() == null || request.day() < 1 || request.day() > GameClock.DAYS_PER_MONTH
+                || !GameClock.isValidSegment(request.timeOfDay())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Time requires year >= 0, month 1-12, day 1-30, and timeOfDay dawn|noon|dusk|night");
+        }
+
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        campaign.setGameTime(json.writeObject(GameClock.of(
+                request.year(), request.month(), request.day(), request.timeOfDay())));
+        campaignRepository.save(campaign);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * A player improves their own seated PC's survival condition: EAT consumes a
+     * Rations inventory line (when one exists — the book's economy is optional,
+     * so a missing line still relieves hunger), DRINK a Waterskin line, and the
+     * sleep actions adjust fatigue only. 409 when the campaign doesn't run the
+     * variant — the client never shows these buttons then, so reaching this is a
+     * stale client. Bumps the version so every viewer sees the new stages.
+     */
+    @Transactional
+    public ConsumeResult consumeSurvival(Long sessionId, Long pcId, String actionRaw, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (!survivalConditionsEnabled(session)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This campaign does not use survival conditions");
+        }
+        SurvivalAction action = SurvivalAction.parse(actionRaw);
+        if (pcId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
+        }
+
+        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Character is not seated in this session"));
+        if (!userId.equals(seated.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        // Same row lock as purchase/sell — inventory and survival are read-modify-write.
+        PC pc = pcRepository.findByIdForUpdate(pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
+
+        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
+        if (action == SurvivalAction.EAT) {
+            consumeInventoryLine(inventory, "rations");
+        } else if (action == SurvivalAction.DRINK) {
+            consumeInventoryLine(inventory, "waterskin");
+        }
+
+        Map<String, Object> survival = SurvivalRules.applyAction(json.parseObject(pc.getSurvival()), action);
+        pc.setSurvival(json.writeObject(survival));
+        pc.setInventory(json.write(inventory));
+        pcRepository.save(pc);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new ConsumeResult(pcId, survival, inventory);
+    }
+
+    /**
+     * Decrement one unit of the first live line with this catalog key; the line
+     * is removed at zero. No matching line is fine — the action still applies.
+     */
+    private void consumeInventoryLine(List<Map<String, Object>> inventory, String catalogKey) {
+        for (Iterator<Map<String, Object>> it = inventory.iterator(); it.hasNext(); ) {
+            Map<String, Object> line = it.next();
+            if (!catalogKey.equals(line.get("catalogKey"))) continue;
+            if ("dropped".equals(line.get("status"))) continue;
+            int qty = line.get("qty") instanceof Number n ? n.intValue() : 0;
+            if (qty <= 0) continue;
+            if (qty == 1) {
+                it.remove();
+            } else {
+                line.put("qty", qty - 1);
+            }
+            return;
+        }
     }
 
     /** Load a participant and assert it belongs to the given session (404 otherwise). */
@@ -836,6 +1015,14 @@ public class SessionService {
                 .map(PC::getXp)
                 .orElse(null);
 
+        // The campaign clock rides every snapshot (null until the DM sets it).
+        // The sinceVersion 204 short-circuit returns before buildState, so idle
+        // polls never pay for this campaign read.
+        String storedTime = campaignService.findById(session.getCampaignId()).getGameTime();
+        Map<String, Object> gameTime = (storedTime == null || storedTime.isBlank())
+                ? null
+                : json.parseObject(storedTime);
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -851,6 +1038,7 @@ public class SessionService {
                 shopForMe,
                 shopCategory,
                 myXp,
+                gameTime,
                 views
         );
     }
