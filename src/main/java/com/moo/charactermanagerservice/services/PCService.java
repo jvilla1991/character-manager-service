@@ -56,7 +56,20 @@ public class PCService {
     public PC updatePC(PC pc, UUID userId) {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
+        preserveServerOwnedColumns(pc, existing);
         return pcRepository.save(pc);
+    }
+
+    /**
+     * Survival stages are adjusted server-side during live sessions (time
+     * advancement, consuming rations); a full-entity update body that omits them
+     * must not wipe those changes. Clients adjust survival by sending it — they
+     * can never clear it to NULL, which nothing legitimately does.
+     */
+    private void preserveServerOwnedColumns(PC incoming, PC existing) {
+        if (incoming.getSurvival() == null) {
+            incoming.setSurvival(existing.getSurvival());
+        }
     }
 
     /**
@@ -84,6 +97,7 @@ public class PCService {
         assertCampaignDm(existing, dmUserId);
         incoming.setUserId(existing.getUserId());
         incoming.setCampaignId(existing.getCampaignId());
+        preserveServerOwnedColumns(incoming, existing);
         return pcRepository.save(incoming);
     }
 
