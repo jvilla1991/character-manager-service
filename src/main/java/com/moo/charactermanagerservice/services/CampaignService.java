@@ -1,6 +1,9 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.CampaignPreviewView;
+import com.moo.charactermanagerservice.dto.CampaignSummaryView;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
@@ -30,14 +33,17 @@ public class CampaignService {
     private final CampaignRepository campaignRepository;
     private final PCRepository pcRepository;
     private final PCService pcService;
+    private final PcJsonColumns json;
 
     @Autowired
     public CampaignService(CampaignRepository campaignRepository,
                            PCRepository pcRepository,
-                           PCService pcService) {
+                           PCService pcService,
+                           ObjectMapper objectMapper) {
         this.campaignRepository = campaignRepository;
         this.pcRepository = pcRepository;
         this.pcService = pcService;
+        this.json = new PcJsonColumns(objectMapper);
     }
 
     public Campaign createCampaign(Campaign campaign) {
@@ -61,6 +67,30 @@ public class CampaignService {
     }
 
     /**
+     * Campaign facts a holder of a valid invite code may see BEFORE joining —
+     * powers the consent gate for variant-rule campaigns. Leaks only the name
+     * and the variant flags; possession of the code is the invitation.
+     */
+    public CampaignPreviewView previewByCode(String inviteCode) {
+        Campaign campaign = campaignRepository.findByInviteCode(inviteCode)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "No campaign found for that invite code"));
+        return new CampaignPreviewView(campaign.getName(), json.parseObject(campaign.getVariantRules()));
+    }
+
+    /**
+     * Campaign header for the DM and for owners of member PCs — lets a player's
+     * character sheet learn the campaign's variant rules without the DM-only
+     * full payload.
+     */
+    public CampaignSummaryView getSummary(Long campaignId, UUID userId) {
+        Campaign campaign = findById(campaignId);
+        assertDmOrMemberOwner(campaign, pcRepository.findByCampaignId(campaignId), userId);
+        return new CampaignSummaryView(
+                campaign.getId(), campaign.getName(), json.parseObject(campaign.getVariantRules()));
+    }
+
+    /**
      * Member projections for a campaign. Visible to the owning DM and to any
      * player who owns a member PC; everyone else is denied. Never includes
      * private narrative or campaign secrets.
@@ -68,13 +98,16 @@ public class CampaignService {
     public List<CampaignMemberView> getMembers(Long campaignId, UUID userId) {
         Campaign campaign = findById(campaignId);
         List<PC> members = pcRepository.findByCampaignId(campaignId);
+        assertDmOrMemberOwner(campaign, members, userId);
+        return members.stream().map(CampaignMemberView::from).toList();
+    }
 
+    private void assertDmOrMemberOwner(Campaign campaign, List<PC> members, UUID userId) {
         boolean isDm = userId.equals(campaign.getDmUserId());
         boolean isMemberOwner = members.stream().anyMatch(p -> userId.equals(p.getUserId()));
         if (!isDm && !isMemberOwner) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
-        return members.stream().map(CampaignMemberView::from).toList();
     }
 
     private String generateUniqueInviteCode() {

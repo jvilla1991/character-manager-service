@@ -8,7 +8,6 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
@@ -32,7 +31,6 @@ class CampaignServiceTest {
     @Mock
     private PCService pcService;
 
-    @InjectMocks
     private CampaignService campaignService;
 
     private UUID dmId;
@@ -42,6 +40,9 @@ class CampaignServiceTest {
 
     @BeforeEach
     void setUp() {
+        campaignService = new CampaignService(campaignRepository, pcRepository, pcService,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+
         dmId = UUID.randomUUID();
         strangerId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -180,6 +181,57 @@ class CampaignServiceTest {
                 .thenThrow(new ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN, "Access denied"));
 
         assertThatThrownBy(() -> campaignService.joinByCode("ABC234", 7L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- previewByCode (consent gate) ---
+
+    @Test
+    void previewByCode_returnsNameAndParsedVariantRules() {
+        campaign.setVariantRules("{\"slotInventory\":true}");
+        when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
+
+        var preview = campaignService.previewByCode("ABC234");
+
+        assertThat(preview.name()).isEqualTo("The Veiled Compass");
+        assertThat(preview.variantRules()).containsEntry("slotInventory", true);
+    }
+
+    @Test
+    void previewByCode_returnsEmptyRules_whenColumnNull() {
+        when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
+        assertThat(campaignService.previewByCode("ABC234").variantRules()).isEmpty();
+    }
+
+    @Test
+    void previewByCode_throws404_whenCodeUnknown() {
+        when(campaignRepository.findByInviteCode("ZZZZZZ")).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> campaignService.previewByCode("ZZZZZZ"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
+    }
+
+    // --- getSummary (member-visible header) ---
+
+    @Test
+    void getSummary_allowed_forDm_andForMemberOwner() {
+        campaign.setVariantRules("{\"slotInventory\":true}");
+        PC member = pcOwnedBy(playerId, 7L);
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
+
+        assertThat(campaignService.getSummary(1L, dmId).variantRules()).containsEntry("slotInventory", true);
+        assertThat(campaignService.getSummary(1L, playerId).name()).isEqualTo("The Veiled Compass");
+    }
+
+    @Test
+    void getSummary_throws403_forUnrelatedUser() {
+        PC member = pcOwnedBy(playerId, 7L);
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
+
+        assertThatThrownBy(() -> campaignService.getSummary(1L, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }

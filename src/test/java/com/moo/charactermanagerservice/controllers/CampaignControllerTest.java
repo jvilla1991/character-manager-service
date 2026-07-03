@@ -191,6 +191,34 @@ class CampaignControllerTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
 
+    // --- GET /invite/{code}/preview ---
+
+    @Test
+    void previewInvite_returns200_withPreview() {
+        var preview = new com.moo.charactermanagerservice.dto.CampaignPreviewView(
+                "The Veiled Compass", java.util.Map.of("slotInventory", true));
+        when(campaignService.previewByCode("ABC234")).thenReturn(preview);
+
+        var response = campaignController.previewInvite("ABC234");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(preview);
+    }
+
+    // --- GET /{id}/summary ---
+
+    @Test
+    void getSummary_returns200_forMemberVisibleHeader() {
+        var summary = new com.moo.charactermanagerservice.dto.CampaignSummaryView(
+                1L, "The Veiled Compass", java.util.Map.of("slotInventory", true));
+        when(campaignService.getSummary(1L, dmId)).thenReturn(summary);
+
+        var response = campaignController.getSummary(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(summary);
+    }
+
     // --- POST /join ---
 
     @Test

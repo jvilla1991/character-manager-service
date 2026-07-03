@@ -1,6 +1,8 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.CampaignMemberView;
+import com.moo.charactermanagerservice.dto.CampaignPreviewView;
+import com.moo.charactermanagerservice.dto.CampaignSummaryView;
 import com.moo.charactermanagerservice.dto.CreateNoteRequest;
 import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
 import com.moo.charactermanagerservice.dto.SessionNoteView;
@@ -40,6 +42,20 @@ public class CampaignController {
     public ResponseEntity<Campaign> getCampaign(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(campaignService.findByIdForDm(id, user.getUuid()));
+    }
+
+    /** Invite preview — name + variant rules for a valid code, shown before joining. */
+    @GetMapping("/invite/{code}/preview")
+    public ResponseEntity<CampaignPreviewView> previewInvite(@PathVariable String code) {
+        return ResponseEntity.ok(campaignService.previewByCode(code));
+    }
+
+    /** Campaign header — visible to the DM and to any player who owns a member. */
+    @GetMapping("/{id}/summary")
+    public ResponseEntity<CampaignSummaryView> getSummary(@PathVariable Long id,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(campaignService.getSummary(id, user.getUuid()));
     }
 
     /** Member projections — visible to the DM and to any player who owns a member. */
