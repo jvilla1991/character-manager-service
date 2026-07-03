@@ -111,6 +111,36 @@ class CampaignServiceTest {
     }
 
     @Test
+    void updateCampaign_preservesVariantRules_whenBodyOmitsOrAltersThem() {
+        campaign.setVariantRules("{\"slotInventory\":true}");
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(campaignRepository.save(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign incoming = new Campaign();
+        incoming.setId(1L);
+        incoming.setName("Renamed");
+        incoming.setVariantRules("{\"slotInventory\":false}"); // tampered body
+
+        Campaign result = campaignService.updateCampaign(incoming, dmId);
+
+        assertThat(result.getVariantRules()).isEqualTo("{\"slotInventory\":true}");
+    }
+
+    @Test
+    void createCampaign_passesVariantRulesThrough() {
+        when(campaignRepository.findByInviteCode(anyString())).thenReturn(Optional.empty());
+        when(campaignRepository.saveAndFlush(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign fresh = new Campaign();
+        fresh.setName("Slots & Bulk");
+        fresh.setVariantRules("{\"slotInventory\":true}");
+
+        Campaign result = campaignService.createCampaign(fresh);
+
+        assertThat(result.getVariantRules()).isEqualTo("{\"slotInventory\":true}");
+    }
+
+    @Test
     void deleteCampaign_throws403_whenNotOwner() {
         when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
         assertThatThrownBy(() -> campaignService.deleteCampaign(1L, strangerId))

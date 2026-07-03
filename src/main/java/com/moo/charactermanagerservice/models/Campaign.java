@@ -54,6 +54,9 @@ public class Campaign implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String threads;   // JSON array of open plot threads
 
+    @Column(name = "variant_rules", columnDefinition = "TEXT")
+    private String variantRules;   // JSON object of variant-rule opt-ins, set at creation only
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -87,4 +90,5 @@ public class Campaign implements Serializable {
     public void setChronicle(String chronicle) { this.chronicle = chronicle; }
     public void setSecrets(String secrets) { this.secrets = secrets; }
     public void setThreads(String threads) { this.threads = threads; }
+    public void setVariantRules(String variantRules) { this.variantRules = variantRules; }
 }

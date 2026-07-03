@@ -117,6 +117,9 @@ public class CampaignService {
         assertDmOwnership(existing, dmUserId);
         // dm ownership is immutable — never let the body reassign the DM.
         campaign.setDmUserId(existing.getDmUserId());
+        // variant rules are chosen at creation and immutable — a body that omits
+        // them (every existing client) must not null the column.
+        campaign.setVariantRules(existing.getVariantRules());
         return campaignRepository.save(campaign);
     }
 
