@@ -19,6 +19,10 @@ final class SurvivalRules {
 
     static final int MIN_STAGE = 0;
     static final int MAX_STAGE = 6;
+    // A never-tracked condition sits at "Ok" — the table's neutral row. Stage 0
+    // is "Stuffed" (better than well-fed, worth −1 exhaustion), which a fresh
+    // character hasn't earned.
+    static final int DEFAULT_STAGE = 2;
 
     private SurvivalRules() {}
 
@@ -37,7 +41,7 @@ final class SurvivalRules {
 
     static int stageOf(Map<String, Object> survival, String key) {
         Object value = survival.get(key);
-        return clamp(value instanceof Number n ? n.intValue() : 0);
+        return clamp(value instanceof Number n ? n.intValue() : DEFAULT_STAGE);
     }
 
     /** One condition bumped by {@code delta} (either sign), clamped. */

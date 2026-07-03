@@ -11,11 +11,13 @@ import static org.assertj.core.api.Assertions.*;
 class SurvivalRulesTest {
 
     @Test
-    void normalize_defaultsMissingStagesToZero_andClamps() {
+    void normalize_defaultsMissingStagesToOk_andClamps() {
+        // Never-tracked = "Ok" (stage 2), the table's neutral row — not
+        // "Stuffed" (stage 0), which would grant −1 exhaustion for free.
         assertThat(SurvivalRules.normalize(Map.of()))
-                .containsEntry("hunger", 0)
-                .containsEntry("thirst", 0)
-                .containsEntry("fatigue", 0);
+                .containsEntry("hunger", 2)
+                .containsEntry("thirst", 2)
+                .containsEntry("fatigue", 2);
         assertThat(SurvivalRules.normalize(Map.of("hunger", 11, "fatigue", -2)))
                 .containsEntry("hunger", 6)
                 .containsEntry("fatigue", 0);
@@ -32,11 +34,11 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void noon_bumpsFatigueOnly() {
+    void noon_bumpsFatigueOnly_fromTheOkDefault() {
         assertThat(SurvivalRules.applyTimeBump(Map.of(), "noon"))
-                .containsEntry("hunger", 0)
-                .containsEntry("thirst", 0)
-                .containsEntry("fatigue", 1);
+                .containsEntry("hunger", 2)
+                .containsEntry("thirst", 2)
+                .containsEntry("fatigue", 3);
     }
 
     @Test
@@ -53,8 +55,8 @@ class SurvivalRulesTest {
     void night_isTheSleepWindow_noBumps() {
         assertThat(SurvivalRules.applyTimeBump(Map.of("hunger", 3), "night"))
                 .containsEntry("hunger", 3)
-                .containsEntry("thirst", 0)
-                .containsEntry("fatigue", 0);
+                .containsEntry("thirst", 2)
+                .containsEntry("fatigue", 2);
     }
 
     @Test

@@ -889,8 +889,8 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         PC tracked = pc(7L, "Gorath", 0);
-        tracked.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}");
-        PC fresh = pc(8L, "Pip", 0); // never tracked → stages default to 0
+        tracked.setSurvival("{\"hunger\":1,\"thirst\":1,\"fatigue\":1}");
+        PC fresh = pc(8L, "Pip", 0); // never tracked → stages default to Ok (2)
         when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(fresh, tracked));
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(tracked));
         when(pcRepository.findByIdForUpdate(8L)).thenReturn(Optional.of(fresh));
@@ -898,8 +898,8 @@ class SessionServiceTest {
         sessionService.advanceTime(1L, dmId);
 
         assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"noon\"");
-        assertThat(tracked.getSurvival()).contains("\"fatigue\":3").contains("\"hunger\":2");
-        assertThat(fresh.getSurvival()).contains("\"fatigue\":1").contains("\"hunger\":0");
+        assertThat(tracked.getSurvival()).contains("\"fatigue\":2").contains("\"hunger\":1");
+        assertThat(fresh.getSurvival()).contains("\"fatigue\":3").contains("\"hunger\":2");
         verify(pcRepository).save(tracked);
         verify(pcRepository).save(fresh);
     }
@@ -1102,7 +1102,7 @@ class SessionServiceTest {
         sessionService.applyDamage(1L, 5L, 9, dmId);
 
         assertThat(pc.getHpCurrent()).isZero();
-        assertThat(pc.getSurvival()).contains("\"fatigue\":1");
+        assertThat(pc.getSurvival()).contains("\"fatigue\":3"); // Ok default (2) + 1
     }
 
     @Test
