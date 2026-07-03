@@ -191,6 +191,34 @@ class CampaignControllerTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
 
+    // --- GET /invite/{code}/preview ---
+
+    @Test
+    void previewInvite_returns200_withPreview() {
+        var preview = new com.moo.charactermanagerservice.dto.CampaignPreviewView(
+                "The Veiled Compass", java.util.Map.of("slotInventory", true));
+        when(campaignService.previewByCode("ABC234")).thenReturn(preview);
+
+        var response = campaignController.previewInvite("ABC234");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(preview);
+    }
+
+    // --- GET /{id}/summary ---
+
+    @Test
+    void getSummary_returns200_forMemberVisibleHeader() {
+        var summary = new com.moo.charactermanagerservice.dto.CampaignSummaryView(
+                1L, "The Veiled Compass", java.util.Map.of("slotInventory", true));
+        when(campaignService.getSummary(1L, dmId)).thenReturn(summary);
+
+        var response = campaignController.getSummary(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(summary);
+    }
+
     // --- POST /join ---
 
     @Test
@@ -198,9 +226,10 @@ class CampaignControllerTest {
         PC bound = new PC();
         bound.setId(7L);
         bound.setCampaignId(1L);
-        when(campaignService.joinByCode("ABC234", 7L, dmId)).thenReturn(bound);
+        when(campaignService.joinByCode("ABC234", 7L, true, dmId)).thenReturn(bound);
 
-        ResponseEntity<PC> response = campaignController.joinCampaign(auth, new JoinCampaignRequest("ABC234", 7L));
+        ResponseEntity<PC> response = campaignController.joinCampaign(auth,
+                new JoinCampaignRequest("ABC234", 7L, true));
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isSameAs(bound);
@@ -208,10 +237,10 @@ class CampaignControllerTest {
 
     @Test
     void joinCampaign_propagates404_whenCodeUnknown() {
-        when(campaignService.joinByCode("ZZZZZZ", 7L, dmId))
+        when(campaignService.joinByCode("ZZZZZZ", 7L, null, dmId))
                 .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "No campaign"));
 
-        assertThatThrownBy(() -> campaignController.joinCampaign(auth, new JoinCampaignRequest("ZZZZZZ", 7L)))
+        assertThatThrownBy(() -> campaignController.joinCampaign(auth, new JoinCampaignRequest("ZZZZZZ", 7L, null)))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
     }
