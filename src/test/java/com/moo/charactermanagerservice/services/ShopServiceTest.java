@@ -199,6 +199,36 @@ class ShopServiceTest {
     }
 
     @Test
+    void purchase_stampsCatalogBulk_onNewInventoryLine() {
+        stubActiveShopWithAttendee();
+        SrdItem sword = longsword();
+        sword.setBulk(new java.math.BigDecimal("3.0"));
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(sword));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "longsword", 1, playerId);
+
+        assertThat(result.inventory().get(0)).containsEntry("bulk", new java.math.BigDecimal("3.0"));
+    }
+
+    @Test
+    void purchase_derivesBulkFromWeight_whenCatalogHasNone() {
+        stubActiveShopWithAttendee();
+        SrdItem sword = longsword();
+        sword.setWeight(new java.math.BigDecimal("3")); // ≤5 lb band → 2 bulk
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(sword));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "longsword", 1, playerId);
+
+        assertThat(result.inventory().get(0)).containsEntry("bulk", new java.math.BigDecimal("2"));
+    }
+
+    @Test
     void purchase_stacksQuantity_onRepeatBuy() {
         stubActiveShopWithAttendee();
         when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));

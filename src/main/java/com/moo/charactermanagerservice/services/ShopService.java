@@ -355,6 +355,9 @@ public class ShopService {
         entry.put("qty", qty);
         entry.put("unitCostCp", unitCostCp); // the price actually paid (curated override or catalog)
         if (item.getWeight() != null) entry.put("weight", item.getWeight());
+        // Darker Dungeons bulk — stamped on every purchase so slot-variant
+        // campaigns can total it; inert everywhere else.
+        entry.put("bulk", BulkRules.bulkFor(item.getBulk(), item.getWeight()));
         // Flatten the catalog details (damage, properties, …) into the owned item.
         json.parseObject(item.getDetails()).forEach(entry::putIfAbsent);
         return entry;
