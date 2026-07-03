@@ -59,6 +59,11 @@ final class CoinPurse {
         return fromCopper(total - priceCp);
     }
 
+    /** Add {@code gainCp} (a sale payout) to the purse and return the new purse. */
+    static Map<String, Integer> add(Map<String, ?> coins, long gainCp) {
+        return fromCopper(toCopper(coins) + gainCp);
+    }
+
     private static long n(Map<String, ?> m, String key) {
         Object v = m.get(key);
         return v instanceof Number num ? num.longValue() : 0L;

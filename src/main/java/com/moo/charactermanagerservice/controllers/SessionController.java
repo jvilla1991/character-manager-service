@@ -1,9 +1,14 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.AddEnemyRequest;
+import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
+import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
+import com.moo.charactermanagerservice.dto.SetSoundRequest;
+import com.moo.charactermanagerservice.dto.SetVisibilityRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.dto.XpAwardRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
@@ -51,12 +56,18 @@ public class SessionController {
         return state == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(state);
     }
 
-    /** Poll snapshot — visible to the DM and to any player who owns a participant. */
+    /**
+     * Poll snapshot — visible to the DM and to any player who owns a participant.
+     * Pass {@code sinceVersion} (the version of the caller's last snapshot) to get
+     * 204 instead of the full payload when nothing has changed.
+     */
     @GetMapping("/session/{id}/state")
     public ResponseEntity<SessionStateView> getState(@PathVariable Long id,
+                                                     @RequestParam(required = false) Long sinceVersion,
                                                      Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(sessionService.getState(id, user.getUuid()));
+        SessionStateView state = sessionService.getState(id, user.getUuid(), sinceVersion);
+        return state == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(state);
     }
 
     /** A player seats one of their own PCs (must be a member of the campaign). */
@@ -77,7 +88,11 @@ public class SessionController {
         return ResponseEntity.ok(sessionService.removeParticipant(id, participantId, user.getUuid()));
     }
 
-    /** DM enters a combatant's initiative; the server re-sorts the turn order. */
+    /**
+     * Enter a combatant's initiative; the server re-sorts the turn order. DM:
+     * anyone, anytime. Player: own combatant only, and never to revise it once
+     * the encounter is active.
+     */
     @PutMapping("/session/{id}/participants/{participantId}/initiative")
     public ResponseEntity<SessionStateView> setInitiative(@PathVariable Long id,
                                                          @PathVariable Long participantId,
@@ -118,6 +133,81 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.awardXpToAll(id, request.amount(), user.getUuid()));
+    }
+
+    /** DM starts the encounter (LOBBY → ACTIVE); turn points at the top of the order. */
+    @PostMapping("/session/{id}/start")
+    public ResponseEntity<SessionStateView> startEncounter(@PathVariable Long id,
+                                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.startEncounter(id, user.getUuid()));
+    }
+
+    /**
+     * DM ends the encounter (ACTIVE → LOBBY): turn tracking stops, initiative
+     * clears for the next encounter; HP/XP changes already persisted stand.
+     * The session itself stays open — see {@code /end} for closing the table.
+     */
+    @PostMapping("/session/{id}/encounter/end")
+    public ResponseEntity<SessionStateView> endEncounter(@PathVariable Long id,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.endEncounter(id, user.getUuid()));
+    }
+
+    /**
+     * Advance the turn (wraps past the end and increments the round). DM Next,
+     * or a player ending their own turn — the server checks the active combatant
+     * is theirs. Carries the caller's expected active-participant ID so a stale
+     * advance is rejected with 409 instead of double-advancing.
+     */
+    @PostMapping("/session/{id}/advance")
+    public ResponseEntity<SessionStateView> advanceTurn(@PathVariable Long id,
+                                                        @RequestBody AdvanceRequest request,
+                                                        Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.advanceTurn(id, request.expectedActiveParticipantId(), user.getUuid()));
+    }
+
+    /** DM adds an enemy (with a DM-calculated DEX modifier), lobby or mid-encounter. */
+    @PostMapping("/session/{id}/enemies")
+    public ResponseEntity<SessionStateView> addEnemy(@PathVariable Long id,
+                                                     @RequestBody AddEnemyRequest request,
+                                                     Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(sessionService.addEnemy(
+                id, request.name(), request.dexModifier(), request.hpMax(), user.getUuid()));
+    }
+
+    /** DM loads a curated encounter's creatures into the session as enemy combatants. */
+    @PostMapping("/session/{id}/encounter/load")
+    public ResponseEntity<SessionStateView> loadEncounter(@PathVariable Long id,
+                                                          @RequestBody LoadEncounterRequest request,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                sessionService.loadEncounter(id, request.encounterId(), user.getUuid()));
+    }
+
+    /** DM toggles whether players can see enemy combatants. */
+    @PutMapping("/session/{id}/visibility")
+    public ResponseEntity<SessionStateView> setVisibility(@PathVariable Long id,
+                                                          @RequestBody SetVisibilityRequest request,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.setVisibility(id, request.enemiesHidden(), user.getUuid()));
+    }
+
+    /** DM sets (or clears) the encounter-level turn-cue sound. */
+    @PutMapping("/session/{id}/sound")
+    public ResponseEntity<SessionStateView> setTurnSound(@PathVariable Long id,
+                                                         @RequestBody SetSoundRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.setTurnSound(id, request.turnSound(), user.getUuid()));
     }
 
     /** DM ends the session. */

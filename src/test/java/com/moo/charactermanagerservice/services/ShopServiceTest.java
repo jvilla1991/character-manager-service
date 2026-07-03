@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.PurchaseResult;
+import com.moo.charactermanagerservice.dto.SellResult;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
@@ -198,6 +199,36 @@ class ShopServiceTest {
     }
 
     @Test
+    void purchase_stampsCatalogBulk_onNewInventoryLine() {
+        stubActiveShopWithAttendee();
+        SrdItem sword = longsword();
+        sword.setBulk(new java.math.BigDecimal("3.0"));
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(sword));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "longsword", 1, playerId);
+
+        assertThat(result.inventory().get(0)).containsEntry("bulk", new java.math.BigDecimal("3.0"));
+    }
+
+    @Test
+    void purchase_derivesBulkFromWeight_whenCatalogHasNone() {
+        stubActiveShopWithAttendee();
+        SrdItem sword = longsword();
+        sword.setWeight(new java.math.BigDecimal("3")); // ≤5 lb band → 2 bulk
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(sword));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "longsword", 1, playerId);
+
+        assertThat(result.inventory().get(0)).containsEntry("bulk", new java.math.BigDecimal("2"));
+    }
+
+    @Test
     void purchase_stacksQuantity_onRepeatBuy() {
         stubActiveShopWithAttendee();
         when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
@@ -277,6 +308,147 @@ class ShopServiceTest {
         assertThatThrownBy(() -> shopService.purchase(1L, 7L, "longsword", 0, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- sell ---
+
+    @Test
+    void sell_creditsHalfCatalogPrice_removesLine_andReportsGain() {
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":5}",
+                "[{\"catalogKey\":\"longsword\",\"name\":\"Longsword\",\"category\":\"weapon\",\"qty\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(750L); // half of 1500 catalog price
+        // 500cp (5gp) + 750cp = 1250cp -> re-minted as 1pp 2gp 5sp
+        assertThat(result.coins()).containsEntry("pp", 1).containsEntry("gp", 2).containsEntry("sp", 5);
+        assertThat(result.inventory()).isEmpty();
+        verify(pcRepository).findByIdForUpdate(7L);
+        verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void sell_fallsBackToUnitCostCp_whenNoCatalogKey() {
+        stubActiveShopWithAttendee();
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"name\":\"Heirloom Ring\",\"category\":\"weapon\",\"qty\":1,\"unitCostCp\":1000}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(500L); // half of the 1000cp paid
+        verify(srdItemRepository, never()).findByItemKey(any());
+    }
+
+    @Test
+    void sell_multipliesByStackQuantity() {
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":3}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(2250L); // half of 1500 * 3
+    }
+
+    @Test
+    void sell_throws400_whenItemIsDropped() {
+        stubActiveShopWithAttendee();
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":1,\"status\":\"dropped\"}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void sell_throws400_whenStandardShopCategoryMismatches() {
+        stubActiveShopWithAttendee(); // shop category is WEAPON
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"shield\",\"category\":\"armor\",\"qty\":1,\"unitCostCp\":1000}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void sell_allowsAnyCategory_atCuratedShop() {
+        SessionShop curatedSession = new SessionShop();
+        curatedSession.setId(10L);
+        curatedSession.setSessionId(1L);
+        curatedSession.setShopId(50L); // curated — no category
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(curatedSession));
+        when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L))
+                .thenReturn(Optional.of(attendee(7L, playerId)));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"shield\",\"category\":\"armor\",\"qty\":1,\"unitCostCp\":1000}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(500L);
+    }
+
+    @Test
+    void sell_throws400_whenNoResolvablePrice() {
+        stubActiveShopWithAttendee();
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"name\":\"Mystery Note\",\"category\":\"weapon\",\"qty\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void sell_throws400_whenIndexOutOfBounds() {
+        stubActiveShopWithAttendee();
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}", "[]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void sell_throws403_whenCharacterNotAtShop() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(shop));
+        when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void sell_throws403_whenCallerDoesNotOwnCharacter() {
+        stubActiveShopWithAttendee();
+        PC pc = pcOwnedBy(strangerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
 
     // --- curated shop activation + browse ---

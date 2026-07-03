@@ -44,6 +44,10 @@ public class SessionParticipant implements Serializable {
 
     private Boolean initRolled = false;
 
+    // Initiative tie-breaker for NPC rows, entered by the DM. Null for PCs —
+    // their modifier is derived from the canonical pc.ability_dex at sort time.
+    private Short dexModifier;
+
     private Short orderIndex = 0;
 
     // --- NPC-only combat state (null for PC rows; PC HP/conditions live on pc) ---
@@ -75,6 +79,7 @@ public class SessionParticipant implements Serializable {
     public void setDisplayName(String displayName) { this.displayName = displayName; }
     public void setInitiative(Short initiative) { this.initiative = initiative; }
     public void setInitRolled(Boolean initRolled) { this.initRolled = initRolled; }
+    public void setDexModifier(Short dexModifier) { this.dexModifier = dexModifier; }
     public void setOrderIndex(Short orderIndex) { this.orderIndex = orderIndex; }
     public void setNpcHpCurrent(Short npcHpCurrent) { this.npcHpCurrent = npcHpCurrent; }
     public void setNpcHpMax(Short npcHpMax) { this.npcHpMax = npcHpMax; }
