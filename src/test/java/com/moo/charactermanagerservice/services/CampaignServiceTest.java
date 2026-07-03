@@ -30,6 +30,8 @@ class CampaignServiceTest {
     private PCRepository pcRepository;
     @Mock
     private PCService pcService;
+    @Mock
+    private SlotInventoryConversionService conversionService;
 
     private CampaignService campaignService;
 
@@ -41,7 +43,7 @@ class CampaignServiceTest {
     @BeforeEach
     void setUp() {
         campaignService = new CampaignService(campaignRepository, pcRepository, pcService,
-                new com.fasterxml.jackson.databind.ObjectMapper());
+                conversionService, new com.fasterxml.jackson.databind.ObjectMapper());
 
         dmId = UUID.randomUUID();
         strangerId = UUID.randomUUID();
@@ -157,21 +159,24 @@ class CampaignServiceTest {
         PC pc = pcOwnedBy(playerId, 7L);
         when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
         when(pcService.findPCByIdForUser(7L, playerId)).thenReturn(pc);
-        when(pcService.updatePC(pc, playerId)).thenAnswer(inv -> inv.getArgument(0));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenAnswer(inv -> inv.getArgument(0));
 
-        PC result = campaignService.joinByCode("ABC234", 7L, playerId);
+        PC result = campaignService.joinByCode("ABC234", 7L, null, playerId);
 
         assertThat(result.getCampaignId()).isEqualTo(1L);
-        verify(pcService).updatePC(pc, playerId);
+        verify(pcRepository).findByIdForUpdate(7L); // locked read
+        verify(pcRepository).save(pc);
+        verify(conversionService, never()).convert(any()); // no variant rules
     }
 
     @Test
     void joinByCode_throws404_whenCodeUnknown() {
         when(campaignRepository.findByInviteCode("ZZZZZZ")).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> campaignService.joinByCode("ZZZZZZ", 7L, playerId))
+        assertThatThrownBy(() -> campaignService.joinByCode("ZZZZZZ", 7L, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
-        verify(pcService, never()).updatePC(any(), any());
+        verify(pcRepository, never()).save(any());
     }
 
     @Test
@@ -180,9 +185,52 @@ class CampaignServiceTest {
         when(pcService.findPCByIdForUser(7L, strangerId))
                 .thenThrow(new ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN, "Access denied"));
 
-        assertThatThrownBy(() -> campaignService.joinByCode("ABC234", 7L, strangerId))
+        assertThatThrownBy(() -> campaignService.joinByCode("ABC234", 7L, null, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    @Test
+    void joinByCode_throws409_forSlotCampaign_withoutAcknowledgment() {
+        campaign.setVariantRules("{\"slotInventory\":true}");
+        PC pc = pcOwnedBy(playerId, 7L);
+        when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
+        when(pcService.findPCByIdForUser(7L, playerId)).thenReturn(pc);
+
+        for (Boolean ack : new Boolean[]{null, Boolean.FALSE}) {
+            assertThatThrownBy(() -> campaignService.joinByCode("ABC234", 7L, ack, playerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(409));
+        }
+        verify(conversionService, never()).convert(any());
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void joinByCode_convertsAndBinds_forSlotCampaign_withAcknowledgment() {
+        campaign.setVariantRules("{\"slotInventory\":true}");
+        PC pc = pcOwnedBy(playerId, 7L);
+        when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
+        when(pcService.findPCByIdForUser(7L, playerId)).thenReturn(pc);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = campaignService.joinByCode("ABC234", 7L, true, playerId);
+
+        assertThat(result.getCampaignId()).isEqualTo(1L);
+        verify(conversionService).convert(pc);
+    }
+
+    @Test
+    void joinByCode_ignoresAcknowledgment_forNonVariantCampaign() {
+        PC pc = pcOwnedBy(playerId, 7L);
+        when(campaignRepository.findByInviteCode("ABC234")).thenReturn(Optional.of(campaign));
+        when(pcService.findPCByIdForUser(7L, playerId)).thenReturn(pc);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(campaignService.joinByCode("ABC234", 7L, true, playerId).getCampaignId()).isEqualTo(1L);
+        verify(conversionService, never()).convert(any());
     }
 
     // --- previewByCode (consent gate) ---

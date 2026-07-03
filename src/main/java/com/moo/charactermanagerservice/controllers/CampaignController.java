@@ -71,7 +71,8 @@ public class CampaignController {
     public ResponseEntity<PC> joinCampaign(Authentication authentication,
                                            @RequestBody JoinCampaignRequest request) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(campaignService.joinByCode(request.code(), request.pcId(), user.getUuid()));
+        return ResponseEntity.ok(campaignService.joinByCode(
+                request.code(), request.pcId(), request.acknowledgeVariantRules(), user.getUuid()));
     }
 
     @PostMapping("/add")
