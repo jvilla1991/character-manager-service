@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
+import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.SetSoundRequest;
@@ -177,6 +178,16 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.status(HttpStatus.CREATED).body(sessionService.addEnemy(
                 id, request.name(), request.dexModifier(), request.hpMax(), user.getUuid()));
+    }
+
+    /** DM loads a curated encounter's creatures into the session as enemy combatants. */
+    @PostMapping("/session/{id}/encounter/load")
+    public ResponseEntity<SessionStateView> loadEncounter(@PathVariable Long id,
+                                                          @RequestBody LoadEncounterRequest request,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                sessionService.loadEncounter(id, request.encounterId(), user.getUuid()));
     }
 
     /** DM toggles whether players can see enemy combatants. */

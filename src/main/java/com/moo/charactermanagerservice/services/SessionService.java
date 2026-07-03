@@ -5,11 +5,15 @@ import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
+import com.moo.charactermanagerservice.models.Encounter;
+import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
+import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
+import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -17,6 +21,7 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
@@ -55,6 +60,8 @@ public class SessionService {
     private final PCRepository pcRepository;
     private final PCService pcService;
     private final CampaignService campaignService;
+    private final EncounterRepository encounterRepository;
+    private final EncounterCreatureRepository encounterCreatureRepository;
 
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
@@ -63,7 +70,9 @@ public class SessionService {
                           SessionShopAttendeeRepository shopAttendeeRepository,
                           PCRepository pcRepository,
                           PCService pcService,
-                          CampaignService campaignService) {
+                          CampaignService campaignService,
+                          EncounterRepository encounterRepository,
+                          EncounterCreatureRepository encounterCreatureRepository) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
         this.shopRepository = shopRepository;
@@ -71,6 +80,8 @@ public class SessionService {
         this.pcRepository = pcRepository;
         this.pcService = pcService;
         this.campaignService = campaignService;
+        this.encounterRepository = encounterRepository;
+        this.encounterCreatureRepository = encounterCreatureRepository;
     }
 
     /**
@@ -646,6 +657,53 @@ public class SessionService {
         enemy.setNpcHpMax(hpMax);
         enemy.setNpcHpCurrent(hpMax);
         participantRepository.save(enemy);
+
+        recomputeOrder(sessionId);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * DM loads a curated encounter into the session: every {@link EncounterCreature}
+     * becomes an enemy combatant, exactly as {@link #addEnemy} would create it (no
+     * initiative — the DM rolls). Creatures are appended to any existing combatants;
+     * a quantity &gt; 1 expands into numbered rows (e.g. Goblin 1..Goblin 4). The
+     * whole load is one transaction and bumps the version once.
+     */
+    @Transactional
+    public SessionStateView loadEncounter(Long sessionId, Long encounterId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        Encounter encounter = encounterRepository.findById(encounterId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Encounter not found with id " + encounterId));
+        // The encounter must belong to this DM and to this session's campaign.
+        if (!dmUserId.equals(encounter.getDmUserId())
+                || !Objects.equals(encounter.getCampaignId(), session.getCampaignId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        List<EncounterCreature> creatures =
+                encounterCreatureRepository.findByEncounterIdOrderByIdAsc(encounterId);
+        for (EncounterCreature creature : creatures) {
+            int count = Math.max(1, creature.getQuantity());
+            for (int n = 1; n <= count; n++) {
+                SessionParticipant enemy = new SessionParticipant();
+                enemy.setSessionId(sessionId);
+                // Suffix a running number only when there is more than one of this creature.
+                enemy.setDisplayName(count > 1 ? creature.getName() + " " + n : creature.getName());
+                enemy.setDexModifier(creature.getDexModifier());
+                enemy.setNpcHpMax(creature.getHpMax());
+                enemy.setNpcHpCurrent(creature.getHpMax());
+                participantRepository.save(enemy);
+            }
+        }
 
         recomputeOrder(sessionId);
 
