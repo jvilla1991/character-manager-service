@@ -52,23 +52,25 @@ final class SurvivalRules {
     }
 
     /**
-     * The book's time-of-day table. Dawn: +1 hunger, +1 thirst. Noon: +1 fatigue.
-     * Dusk: +1 to all three. Night (or anything unknown): no change.
+     * The book's time-of-day table mapped onto the three-segment day (owner
+     * decision): morning takes dawn's +1 hunger +1 thirst, noon keeps
+     * +1 fatigue, and night takes dusk's +1 to all three (sleep happens
+     * during the night before the next morning). Unknown segments: no change.
      */
     static Map<String, Object> applyTimeBump(Map<String, Object> survival, String timeOfDay) {
         Map<String, Object> out = normalize(survival);
         switch (timeOfDay == null ? "" : timeOfDay) {
-            case "dawn" -> {
+            case "morning" -> {
                 out.put("hunger", clamp((int) out.get("hunger") + 1));
                 out.put("thirst", clamp((int) out.get("thirst") + 1));
             }
             case "noon" -> out.put("fatigue", clamp((int) out.get("fatigue") + 1));
-            case "dusk" -> {
+            case "night" -> {
                 out.put("hunger", clamp((int) out.get("hunger") + 1));
                 out.put("thirst", clamp((int) out.get("thirst") + 1));
                 out.put("fatigue", clamp((int) out.get("fatigue") + 1));
             }
-            default -> { /* night: the sleep window — no bumps */ }
+            default -> { /* unknown segment — no bumps */ }
         }
         return out;
     }
