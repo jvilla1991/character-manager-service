@@ -541,6 +541,50 @@ class ShopServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
+    // --- catalog (DM-grant picker) ---
+
+    @Test
+    void catalog_returnsItems_withDetailsParsed_andCatalogBulk() {
+        SrdItem sword = longsword();
+        sword.setWeight(new java.math.BigDecimal("3"));
+        sword.setBulk(new java.math.BigDecimal("2")); // explicit rating wins over weight band
+        when(srdItemRepository.findByCategoryOrderByNameAsc("WEAPON")).thenReturn(List.of(sword));
+
+        var items = shopService.catalog("WEAPON");
+
+        assertThat(items).hasSize(1);
+        var view = items.get(0);
+        assertThat(view.itemKey()).isEqualTo("longsword");
+        assertThat(view.costCp()).isEqualTo(1500L);
+        assertThat(view.bulk()).isEqualByComparingTo("2");
+        assertThat(view.details()).containsEntry("damage", "1d8 slashing");
+    }
+
+    @Test
+    void catalog_derivesBulkFromWeightBand_whenNoCatalogRating() {
+        SrdItem sword = longsword();
+        sword.setWeight(new java.math.BigDecimal("3")); // ≤5 lb band → 2
+        sword.setBulk(null);
+        when(srdItemRepository.findByCategoryOrderByNameAsc("WEAPON")).thenReturn(List.of(sword));
+
+        assertThat(shopService.catalog("WEAPON").get(0).bulk()).isEqualByComparingTo("2");
+    }
+
+    @Test
+    void catalog_normalizesCategoryInput() {
+        when(srdItemRepository.findByCategoryOrderByNameAsc("GEAR")).thenReturn(List.of());
+
+        assertThat(shopService.catalog(" gear ")).isEmpty();
+        verify(srdItemRepository).findByCategoryOrderByNameAsc("GEAR");
+    }
+
+    @Test
+    void catalog_throws400_forUnsupportedCategory() {
+        assertThatThrownBy(() -> shopService.catalog("POTION"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
     // --- helpers ---
 
     private Shop curatedShop() {
