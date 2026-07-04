@@ -6,7 +6,9 @@ import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
+import com.moo.charactermanagerservice.repositories.PcNoteRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +38,9 @@ class PCServiceTest {
 
     @Mock
     private CampaignRepository campaignRepository;
+
+    @Mock
+    private PcNoteRepository pcNoteRepository;
 
     @InjectMocks
     private PCService pcService;
@@ -202,6 +207,54 @@ class PCServiceTest {
         PC result = pcService.updatePCAsDm(incoming, dmId);
 
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
+    }
+
+    // --- per-character notes ---
+
+    @Test
+    void addNote_savesWithCampaignSnapshotAndAuthor() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcNoteRepository.save(any(PcNote.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PcNote note = pcService.addNote(1L, "  We spared the goblin chief.  ", 42L, ownerId);
+
+        assertThat(note.getPcId()).isEqualTo(1L);
+        assertThat(note.getCampaignId()).isEqualTo(7L);
+        assertThat(note.getSessionId()).isEqualTo(42L);
+        assertThat(note.getAuthorUserId()).isEqualTo(ownerId);
+        assertThat(note.getBody()).isEqualTo("We spared the goblin chief.");
+    }
+
+    @Test
+    void addNote_throws403_forNonOwner_and400_forBlankBody() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> pcService.addNote(1L, "note", null, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        assertThatThrownBy(() -> pcService.addNote(1L, "   ", null, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(400));
+        verify(pcNoteRepository, never()).save(any());
+    }
+
+    @Test
+    void notesFor_readableByOwnerAndCampaignDm_deniedToStrangers() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcNoteRepository.findByPcIdOrderByCreatedAtDesc(1L)).thenReturn(List.of());
+
+        assertThat(pcService.notesFor(1L, ownerId)).isEmpty();  // owner reads
+        assertThat(pcService.notesFor(1L, dmId)).isEmpty();     // the campaign's DM reads
+
+        assertThatThrownBy(() -> pcService.notesFor(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
     }
 
     // --- findPCByIdForDm ---
