@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CuratedShopView;
+import com.moo.charactermanagerservice.dto.ImportShopRequest;
 import com.moo.charactermanagerservice.dto.ShopSummaryView;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.Shop;
@@ -89,6 +90,80 @@ class CuratedShopServiceTest {
         assertThatThrownBy(() -> service.createShop(1L, "Smithy", null, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    // --- importShop (pasted JSON) ---
+
+    @Test
+    void importShop_createsShopAndLines_withGoldOverridesConvertedToCopper() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(new Campaign());
+        when(shopRepository.save(any(Shop.class))).thenAnswer(inv -> {
+            Shop s = inv.getArgument(0);
+            s.setId(9L);
+            return s;
+        });
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword", "rations")))
+                .thenReturn(List.of(srd("longsword", "Longsword", 1500), srd("rations", "Rations", 50)));
+
+        service.importShop(1L, new ImportShopRequest("The Gilded Flask", "Phandalin", List.of(
+                new ImportShopRequest.Item("longsword", 12.0),
+                new ImportShopRequest.Item("rations", null))), dmId);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ShopItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(shopItemRepository).saveAll(captor.capture());
+        List<ShopItem> lines = captor.getValue();
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0).getCatalogItemKey()).isEqualTo("longsword");
+        assertThat(lines.get(0).getPriceCp()).isEqualTo(1200L); // 12 gp override
+        assertThat(lines.get(1).getPriceCp()).isNull();          // inherit catalog price
+    }
+
+    @Test
+    void importShop_throws400_listingEveryUnknownKey_andWritesNothing() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(new Campaign());
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword", "vorpal-blade", "hand-grenade")))
+                .thenReturn(List.of(srd("longsword", "Longsword", 1500)));
+
+        assertThatThrownBy(() -> service.importShop(1L, new ImportShopRequest("Bad Shop", null, List.of(
+                new ImportShopRequest.Item("longsword", null),
+                new ImportShopRequest.Item("vorpal-blade", null),
+                new ImportShopRequest.Item("hand-grenade", null))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    assertThat(status(e)).isEqualTo(400);
+                    assertThat(e.getMessage()).contains("vorpal-blade").contains("hand-grenade");
+                });
+        verify(shopRepository, never()).save(any());
+        verify(shopItemRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void importShop_throws400_onBlankNameOrDuplicateKeys() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(new Campaign());
+
+        assertThatThrownBy(() -> service.importShop(1L,
+                new ImportShopRequest(" ", null, List.of()), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        assertThatThrownBy(() -> service.importShop(1L, new ImportShopRequest("Dupes", null, List.of(
+                new ImportShopRequest.Item("longsword", null),
+                new ImportShopRequest.Item("longsword", 5.0))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(shopRepository, never()).save(any());
+    }
+
+    @Test
+    void importCategory_acceptsGear() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findByShopId(5L)).thenReturn(List.of());
+        when(srdItemRepository.findByCategoryOrderByNameAsc("GEAR")).thenReturn(List.of());
+
+        service.importCategory(5L, "GEAR", dmId); // used to 400 — the picker offers Gear
+
+        verify(srdItemRepository).findByCategoryOrderByNameAsc("GEAR");
     }
 
     // --- listShops ---

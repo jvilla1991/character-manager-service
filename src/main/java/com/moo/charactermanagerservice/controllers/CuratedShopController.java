@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.controllers;
 import com.moo.charactermanagerservice.dto.AddShopItemRequest;
 import com.moo.charactermanagerservice.dto.CreateShopRequest;
 import com.moo.charactermanagerservice.dto.CuratedShopView;
+import com.moo.charactermanagerservice.dto.ImportShopRequest;
 import com.moo.charactermanagerservice.dto.ShopSummaryView;
 import com.moo.charactermanagerservice.dto.UpdateShopItemRequest;
 import com.moo.charactermanagerservice.dto.UpdateShopRequest;
@@ -36,6 +37,16 @@ public class CuratedShopController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.status(HttpStatus.CREATED).body(
                 curatedShopService.createShop(campaignId, request.name(), request.settlement(), user.getUuid()));
+    }
+
+    /** Create a whole shop from pasted JSON — all-or-nothing on unknown keys. */
+    @PostMapping("/campaign/{campaignId}/shops/import")
+    public ResponseEntity<CuratedShopView> importShop(@PathVariable Long campaignId,
+                                                      @RequestBody ImportShopRequest request,
+                                                      Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                curatedShopService.importShop(campaignId, request, user.getUuid()));
     }
 
     @GetMapping("/campaign/{campaignId}/shops")
