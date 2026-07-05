@@ -86,7 +86,25 @@ public class CampaignService {
         if (slot) {
             conversionService.convert(pc);
         }
+        if (isVariantEnabled(campaign, "survivalConditions")) {
+            seedSurvivalSupplies(pc);
+        }
         return pcRepository.save(pc);
+    }
+
+    /**
+     * Give a character joining a survival campaign its starting Rations box and
+     * Waterskin (5 charges each) unless already seeded — the {@code seeded} flag
+     * on the survival state prevents a re-grant after the supplies are consumed.
+     */
+    private void seedSurvivalSupplies(PC pc) {
+        java.util.Map<String, Object> survival = json.parseObject(pc.getSurvival());
+        if (Boolean.TRUE.equals(survival.get("seeded"))) return;
+        java.util.List<java.util.Map<String, Object>> inventory = json.parse(pc.getInventory());
+        SurvivalSupplies.seed(inventory);
+        survival.put("seeded", true);
+        pc.setInventory(json.write(inventory));
+        pc.setSurvival(json.writeObject(survival));
     }
 
     /** True when this campaign has opted into slot-based inventory. */

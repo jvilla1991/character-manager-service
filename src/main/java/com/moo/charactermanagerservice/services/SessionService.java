@@ -2,11 +2,9 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
-import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
-import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
@@ -34,7 +32,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -669,23 +667,19 @@ public class SessionService {
             Map<String, Object> advanced = GameClock.advanceSegment(json.parseObject(stored));
             campaign.setGameTime(json.writeObject(advanced));
             String segment = String.valueOf(advanced.get("timeOfDay"));
-            // Every segment bumps under the three-segment mapping (morning
-            // +hunger/thirst, noon +fatigue, night +all) — variant-gated.
-            boolean bumps = campaignService.isVariantEnabled(campaign, "survivalConditions");
-            if (bumps) {
+            // Survival campaigns: each member auto-eats/drinks their supplies as
+            // time passes (hunger/thirst rise only when the ration/waterskin runs
+            // out); fatigue always climbs on its segments.
+            if (campaignService.isVariantEnabled(campaign, "survivalConditions")) {
                 // Lock member rows one at a time in ascending-id order — the same
-                // row lock purchase/sell/consume take, so a concurrent buy can't
-                // be overwritten and lock acquisition can't deadlock.
+                // row lock purchase/sell take, so a concurrent buy can't be
+                // overwritten and lock acquisition can't deadlock.
                 List<Long> memberIds = pcRepository.findByCampaignId(campaign.getId()).stream()
                         .map(PC::getId)
                         .sorted()
                         .toList();
                 for (Long pcId : memberIds) {
-                    pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> {
-                        pc.setSurvival(json.writeObject(
-                                SurvivalRules.applyTimeBump(json.parseObject(pc.getSurvival()), segment)));
-                        pcRepository.save(pc);
-                    });
+                    pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> advanceSurvival(pc, segment));
                 }
             }
         }
@@ -694,6 +688,82 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /**
+     * Advance one member's survival for a day-segment: seed their starting
+     * supplies once (covers members who predate the feature), auto-consume a
+     * ration/water on hunger/thirst steps, and apply the resulting stage
+     * changes — persisting the updated survival and inventory together.
+     */
+    private void advanceSurvival(PC pc, String segment) {
+        Map<String, Object> survival = json.parseObject(pc.getSurvival());
+        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
+
+        if (!Boolean.TRUE.equals(survival.get("seeded"))) {
+            SurvivalSupplies.seed(inventory);
+        }
+        boolean supplyStep = SurvivalRules.isSupplyStep(segment);
+        boolean ate = supplyStep && SurvivalSupplies.tryConsume(inventory, "rations");
+        boolean drank = supplyStep && SurvivalSupplies.tryConsume(inventory, "waterskin");
+
+        Map<String, Object> next = SurvivalRules.applySegment(survival, segment, ate, drank);
+        next.put("seeded", true);
+        pc.setSurvival(json.writeObject(next));
+        pc.setInventory(json.write(inventory));
+        pcRepository.save(pc);
+    }
+
+    /**
+     * DM long rest for the seated party: every seated PC recovers all spell
+     * slots, and — in a survival campaign — sheds fatigue (3 for an undisturbed
+     * rest, 1 for a disturbed one). Bumps the version so the party's sheets
+     * update live.
+     */
+    @Transactional
+    public SessionStateView longRest(Long sessionId, boolean undisturbed, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        boolean survival = survivalConditionsEnabled(session);
+        int fatigueRelief = undisturbed ? 3 : 1;
+
+        List<Long> pcIds = participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId).stream()
+                .map(SessionParticipant::getPcId)
+                .filter(Objects::nonNull)
+                .sorted()
+                .toList();
+        for (Long pcId : pcIds) {
+            pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> {
+                pc.setSpellSlots(json.writeObject(restoreAllSlots(json.parseObject(pc.getSpellSlots()))));
+                if (survival) {
+                    pc.setSurvival(json.writeObject(
+                            SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", -fatigueRelief)));
+                }
+                pcRepository.save(pc);
+            });
+        }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /** Reset every spell level's {@code used} count to 0 (a full recovery). */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> restoreAllSlots(Map<String, Object> slots) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> e : slots.entrySet()) {
+            if (e.getValue() instanceof Map<?, ?> lvl) {
+                Map<String, Object> next = new LinkedHashMap<>((Map<String, Object>) lvl);
+                next.put("used", 0);
+                out.put(e.getKey(), next);
+            } else {
+                out.put(e.getKey(), e.getValue());
+            }
+        }
+        return out;
     }
 
     /**
@@ -765,57 +835,6 @@ public class SessionService {
 
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s;
-    }
-
-    /**
-     * A player improves their own seated PC's survival condition: EAT consumes a
-     * Rations inventory line (when one exists — the book's economy is optional,
-     * so a missing line still relieves hunger), DRINK a Waterskin line, and the
-     * sleep actions adjust fatigue only. 409 when the campaign doesn't run the
-     * variant — the client never shows these buttons then, so reaching this is a
-     * stale client. Bumps the version so every viewer sees the new stages.
-     */
-    @Transactional
-    public ConsumeResult consumeSurvival(Long sessionId, Long pcId, String actionRaw, UUID userId) {
-        CombatSession session = findSession(sessionId);
-        if (session.getStatus() == SessionStatus.ENDED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
-        }
-        if (!survivalConditionsEnabled(session)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "This campaign does not use survival conditions");
-        }
-        SurvivalAction action = SurvivalAction.parse(actionRaw);
-        if (pcId == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
-        }
-
-        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Character is not seated in this session"));
-        if (!userId.equals(seated.getOwnerUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
-        }
-
-        // Same row lock as purchase/sell — inventory and survival are read-modify-write.
-        PC pc = pcRepository.findByIdForUpdate(pcId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
-
-        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
-        if (action == SurvivalAction.EAT) {
-            consumeInventoryLine(inventory, "rations");
-        } else if (action == SurvivalAction.DRINK) {
-            consumeInventoryLine(inventory, "waterskin");
-        }
-
-        Map<String, Object> survival = SurvivalRules.applyAction(json.parseObject(pc.getSurvival()), action);
-        pc.setSurvival(json.writeObject(survival));
-        pc.setInventory(json.write(inventory));
-        pcRepository.save(pc);
-
-        session.bumpVersion();
-        sessionRepository.save(session);
-        return new ConsumeResult(pcId, survival, inventory);
     }
 
     /**
@@ -903,26 +922,6 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return new CastResult(pcId, slots, inventory, warning);
-    }
-
-    /**
-     * Decrement one unit of the first live line with this catalog key; the line
-     * is removed at zero. No matching line is fine — the action still applies.
-     */
-    private void consumeInventoryLine(List<Map<String, Object>> inventory, String catalogKey) {
-        for (Iterator<Map<String, Object>> it = inventory.iterator(); it.hasNext(); ) {
-            Map<String, Object> line = it.next();
-            if (!catalogKey.equals(line.get("catalogKey"))) continue;
-            if ("dropped".equals(line.get("status"))) continue;
-            int qty = line.get("qty") instanceof Number n ? n.intValue() : 0;
-            if (qty <= 0) continue;
-            if (qty == 1) {
-                it.remove();
-            } else {
-                line.put("qty", qty - 1);
-            }
-            return;
-        }
     }
 
     /** Load a participant and assert it belongs to the given session (404 otherwise). */
