@@ -873,10 +873,10 @@ class SessionServiceTest {
 
         SessionStateView state = sessionService.advanceTime(1L, dmId);
 
-        // first click establishes day 1 dawn — it doesn't pass time
+        // first click establishes day 1 morning — it doesn't pass time
         assertThat(campaign.getGameTime())
-                .contains("\"day\":1").contains("\"timeOfDay\":\"dawn\"");
-        assertThat(state.gameTime()).containsEntry("timeOfDay", "dawn");
+                .contains("\"day\":\"1\"").contains("\"timeOfDay\":\"morning\"");
+        assertThat(state.gameTime()).containsEntry("timeOfDay", "morning");
         verify(pcRepository, never()).findByCampaignId(any());
         verify(campaignRepository).save(campaign);
         verify(sessionRepository).save(session); // version bumped
@@ -885,6 +885,7 @@ class SessionServiceTest {
     @Test
     void advanceTime_intoNoon_bumpsFatigueOnEveryMemberPc() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
+        // deliberately the PRE-v2 numeric shape — normalize converts dawn → morning
         campaign.setGameTime("{\"year\":1,\"month\":1,\"day\":1,\"timeOfDay\":\"dawn\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
@@ -905,54 +906,107 @@ class SessionServiceTest {
     }
 
     @Test
-    void advanceTime_intoNight_advancesClockWithoutBumps() {
+    void advanceTime_intoNight_bumpsAllThree() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
-        campaign.setGameTime("{\"year\":1,\"month\":1,\"day\":1,\"timeOfDay\":\"dusk\"}");
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        PC member = pc(7L, "Gorath", 0);
+        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}");
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(member));
 
         sessionService.advanceTime(1L, dmId);
 
+        // night carries dusk's triple bump under the three-segment mapping
         assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"night\"");
-        verify(pcRepository, never()).findByCampaignId(any());
+        assertThat(member.getSurvival())
+                .contains("\"hunger\":3").contains("\"thirst\":3").contains("\"fatigue\":3");
     }
 
     @Test
-    void advanceTime_pastNight_rollsTheCalendar_andSkipsBumpsWhenVariantOff() {
-        campaign.setGameTime("{\"year\":1,\"month\":12,\"day\":30,\"timeOfDay\":\"night\"}");
+    void advanceTime_pastNight_wrapsToMorning_dateUntouched_noBumpsWhenVariantOff() {
+        campaign.setGameTime(
+                "{\"year\":\"1492 DR\",\"month\":\"Hammer\",\"day\":\"3rd\",\"timeOfDay\":\"night\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.advanceTime(1L, dmId);
 
-        // clock advances for any campaign; dawn bumps skipped without the variant
+        // the DATE is free text — only the DM changes it (the client opens the
+        // edit form on this rollover); bumps skipped without the variant
         assertThat(campaign.getGameTime())
-                .contains("\"year\":2").contains("\"month\":1")
-                .contains("\"day\":1").contains("\"timeOfDay\":\"dawn\"");
+                .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
+                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"morning\"");
         verify(pcRepository, never()).findByCampaignId(any());
     }
 
     @Test
-    void setTime_writesTheClockVerbatim_withoutBumps() {
+    void setTime_writesFreeTextLabels_withoutBumps() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
-                1492, 3, 12, "dusk"), dmId);
+                "1492 DR", "Hammer", "3rd", "night", "Far"), dmId);
 
         assertThat(campaign.getGameTime())
-                .contains("\"year\":1492").contains("\"timeOfDay\":\"dusk\"");
+                .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
+                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"night\"")
+                .contains("\"weekday\":\"Far\"").contains("\"week\":1");
         verify(pcRepository, never()).findByCampaignId(any());
         verify(campaignRepository).save(campaign);
     }
 
     @Test
-    void setTime_throws400_onAnInvalidDate() {
+    void setTime_ticksTheWeek_whenAnEnteredWeekdayRepeats() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // "sul" was seen before (case-insensitive) → a full week has passed
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "sul"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":2")
+                .contains("\"weekdaysSeen\":[\"sul\"]"); // history resets to the new week's first day
+    }
+
+    @Test
+    void setTime_unchangedWeekday_neverDoubleCounts() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // a date correction resubmits the same weekday — history must not move
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "9th (corrected)", "morning", "Mol"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":1")
+                .contains("\"weekdaysSeen\":[\"Sul\",\"Mol\"]");
+    }
+
+    @Test
+    void setTime_newWeekday_isAppendedToTheHistory() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "Zol"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":1")
+                .contains("\"weekdaysSeen\":[\"Sul\",\"Mol\",\"Zol\"]");
+    }
+
+    @Test
+    void setTime_throws400_onAnInvalidSegmentOrOversizedLabel() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         for (com.moo.charactermanagerservice.dto.SetTimeRequest bad : List.of(
-                new com.moo.charactermanagerservice.dto.SetTimeRequest(null, 1, 1, "dawn"),
-                new com.moo.charactermanagerservice.dto.SetTimeRequest(1, 13, 1, "dawn"),
-                new com.moo.charactermanagerservice.dto.SetTimeRequest(1, 1, 31, "dawn"),
-                new com.moo.charactermanagerservice.dto.SetTimeRequest(1, 1, 1, "midnight"))) {
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "dawn", null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "midnight", null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("x".repeat(41), "1", "1", "morning", null))) {
             assertThatThrownBy(() -> sessionService.setTime(1L, bad, dmId))
                     .isInstanceOf(ResponseStatusException.class)
                     .satisfies(e -> assertThat(status(e)).isEqualTo(400));

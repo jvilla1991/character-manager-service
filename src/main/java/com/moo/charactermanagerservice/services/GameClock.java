@@ -1,36 +1,48 @@
 package com.moo.charactermanagerservice.services;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * The in-world campaign clock: {@code {year, month, day, timeOfDay}} with the
- * Darker Dungeons day segments dawn → noon → dusk → night. Pure map-in/map-out
- * helpers over the JSON shape stored in {@code campaign.game_time}.
+ * The in-world campaign clock: free-text date labels the DM curates plus a
+ * three-segment day cycle. Shape of {@code campaign.game_time}:
  *
- * <p>Calendar is deliberately simple and setting-agnostic: 12 months of 30 days.
- * The DM can set the date directly to match any homebrew calendar.
+ * <pre>{"year":"1492 DR","month":"Hammer","day":"3rd","timeOfDay":"morning",
+ *  "weekday":"Far","weekdaysSeen":["Sul","Mol"],"week":1}</pre>
+ *
+ * Advancing time only cycles morning → noon → night — the DATE is free text
+ * (any homebrew calendar), so the DM updates it by hand when a new day starts.
+ * The weekday history powers the week counter: re-entering any previously
+ * seen weekday marks a completed week (handled in the session service).
+ *
+ * <p>Older clocks stored numeric dates with dawn/noon/dusk/night segments;
+ * {@link #normalize} converts those on read (numbers → strings, dawn →
+ * morning, dusk/night → night) so no SQL migration is needed.
  */
 final class GameClock {
 
-    static final List<String> SEGMENTS = List.of("dawn", "noon", "dusk", "night");
-    static final int DAYS_PER_MONTH = 30;
-    static final int MONTHS_PER_YEAR = 12;
+    static final List<String> SEGMENTS = List.of("morning", "noon", "night");
+    static final int MAX_LABEL_LENGTH = 40;
 
     private GameClock() {}
 
     /** The clock a campaign starts at the first time the DM advances time. */
     static Map<String, Object> initial() {
-        return of(1, 1, 1, "dawn");
+        return of("1", "1", "1", "morning", null, new ArrayList<>(), 1);
     }
 
-    static Map<String, Object> of(int year, int month, int day, String timeOfDay) {
+    static Map<String, Object> of(String year, String month, String day, String timeOfDay,
+                                  String weekday, List<String> weekdaysSeen, int week) {
         Map<String, Object> time = new LinkedHashMap<>();
         time.put("year", year);
         time.put("month", month);
         time.put("day", day);
         time.put("timeOfDay", timeOfDay);
+        time.put("weekday", weekday);
+        time.put("weekdaysSeen", weekdaysSeen);
+        time.put("week", week);
         return time;
     }
 
@@ -38,36 +50,53 @@ final class GameClock {
         return timeOfDay != null && SEGMENTS.contains(timeOfDay);
     }
 
-    /**
-     * Advance one segment; wrapping past night starts the next day (with month
-     * and year rollover). A malformed stored value is repaired to a normalized
-     * clock at dawn rather than failing the whole advance.
-     */
-    static Map<String, Object> advanceSegment(Map<String, Object> gameTime) {
-        int year = intOf(gameTime.get("year"), 1);
-        int month = intOf(gameTime.get("month"), 1);
-        int day = intOf(gameTime.get("day"), 1);
-        int idx = SEGMENTS.indexOf(String.valueOf(gameTime.get("timeOfDay")));
-        if (idx < 0) {
-            return of(year, month, day, "dawn"); // repair, don't advance
-        }
-
-        int next = (idx + 1) % SEGMENTS.size();
-        if (next == 0) { // night → next day's dawn
-            day++;
-            if (day > DAYS_PER_MONTH) {
-                day = 1;
-                month++;
-                if (month > MONTHS_PER_YEAR) {
-                    month = 1;
-                    year++;
-                }
-            }
-        }
-        return of(year, month, day, SEGMENTS.get(next));
+    static boolean isValidLabel(String label) {
+        return label == null || label.length() <= MAX_LABEL_LENGTH;
     }
 
-    private static int intOf(Object value, int fallback) {
-        return value instanceof Number n ? n.intValue() : fallback;
+    /**
+     * Advance one segment: morning → noon → night → next day's MORNING. The
+     * date never changes here — it's free text the DM curates (the client
+     * opens the edit form on the night → morning rollover).
+     */
+    static Map<String, Object> advanceSegment(Map<String, Object> gameTime) {
+        Map<String, Object> time = normalize(gameTime);
+        int idx = SEGMENTS.indexOf(String.valueOf(time.get("timeOfDay")));
+        time.put("timeOfDay", SEGMENTS.get((idx + 1) % SEGMENTS.size()));
+        return time;
+    }
+
+    /**
+     * Normalized copy in the current shape, converting pre-v2 clocks:
+     * numeric date parts become strings, dawn → morning, dusk/night → night,
+     * and the weekday/week fields get their defaults.
+     */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> normalize(Map<String, Object> gameTime) {
+        String segment = switch (String.valueOf(gameTime.get("timeOfDay"))) {
+            case "morning", "dawn" -> "morning";
+            case "noon" -> "noon";
+            default -> "night"; // night, dusk, or anything malformed
+        };
+        Object seen = gameTime.get("weekdaysSeen");
+        List<String> weekdaysSeen = seen instanceof List<?> list
+                ? new ArrayList<>((List<String>) list)
+                : new ArrayList<>();
+        Object weekday = gameTime.get("weekday");
+        Object week = gameTime.get("week");
+        return of(
+                labelOf(gameTime.get("year"), "1"),
+                labelOf(gameTime.get("month"), "1"),
+                labelOf(gameTime.get("day"), "1"),
+                segment,
+                weekday instanceof String s && !s.isBlank() ? s : null,
+                weekdaysSeen,
+                week instanceof Number n ? Math.max(1, n.intValue()) : 1);
+    }
+
+    private static String labelOf(Object value, String fallback) {
+        if (value instanceof String s) return s.isBlank() ? fallback : s;
+        if (value instanceof Number n) return String.valueOf(n.intValue());
+        return fallback;
     }
 }

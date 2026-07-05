@@ -24,9 +24,9 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void dawn_bumpsHungerAndThirst() {
+    void morning_bumpsHungerAndThirst() {
         Map<String, Object> out =
-                SurvivalRules.applyTimeBump(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "dawn");
+                SurvivalRules.applyTimeBump(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning");
         assertThat(out)
                 .containsEntry("hunger", 3)
                 .containsEntry("thirst", 3)
@@ -42,9 +42,10 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void dusk_bumpsAllThree_clampedAtStarving() {
+    void night_bumpsAllThree_clampedAtStarving() {
+        // night carries dusk's triple bump under the three-segment mapping
         Map<String, Object> out =
-                SurvivalRules.applyTimeBump(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "dusk");
+                SurvivalRules.applyTimeBump(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "night");
         assertThat(out)
                 .containsEntry("hunger", 6)   // already starving — stays 6
                 .containsEntry("thirst", 6)
@@ -52,8 +53,8 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void night_isTheSleepWindow_noBumps() {
-        assertThat(SurvivalRules.applyTimeBump(Map.of("hunger", 3), "night"))
+    void unknownSegment_appliesNoBumps() {
+        assertThat(SurvivalRules.applyTimeBump(Map.of("hunger", 3), "dusk")) // v1 segment
                 .containsEntry("hunger", 3)
                 .containsEntry("thirst", 2)
                 .containsEntry("fatigue", 2);

@@ -668,8 +668,9 @@ public class SessionService {
             Map<String, Object> advanced = GameClock.advanceSegment(json.parseObject(stored));
             campaign.setGameTime(json.writeObject(advanced));
             String segment = String.valueOf(advanced.get("timeOfDay"));
-            boolean bumps = !"night".equals(segment)
-                    && campaignService.isVariantEnabled(campaign, "survivalConditions");
+            // Every segment bumps under the three-segment mapping (morning
+            // +hunger/thirst, noon +fatigue, night +all) — variant-gated.
+            boolean bumps = campaignService.isVariantEnabled(campaign, "survivalConditions");
             if (bumps) {
                 // Lock member rows one at a time in ascending-id order — the same
                 // row lock purchase/sell/consume take, so a concurrent buy can't
@@ -696,8 +697,14 @@ public class SessionService {
 
     /**
      * DM sets the campaign clock directly (correcting the date or matching a
-     * homebrew calendar). No condition bumps — only {@link #advanceTime} passes
-     * time. Validates the simplified calendar (12 months of 30 days).
+     * homebrew calendar — date parts are free text). No condition bumps — only
+     * {@link #advanceTime} passes time.
+     *
+     * <p>The week counter lives here: when the WEEKDAY CHANGES to a value seen
+     * before (case-insensitive) since the last completed week, a week has
+     * passed — the counter ticks and the history resets to the new weekday.
+     * An unchanged weekday (e.g. a date correction) never touches the history,
+     * so resubmitting the form can't double-count.
      */
     @Transactional
     public SessionStateView setTime(Long sessionId, SetTimeRequest request, UUID dmUserId) {
@@ -707,22 +714,56 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
         if (request == null
-                || request.year() == null || request.year() < 0
-                || request.month() == null || request.month() < 1 || request.month() > GameClock.MONTHS_PER_YEAR
-                || request.day() == null || request.day() < 1 || request.day() > GameClock.DAYS_PER_MONTH
-                || !GameClock.isValidSegment(request.timeOfDay())) {
+                || !GameClock.isValidSegment(request.timeOfDay())
+                || !GameClock.isValidLabel(request.year())
+                || !GameClock.isValidLabel(request.month())
+                || !GameClock.isValidLabel(request.day())
+                || !GameClock.isValidLabel(request.weekday())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Time requires year >= 0, month 1-12, day 1-30, and timeOfDay dawn|noon|dusk|night");
+                    "Time requires timeOfDay morning|noon|night and date labels of at most "
+                            + GameClock.MAX_LABEL_LENGTH + " characters");
         }
 
         Campaign campaign = campaignService.findById(session.getCampaignId());
+        Map<String, Object> current = GameClock.normalize(json.parseObject(campaign.getGameTime()));
+
+        @SuppressWarnings("unchecked")
+        List<String> weekdaysSeen = (List<String>) current.get("weekdaysSeen");
+        int week = (int) current.get("week");
+        String currentWeekday = current.get("weekday") instanceof String s ? s : null;
+        String newWeekday = request.weekday() == null || request.weekday().isBlank()
+                ? null
+                : request.weekday().trim();
+
+        boolean weekdayChanged = newWeekday != null
+                && (currentWeekday == null || !newWeekday.equalsIgnoreCase(currentWeekday));
+        if (weekdayChanged) {
+            boolean seenBefore = weekdaysSeen.stream().anyMatch(newWeekday::equalsIgnoreCase);
+            if (seenBefore) {
+                week++;                                  // a full week has passed
+                weekdaysSeen = new ArrayList<>(List.of(newWeekday));
+            } else {
+                weekdaysSeen.add(newWeekday);
+            }
+        }
+
         campaign.setGameTime(json.writeObject(GameClock.of(
-                request.year(), request.month(), request.day(), request.timeOfDay())));
+                blankToNull(request.year()) == null ? (String) current.get("year") : request.year().trim(),
+                blankToNull(request.month()) == null ? (String) current.get("month") : request.month().trim(),
+                blankToNull(request.day()) == null ? (String) current.get("day") : request.day().trim(),
+                request.timeOfDay(),
+                newWeekday == null ? currentWeekday : newWeekday,
+                weekdaysSeen,
+                week)));
         campaignRepository.save(campaign);
 
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
     }
 
     /**
