@@ -33,6 +33,7 @@ public record ParticipantView(
         Short ac,
         String conditions,
         String survival,
+        String spellSlots,
         Short deathSaveSuccesses,
         Short deathSaveFailures
 ) {
@@ -52,7 +53,7 @@ public record ParticipantView(
                     p.getDisplayName(), null, null, null, null,
                     p.getInitiative(), rolled, p.getDexModifier(), p.getOrderIndex(),
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), null,
-                    p.getNpcConditions(), null,
+                    p.getNpcConditions(), null, null,
                     p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
             );
         }
@@ -63,7 +64,7 @@ public record ParticipantView(
                 pc.getPortraitTint(), pc.getPortraitInitials(),
                 p.getInitiative(), rolled, null, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
-                pc.getConditions(), pc.getSurvival(),
+                pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
         );
     }

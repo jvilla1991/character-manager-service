@@ -2,6 +2,8 @@ package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
+import com.moo.charactermanagerservice.dto.CastResult;
+import com.moo.charactermanagerservice.dto.CastSpellRequest;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
@@ -245,6 +247,21 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.consumeSurvival(
                 id, request.pcId(), request.action(), user.getUuid()));
+    }
+
+    /**
+     * A player casts one of their own seated PC's spells: spends a slot (with
+     * upcasting) and consumes a flagged material component. Returns the updated
+     * slots and inventory, plus a warning when a costly component was missing
+     * but the campaign let the cast through.
+     */
+    @PostMapping("/session/{id}/spell/cast")
+    public ResponseEntity<CastResult> castSpell(@PathVariable Long id,
+                                                @RequestBody CastSpellRequest request,
+                                                Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.castSpell(
+                id, request.pcId(), request.spellName(), request.atLevel(), user.getUuid()));
     }
 
     /** DM ends the session. */

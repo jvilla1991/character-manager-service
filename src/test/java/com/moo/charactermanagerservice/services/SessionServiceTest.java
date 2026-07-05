@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -1085,6 +1086,187 @@ class SessionServiceTest {
         assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "NAP", playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- castSpell ---
+
+    private PC casterPc(String spells, String spellSlots, String inventory) {
+        PC pc = pc(7L, "Elaria", 0);
+        pc.setSpells(spells);
+        pc.setSpellSlots(spellSlots);
+        pc.setInventory(inventory);
+        return pc;
+    }
+
+    /** Seat pc 7 owned by the player and stub the row lock — no variant gate on casting. */
+    private void seatCaster(PC pc) {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+    }
+
+    @Test
+    void cast_spendsASlot_andBumpsVersion() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":4,\"used\":1}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(2);
+        assertThat(result.warning()).isNull();
+        assertThat(pc.getSpellSlots()).contains("\"used\":2");
+        verify(pcRepository).save(pc);
+        verify(sessionRepository).save(session); // version bumped so the DM sees the spend
+    }
+
+    @Test
+    void cast_cantrip_spendsNoSlot() {
+        PC pc = casterPc("[{\"name\":\"Fire Bolt\",\"lvl\":0}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Fire Bolt", 0, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(0);
+        verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void cast_upcast_spendsTheChosenLevel_notTheSpellLevel() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":2,\"used\":0},\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Cure Wounds", 3, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(0);
+        assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(1);
+    }
+
+    @Test
+    void cast_throws409_whenNoSlotAtThatLevelIsFree() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":2,\"used\":2}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_throws409_whenAskedToCastBelowTheSpellLevel() {
+        PC pc = casterPc("[{\"name\":\"Revivify\",\"lvl\":3}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Revivify", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void cast_throws400_whenTheCharacterDoesNotKnowTheSpell() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Wish", 9, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void cast_throws403_whenThePcIsNotSeated() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void cast_throws403_forSomeoneElsesCharacter() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_throws409_whenTheSessionHasEnded() {
+        session.setStatus(SessionStatus.ENDED);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void cast_consumesAConsumedOnCastComponent_andRemovesItAtZero() {
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}",
+                "[{\"category\":\"material-component\",\"spell\":\"Revivify\",\"qty\":1,\"consumedOnCast\":true}]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Revivify", 3, playerId);
+
+        assertThat(result.inventory()).isEmpty();
+        assertThat(result.warning()).isNull();
+    }
+
+    @Test
+    void cast_leavesAReusableComponentUntouched() {
+        String spells = "[{\"name\":\"Chromatic Orb\",\"lvl\":1,\"components\":[\"v\",\"s\",\"m\"],"
+                + "\"material\":\"a diamond worth 50+ GP\"}]";
+        PC pc = casterPc(spells, "{\"1\":{\"max\":2,\"used\":0}}",
+                "[{\"category\":\"material-component\",\"spell\":\"Chromatic Orb\",\"qty\":1,\"consumedOnCast\":false}]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Chromatic Orb", 1, playerId);
+
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1);
+    }
+
+    @Test
+    void cast_missingCostlyComponent_warnsWhenLenient() {
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc); // campaign has no strictComponents variant
+
+        var result = sessionService.castSpell(1L, 7L, "Revivify", 3, playerId);
+
+        assertThat(result.warning()).contains("Missing material component");
+        assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(1);
+        verify(pcRepository).save(pc); // cast still went through
+    }
+
+    @Test
+    void cast_missingCostlyComponent_blocksWhenStrict() {
+        campaign.setVariantRules("{\"strictComponents\":true}");
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Revivify", 3, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
     }
 
     // --- applyDamage: dropping to 0 HP is an exhausting shock ---

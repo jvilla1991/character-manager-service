@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -774,6 +775,93 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return new ConsumeResult(pcId, survival, inventory);
+    }
+
+    /**
+     * A player casts one of their own seated PC's spells: spends a slot at
+     * {@code atLevel} (nothing for a cantrip; upcasting allowed) and consumes a
+     * flagged material component from inventory. Server-authoritative and
+     * version-bumped — mirrors {@link #consumeSurvival} step for step — so the
+     * DM sees the slot spend live via the poll. Unlike survival there is no
+     * variant gate on casting itself; the {@code strictComponents} variant only
+     * decides whether a missing costly component blocks the cast (409) or lets
+     * it through with a warning (the table's call).
+     */
+    @Transactional
+    public CastResult castSpell(Long sessionId, Long pcId, String spellName, Integer atLevel, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (pcId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
+        }
+        if (spellName == null || spellName.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "spellName is required");
+        }
+
+        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Character is not seated in this session"));
+        if (!userId.equals(seated.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        // Same row lock as purchase/sell/consume — slots and inventory are read-modify-write.
+        PC pc = pcRepository.findByIdForUpdate(pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
+
+        List<Map<String, Object>> spells = json.parse(pc.getSpells());
+        Map<String, Object> spell = SpellcastingRules.findSpell(spells, spellName);
+        if (spell == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Character does not know " + spellName);
+        }
+
+        int spellLevel = SpellcastingRules.levelOf(spell);
+        Map<String, Object> slots = json.parseObject(pc.getSpellSlots());
+        // Cantrips (level 0) never spend a slot; a leveled spell needs a free slot
+        // at or above its level (upcasting), chosen by the caller.
+        if (spellLevel > 0) {
+            int level = atLevel == null ? spellLevel : atLevel;
+            if (level < spellLevel) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Cannot cast a level " + spellLevel + " spell at level " + level);
+            }
+            if (!SpellcastingRules.hasSlotAvailable(slots, level)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "No level " + level + " slot available");
+            }
+            SpellcastingRules.spendSlot(slots, level);
+        }
+
+        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
+        Map<String, Object> componentLine = SpellcastingRules.findComponentLine(inventory, spellName);
+        String warning = null;
+        if (componentLine != null) {
+            // A consumed-on-cast component is spent; a reusable one only needs to be present.
+            if (Boolean.TRUE.equals(componentLine.get("consumedOnCast"))) {
+                SpellcastingRules.consumeComponentLine(inventory, spellName);
+            }
+        } else if (SpellcastingRules.needsCostlyComponent(spell)) {
+            // No line, but the spell needs a costly one: strict campaigns block,
+            // lenient ones let the table decide and just flag it.
+            Campaign campaign = campaignService.findById(session.getCampaignId());
+            String material = spell.get("material") instanceof String m ? m : "a costly component";
+            if (campaignService.isVariantEnabled(campaign, "strictComponents")) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Missing material component: " + material);
+            }
+            warning = "Missing material component: " + material;
+        }
+
+        pc.setSpellSlots(json.writeObject(slots));
+        pc.setInventory(json.write(inventory));
+        pcRepository.save(pc);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new CastResult(pcId, slots, inventory, warning);
     }
 
     /**
