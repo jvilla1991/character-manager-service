@@ -1,13 +1,16 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
+import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
+import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
@@ -24,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -48,6 +52,7 @@ class SessionServiceTest {
     @Mock private PCRepository pcRepository;
     @Mock private PCService pcService;
     @Mock private CampaignService campaignService;
+    @Mock private CampaignRepository campaignRepository;
     @Mock private EncounterRepository encounterRepository;
     @Mock private EncounterCreatureRepository encounterCreatureRepository;
 
@@ -57,12 +62,13 @@ class SessionServiceTest {
     private UUID playerId;
     private UUID strangerId;
     private CombatSession session;
+    private Campaign campaign;
 
     @BeforeEach
     void setUp() {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
-                shopAttendeeRepository, pcRepository, pcService, campaignService,
-                encounterRepository, encounterCreatureRepository);
+                shopAttendeeRepository, pcRepository, pcService, campaignService, campaignRepository,
+                encounterRepository, encounterCreatureRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -73,6 +79,20 @@ class SessionServiceTest {
         session.setCampaignId(1L);
         session.setDmUserId(dmId);
         session.setStatus(SessionStatus.ACTIVE);
+
+        // buildState reads the campaign clock on every snapshot; variant checks
+        // read variantRules. Lenient: not every test path builds a snapshot.
+        campaign = new Campaign();
+        campaign.setId(1L);
+        campaign.setDmUserId(dmId);
+        lenient().when(campaignService.findById(1L)).thenReturn(campaign);
+        lenient().when(campaignService.isVariantEnabled(any(Campaign.class), anyString()))
+                .thenAnswer(inv -> {
+                    Campaign c = inv.getArgument(0);
+                    String key = inv.getArgument(1);
+                    String rules = c.getVariantRules();
+                    return rules != null && rules.contains("\"" + key + "\":true");
+                });
     }
 
     // --- awardXp (single) ---
@@ -826,6 +846,531 @@ class SessionServiceTest {
 
     // --- helpers ---
 
+    // --- advanceTime / setTime (campaign clock) ---
+
+    @Test
+    void advanceTime_throws403_forNonDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.advanceTime(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void advanceTime_throws409_whenSessionEnded() {
+        session.setStatus(SessionStatus.ENDED);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.advanceTime(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void advanceTime_initializesANeverSetClock_withoutBumps() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        SessionStateView state = sessionService.advanceTime(1L, dmId);
+
+        // first click establishes day 1 morning — it doesn't pass time
+        assertThat(campaign.getGameTime())
+                .contains("\"day\":\"1\"").contains("\"timeOfDay\":\"morning\"");
+        assertThat(state.gameTime()).containsEntry("timeOfDay", "morning");
+        verify(pcRepository, never()).findByCampaignId(any());
+        verify(campaignRepository).save(campaign);
+        verify(sessionRepository).save(session); // version bumped
+    }
+
+    @Test
+    void advanceTime_intoNoon_bumpsFatigueOnEveryMemberPc() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        // deliberately the PRE-v2 numeric shape — normalize converts dawn → morning
+        campaign.setGameTime("{\"year\":1,\"month\":1,\"day\":1,\"timeOfDay\":\"dawn\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        PC tracked = pc(7L, "Gorath", 0);
+        tracked.setSurvival("{\"hunger\":1,\"thirst\":1,\"fatigue\":1}");
+        PC fresh = pc(8L, "Pip", 0); // never tracked → stages default to Ok (2)
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(fresh, tracked));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(tracked));
+        when(pcRepository.findByIdForUpdate(8L)).thenReturn(Optional.of(fresh));
+
+        sessionService.advanceTime(1L, dmId);
+
+        assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"noon\"");
+        assertThat(tracked.getSurvival()).contains("\"fatigue\":2").contains("\"hunger\":1");
+        assertThat(fresh.getSurvival()).contains("\"fatigue\":3").contains("\"hunger\":2");
+        verify(pcRepository).save(tracked);
+        verify(pcRepository).save(fresh);
+    }
+
+    @Test
+    void advanceTime_intoNight_bumpsAllThree() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        PC member = pc(7L, "Gorath", 0);
+        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}");
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(member));
+
+        sessionService.advanceTime(1L, dmId);
+
+        // night carries dusk's triple bump under the three-segment mapping
+        assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"night\"");
+        assertThat(member.getSurvival())
+                .contains("\"hunger\":3").contains("\"thirst\":3").contains("\"fatigue\":3");
+    }
+
+    @Test
+    void advanceTime_pastNight_wrapsToMorning_dateUntouched_noBumpsWhenVariantOff() {
+        campaign.setGameTime(
+                "{\"year\":\"1492 DR\",\"month\":\"Hammer\",\"day\":\"3rd\",\"timeOfDay\":\"night\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId);
+
+        // the DATE is free text — only the DM changes it (the client opens the
+        // edit form on this rollover); bumps skipped without the variant
+        assertThat(campaign.getGameTime())
+                .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
+                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"morning\"");
+        verify(pcRepository, never()).findByCampaignId(any());
+    }
+
+    @Test
+    void setTime_writesFreeTextLabels_withoutBumps() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1492 DR", "Hammer", "3rd", "night", "Far"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
+                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"night\"")
+                .contains("\"weekday\":\"Far\"").contains("\"week\":1");
+        verify(pcRepository, never()).findByCampaignId(any());
+        verify(campaignRepository).save(campaign);
+    }
+
+    @Test
+    void setTime_ticksTheWeek_whenAnEnteredWeekdayRepeats() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // "sul" was seen before (case-insensitive) → a full week has passed
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "sul"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":2")
+                .contains("\"weekdaysSeen\":[\"sul\"]"); // history resets to the new week's first day
+    }
+
+    @Test
+    void setTime_unchangedWeekday_neverDoubleCounts() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // a date correction resubmits the same weekday — history must not move
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "9th (corrected)", "morning", "Mol"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":1")
+                .contains("\"weekdaysSeen\":[\"Sul\",\"Mol\"]");
+    }
+
+    @Test
+    void setTime_newWeekday_isAppendedToTheHistory() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Sul\",\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "Zol"), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":1")
+                .contains("\"weekdaysSeen\":[\"Sul\",\"Mol\",\"Zol\"]");
+    }
+
+    @Test
+    void setTime_throws400_onAnInvalidSegmentOrOversizedLabel() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        for (com.moo.charactermanagerservice.dto.SetTimeRequest bad : List.of(
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "dawn", null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "midnight", null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("x".repeat(41), "1", "1", "morning", null))) {
+            assertThatThrownBy(() -> sessionService.setTime(1L, bad, dmId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(campaignRepository, never()).save(any());
+    }
+
+    // --- consumeSurvival ---
+
+    private PC survivalPc(String survival, String inventory) {
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setSurvival(survival);
+        pc.setInventory(inventory);
+        return pc;
+    }
+
+    private void seatConsumer(PC pc) {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+    }
+
+    @Test
+    void consume_eat_decrementsARationsLine_andRelievesHunger() {
+        PC pc = survivalPc("{\"hunger\":4,\"thirst\":2,\"fatigue\":1}",
+                "[{\"catalogKey\":\"rations\",\"name\":\"Rations (1 day)\",\"qty\":2}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.survival()).containsEntry("hunger", 3);
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1);
+        assertThat(pc.getSurvival()).contains("\"hunger\":3");
+        verify(pcRepository).save(pc);
+        verify(sessionRepository).save(session); // version bumped for every viewer
+    }
+
+    @Test
+    void consume_eat_removesTheLine_atTheLastRation() {
+        PC pc = survivalPc("{\"hunger\":1,\"thirst\":0,\"fatigue\":0}",
+                "[{\"catalogKey\":\"rations\",\"qty\":1},{\"catalogKey\":\"longsword\",\"qty\":1}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("catalogKey")).isEqualTo("longsword");
+    }
+
+    @Test
+    void consume_eat_withoutRations_stillRelievesHunger() {
+        PC pc = survivalPc("{\"hunger\":4,\"thirst\":0,\"fatigue\":0}", "[]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.survival()).containsEntry("hunger", 3);
+        assertThat(result.inventory()).isEmpty();
+    }
+
+    @Test
+    void consume_drink_decrementsAWaterskin_andSkipsDroppedLines() {
+        PC pc = survivalPc("{\"hunger\":0,\"thirst\":5,\"fatigue\":0}",
+                "[{\"catalogKey\":\"waterskin\",\"qty\":1,\"status\":\"dropped\"},"
+                        + "{\"catalogKey\":\"waterskin\",\"qty\":3}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "DRINK", playerId);
+
+        assertThat(result.survival()).containsEntry("thirst", 4);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1); // dropped line untouched
+        assertThat(result.inventory().get(1).get("qty")).isEqualTo(2);
+    }
+
+    @Test
+    void consume_sleep_adjustsFatigueOnly_flooredAtZero() {
+        PC pc = survivalPc("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}", "[]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "SLEEP_GOOD", playerId);
+
+        assertThat(result.survival())
+                .containsEntry("fatigue", 0)  // −3 floored
+                .containsEntry("hunger", 2);
+    }
+
+    @Test
+    void consume_throws409_whenTheCampaignHasNoSurvivalVariant() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // no variant rules
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void consume_throws403_whenThePcIsNotSeated() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void consume_throws403_forSomeoneElsesCharacter() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void consume_throws400_onAnUnknownAction() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "NAP", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- castSpell ---
+
+    private PC casterPc(String spells, String spellSlots, String inventory) {
+        PC pc = pc(7L, "Elaria", 0);
+        pc.setSpells(spells);
+        pc.setSpellSlots(spellSlots);
+        pc.setInventory(inventory);
+        return pc;
+    }
+
+    /** Seat pc 7 owned by the player and stub the row lock — no variant gate on casting. */
+    private void seatCaster(PC pc) {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+    }
+
+    @Test
+    void cast_spendsASlot_andBumpsVersion() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":4,\"used\":1}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(2);
+        assertThat(result.warning()).isNull();
+        assertThat(pc.getSpellSlots()).contains("\"used\":2");
+        verify(pcRepository).save(pc);
+        verify(sessionRepository).save(session); // version bumped so the DM sees the spend
+    }
+
+    @Test
+    void cast_cantrip_spendsNoSlot() {
+        PC pc = casterPc("[{\"name\":\"Fire Bolt\",\"lvl\":0}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Fire Bolt", 0, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(0);
+        verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void cast_upcast_spendsTheChosenLevel_notTheSpellLevel() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":2,\"used\":0},\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Cure Wounds", 3, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(0);
+        assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(1);
+    }
+
+    @Test
+    void cast_throws409_whenNoSlotAtThatLevelIsFree() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":2,\"used\":2}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_throws409_whenAskedToCastBelowTheSpellLevel() {
+        PC pc = casterPc("[{\"name\":\"Revivify\",\"lvl\":3}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Revivify", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void cast_throws400_whenTheCharacterDoesNotKnowTheSpell() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Wish", 9, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void cast_throws403_whenThePcIsNotSeated() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void cast_throws403_forSomeoneElsesCharacter() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_throws409_whenTheSessionHasEnded() {
+        session.setStatus(SessionStatus.ENDED);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void cast_consumesAConsumedOnCastComponent_andRemovesItAtZero() {
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}",
+                "[{\"category\":\"material-component\",\"spell\":\"Revivify\",\"qty\":1,\"consumedOnCast\":true}]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Revivify", 3, playerId);
+
+        assertThat(result.inventory()).isEmpty();
+        assertThat(result.warning()).isNull();
+    }
+
+    @Test
+    void cast_leavesAReusableComponentUntouched() {
+        String spells = "[{\"name\":\"Chromatic Orb\",\"lvl\":1,\"components\":[\"v\",\"s\",\"m\"],"
+                + "\"material\":\"a diamond worth 50+ GP\"}]";
+        PC pc = casterPc(spells, "{\"1\":{\"max\":2,\"used\":0}}",
+                "[{\"category\":\"material-component\",\"spell\":\"Chromatic Orb\",\"qty\":1,\"consumedOnCast\":false}]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Chromatic Orb", 1, playerId);
+
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1);
+    }
+
+    @Test
+    void cast_missingCostlyComponent_warnsWhenLenient() {
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc); // campaign has no strictComponents variant
+
+        var result = sessionService.castSpell(1L, 7L, "Revivify", 3, playerId);
+
+        assertThat(result.warning()).contains("Missing material component");
+        assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(1);
+        verify(pcRepository).save(pc); // cast still went through
+    }
+
+    @Test
+    void cast_missingCostlyComponent_blocksWhenStrict() {
+        campaign.setVariantRules("{\"strictComponents\":true}");
+        String spells = "[{\"name\":\"Revivify\",\"lvl\":3,\"components\":[\"v\",\"m\"],"
+                + "\"material\":\"diamonds worth 300+ GP\"}]";
+        PC pc = casterPc(spells, "{\"3\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Revivify", 3, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- applyDamage: dropping to 0 HP is an exhausting shock ---
+
+    @Test
+    void damage_droppingAPcToZero_addsFatigue_whenVariantOn() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 5);
+        pc.setHpMax((short) 10);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 9, dmId);
+
+        assertThat(pc.getHpCurrent()).isZero();
+        assertThat(pc.getSurvival()).contains("\"fatigue\":3"); // Ok default (2) + 1
+    }
+
+    @Test
+    void damage_atZeroAlready_doesNotStackFatigue() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 0);
+        pc.setHpMax((short) 10);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 4, dmId);
+
+        assertThat(pc.getSurvival()).isNull(); // no transition into 0 → untouched
+    }
+
+    @Test
+    void damage_toZero_leavesSurvivalAlone_whenVariantOff() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 3);
+        pc.setHpMax((short) 10);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 5, dmId);
+
+        assertThat(pc.getHpCurrent()).isZero();
+        assertThat(pc.getSurvival()).isNull();
+    }
+
     private static int status(Throwable e) {
         return ((ResponseStatusException) e).getStatusCode().value();
     }
@@ -836,6 +1381,86 @@ class SessionServiceTest {
         p.setSessionId(1L);
         p.setPcId(pcId);
         return p;
+    }
+
+    /** An NPC combatant (no canonical PC) — enough for pointer-walk tests. */
+    private static SessionParticipant combatant(Long id, Short initiative, int orderIndex) {
+        SessionParticipant p = participant(id, null);
+        p.setInitiative(initiative);
+        p.setInitRolled(initiative != null);
+        p.setOrderIndex((short) orderIndex);
+        return p;
+    }
+
+    private static SessionParticipant pcCombatant(Long id, Long pcId, Short initiative, int orderIndex) {
+        SessionParticipant p = participant(id, pcId);
+        p.setInitiative(initiative);
+        p.setInitRolled(initiative != null);
+        p.setOrderIndex((short) orderIndex);
+        return p;
+    }
+
+    private static Encounter encounter(Long id, Long campaignId, UUID dmUserId) {
+        Encounter e = new Encounter();
+        e.setId(id);
+        e.setCampaignId(campaignId);
+        e.setDmUserId(dmUserId);
+        e.setName("Ambush");
+        return e;
+    }
+
+    private static EncounterCreature creature(String name, Short dexModifier, Short hpMax, int quantity) {
+        EncounterCreature c = new EncounterCreature();
+        c.setName(name);
+        c.setDexModifier(dexModifier);
+        c.setHpMax(hpMax);
+        c.setQuantity(quantity);
+        return c;
+    }
+
+    /** n NPC combatants, ids 1..n, initiative descending, already in order. */
+    private static List<SessionParticipant> combatants(int n) {
+        List<SessionParticipant> list = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            list.add(combatant((long) (i + 1), (short) (20 - i), i));
+        }
+        return list;
+    }
+
+    /** Wire an ACTIVE session with a turn pointer and an ordered combatant list. */
+    private void arm(CombatSession session, Long activeParticipantId, List<SessionParticipant> ordered) {
+        session.setCurrentTurnParticipantId(activeParticipantId);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(ordered);
+    }
+
+    /**
+     * The canonical visibility fixture: my PC (init 20) → enemy (init 15) →
+     * another player's PC (init 10), already in turn order. enemies_hidden is
+     * TRUE by default on the session.
+     */
+    private List<SessionParticipant> hiddenEnemySetup() {
+        SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant enemy = combatant(2L, (short) 15, 1);
+        enemy.setDexModifier((short) 2);
+        SessionParticipant theirs = pcCombatant(3L, 8L, (short) 10, 2);
+        theirs.setOwnerUserId(strangerId);
+        return new ArrayList<>(List.of(mine, enemy, theirs));
+    }
+
+    /** Canonical PCs for {@link #hiddenEnemySetup()}'s PC combatants. */
+    private void stubPcs() {
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pcWithDex(7L, "Mine", 10), pcWithDex(8L, "Theirs", 10)));
+    }
+
+    private static PC pcWithDex(Long id, String name, int dex) {
+        PC pc = new PC();
+        pc.setId(id);
+        pc.setName(name);
+        pc.setAbilityDex((short) dex);
+        return pc;
     }
 
     /** An NPC combatant (no canonical PC) — enough for pointer-walk tests. */

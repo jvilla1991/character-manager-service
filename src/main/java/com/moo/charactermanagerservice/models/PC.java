@@ -133,6 +133,12 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String inventory;
 
+    // Darker Dungeons survival conditions: {"hunger":0,"thirst":0,"fatigue":0},
+    // stages 0-6; NULL = never tracked (all zeros). Preserved when an update body
+    // omits it, so a stale client can't wipe in-session changes.
+    @Column(columnDefinition = "TEXT")
+    private String survival;
+
     @Column(columnDefinition = "TEXT")
     private String features;
 
@@ -197,6 +203,7 @@ public class PC implements Serializable {
     public void setWeapons(String weapons) { this.weapons = weapons; }
     public void setGear(String gear) { this.gear = gear; }
     public void setInventory(String inventory) { this.inventory = inventory; }
+    public void setSurvival(String survival) { this.survival = survival; }
     public void setFeatures(String features) { this.features = features; }
     public void setTraits(String traits) { this.traits = traits; }
     public void setLanguages(String languages) { this.languages = languages; }

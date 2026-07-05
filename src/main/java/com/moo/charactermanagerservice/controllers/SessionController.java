@@ -2,12 +2,17 @@ package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
+import com.moo.charactermanagerservice.dto.CastResult;
+import com.moo.charactermanagerservice.dto.CastSpellRequest;
+import com.moo.charactermanagerservice.dto.ConsumeResult;
+import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.SetSoundRequest;
+import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.SetVisibilityRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.dto.XpAwardRequest;
@@ -208,6 +213,55 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
                 sessionService.setTurnSound(id, request.turnSound(), user.getUuid()));
+    }
+
+    /**
+     * DM advances the campaign clock one segment (dawn → noon → dusk → night →
+     * next day). In survival-conditions campaigns, entering dawn/noon/dusk bumps
+     * every member PC's conditions server-side.
+     */
+    @PostMapping("/session/{id}/time/advance")
+    public ResponseEntity<SessionStateView> advanceTime(@PathVariable Long id,
+                                                        Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.advanceTime(id, user.getUuid()));
+    }
+
+    /** DM sets the campaign clock directly (no condition bumps). */
+    @PutMapping("/session/{id}/time")
+    public ResponseEntity<SessionStateView> setTime(@PathVariable Long id,
+                                                    @RequestBody SetTimeRequest request,
+                                                    Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.setTime(id, request, user.getUuid()));
+    }
+
+    /**
+     * A player improves their own seated PC's survival condition (eat / drink /
+     * sleep). Returns the new stages plus the possibly-decremented inventory.
+     */
+    @PostMapping("/session/{id}/survival/consume")
+    public ResponseEntity<ConsumeResult> consumeSurvival(@PathVariable Long id,
+                                                         @RequestBody ConsumeSurvivalRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.consumeSurvival(
+                id, request.pcId(), request.action(), user.getUuid()));
+    }
+
+    /**
+     * A player casts one of their own seated PC's spells: spends a slot (with
+     * upcasting) and consumes a flagged material component. Returns the updated
+     * slots and inventory, plus a warning when a costly component was missing
+     * but the campaign let the cast through.
+     */
+    @PostMapping("/session/{id}/spell/cast")
+    public ResponseEntity<CastResult> castSpell(@PathVariable Long id,
+                                                @RequestBody CastSpellRequest request,
+                                                Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.castSpell(
+                id, request.pcId(), request.spellName(), request.atLevel(), user.getUuid()));
     }
 
     /** DM ends the session. */

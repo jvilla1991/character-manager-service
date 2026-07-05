@@ -91,7 +91,12 @@ public class CampaignService {
 
     /** True when this campaign has opted into slot-based inventory. */
     private boolean slotInventoryEnabled(Campaign campaign) {
-        return Boolean.TRUE.equals(json.parseObject(campaign.getVariantRules()).get("slotInventory"));
+        return isVariantEnabled(campaign, "slotInventory");
+    }
+
+    /** True when this campaign has opted into the named variant rule. */
+    public boolean isVariantEnabled(Campaign campaign, String key) {
+        return Boolean.TRUE.equals(json.parseObject(campaign.getVariantRules()).get(key));
     }
 
     /**
@@ -181,6 +186,9 @@ public class CampaignService {
         // variant rules are chosen at creation and immutable — a body that omits
         // them (every existing client) must not null the column.
         campaign.setVariantRules(existing.getVariantRules());
+        // the game clock is written only by the session time endpoints — a
+        // campaign edit must not reset or null it.
+        campaign.setGameTime(existing.getGameTime());
         return campaignRepository.save(campaign);
     }
 

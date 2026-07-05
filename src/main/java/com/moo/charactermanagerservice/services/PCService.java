@@ -6,8 +6,10 @@ import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.PcNoteRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -24,13 +26,15 @@ public class PCService {
     private final PCRepository pcRepository;
     private final LevelUpService levelUpService;
     private final CampaignRepository campaignRepository;
+    private final PcNoteRepository pcNoteRepository;
 
     @Autowired
     public PCService(PCRepository pcRepository, LevelUpService levelUpService,
-                     CampaignRepository campaignRepository) {
+                     CampaignRepository campaignRepository, PcNoteRepository pcNoteRepository) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
         this.campaignRepository = campaignRepository;
+        this.pcNoteRepository = pcNoteRepository;
     }
 
     public PC addPC(PC pc) {
@@ -56,7 +60,20 @@ public class PCService {
     public PC updatePC(PC pc, UUID userId) {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
+        preserveServerOwnedColumns(pc, existing);
         return pcRepository.save(pc);
+    }
+
+    /**
+     * Survival stages are adjusted server-side during live sessions (time
+     * advancement, consuming rations); a full-entity update body that omits them
+     * must not wipe those changes. Clients adjust survival by sending it — they
+     * can never clear it to NULL, which nothing legitimately does.
+     */
+    private void preserveServerOwnedColumns(PC incoming, PC existing) {
+        if (incoming.getSurvival() == null) {
+            incoming.setSurvival(existing.getSurvival());
+        }
     }
 
     /**
@@ -84,6 +101,7 @@ public class PCService {
         assertCampaignDm(existing, dmUserId);
         incoming.setUserId(existing.getUserId());
         incoming.setCampaignId(existing.getCampaignId());
+        preserveServerOwnedColumns(incoming, existing);
         return pcRepository.save(incoming);
     }
 
@@ -120,6 +138,40 @@ public class PCService {
         PC pc = findPCById(id);
         assertOwnership(pc, userId);
         pcRepository.deleteById(id);
+    }
+
+    // --- Per-character session notes ---------------------------------------
+
+    /**
+     * The owning player appends a note to their character ("what my character
+     * remembers"). Campaign and (optional) session ids are snapshotted so the
+     * note stays meaningful history even if the PC later leaves the campaign.
+     */
+    public PcNote addNote(Long pcId, String body, Long sessionId, UUID userId) {
+        PC pc = findPCById(pcId);
+        assertOwnership(pc, userId);
+        if (body == null || body.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Note body must not be blank");
+        }
+        PcNote note = new PcNote();
+        note.setPcId(pcId);
+        note.setCampaignId(pc.getCampaignId());
+        note.setSessionId(sessionId);
+        note.setAuthorUserId(userId);
+        note.setBody(body.trim());
+        return pcNoteRepository.save(note);
+    }
+
+    /**
+     * A character's notes, newest first. Readable by the owning player and by
+     * the DM of the campaign the PC currently belongs to (the cross-link view).
+     */
+    public List<PcNote> notesFor(Long pcId, UUID userId) {
+        PC pc = findPCById(pcId);
+        if (!userId.equals(pc.getUserId())) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        return pcNoteRepository.findByPcIdOrderByCreatedAtDesc(pcId);
     }
 
     private void assertOwnership(PC pc, UUID userId) {

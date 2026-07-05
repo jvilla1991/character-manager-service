@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.CatalogItemView;
 import com.moo.charactermanagerservice.dto.ShopItemView;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.dto.PurchaseResult;
@@ -58,7 +59,7 @@ public class ShopService {
 
     /** Catalog slices a shop may sell. Phase 1 seeds WEAPON; the rest arrive with their slices. */
     private static final Set<String> SUPPORTED_CATEGORIES =
-            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT");
+            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR");
 
     private final CombatSessionRepository sessionRepository;
     private final SessionShopRepository shopRepository;
@@ -330,6 +331,25 @@ public class ShopService {
         pcRepository.save(pc);
 
         return new SellResult(newCoins, inventory, totalGainCp);
+    }
+
+    /**
+     * Raw catalog browse for the DM-grant picker: every item in a category, at
+     * catalog price, with the effective bulk rating — the same value
+     * {@link #newInventoryEntry} stamps at purchase, so the frontend can
+     * denormalize a granted item without re-deriving weight bands. Read-only
+     * reference data; any authenticated user may read it (players already see
+     * the same items through shops).
+     */
+    @Transactional(readOnly = true)
+    public List<CatalogItemView> catalog(String category) {
+        String normalized = normalizeCategory(category);
+        return srdItemRepository.findByCategoryOrderByNameAsc(normalized).stream()
+                .map(i -> new CatalogItemView(
+                        i.getItemKey(), i.getName(), i.getCategory(), i.getCostCp(),
+                        i.getWeight(), BulkRules.bulkFor(i.getBulk(), i.getWeight()),
+                        json.parseObject(i.getDetails())))
+                .toList();
     }
 
     // --- internals -----------------------------------------------------------

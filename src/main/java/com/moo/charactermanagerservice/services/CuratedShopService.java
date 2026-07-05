@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CuratedShopItemView;
 import com.moo.charactermanagerservice.dto.CuratedShopView;
+import com.moo.charactermanagerservice.dto.ImportShopRequest;
 import com.moo.charactermanagerservice.dto.ShopSummaryView;
 import com.moo.charactermanagerservice.models.Shop;
 import com.moo.charactermanagerservice.models.ShopItem;
@@ -37,7 +38,8 @@ import java.util.stream.Collectors;
 public class CuratedShopService {
 
     /** Categories the import-template helper accepts (the seeded catalog slices). */
-    private static final Set<String> IMPORTABLE_CATEGORIES = Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT");
+    private static final Set<String> IMPORTABLE_CATEGORIES =
+            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR");
 
     private final ShopRepository shopRepository;
     private final ShopItemRepository shopItemRepository;
@@ -155,6 +157,61 @@ public class CuratedShopService {
         shopItemRepository.saveAll(toAdd);
         touch(shop);
         return buildView(shop);
+    }
+
+    /**
+     * Create a whole curated shop from pasted JSON — name, settlement, and
+     * catalog lines with optional gold-price overrides. All-or-nothing: any
+     * unknown catalog key fails the import with a 400 listing every bad key,
+     * so a typo never leaves a half-built shop behind. Campaign-DM only.
+     */
+    @Transactional
+    public CuratedShopView importShop(Long campaignId, ImportShopRequest request, UUID dmUserId) {
+        campaignService.findByIdForDm(campaignId, dmUserId);
+        if (request == null || request.name() == null || request.name().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Shop name is required");
+        }
+        List<ImportShopRequest.Item> lines = request.items() == null ? List.of() : request.items();
+
+        // Validate every key (and collect duplicates away) before writing anything.
+        List<String> keys = lines.stream()
+                .map(ImportShopRequest.Item::key)
+                .filter(k -> k != null && !k.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (keys.size() != lines.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Every item needs a unique, non-blank catalog key");
+        }
+        Set<String> known = srdItemRepository.findByItemKeyIn(keys).stream()
+                .map(SrdItem::getItemKey).collect(Collectors.toSet());
+        List<String> unknown = keys.stream().filter(k -> !known.contains(k)).toList();
+        if (!unknown.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Unknown catalog keys: " + String.join(", ", unknown));
+        }
+
+        Shop shop = new Shop();
+        shop.setCampaignId(campaignId);
+        shop.setDmUserId(dmUserId);
+        shop.setName(request.name().trim());
+        shop.setSettlement(request.settlement() == null || request.settlement().isBlank()
+                ? null : request.settlement().trim());
+        Shop saved = shopRepository.save(shop);
+
+        List<ShopItem> toAdd = lines.stream().map(line -> {
+            Long priceCp = line.priceGp() == null ? null : Math.round(line.priceGp() * 100);
+            validatePrice(priceCp);
+            ShopItem item = new ShopItem();
+            item.setShopId(saved.getId());
+            item.setCatalogItemKey(line.key().trim());
+            item.setPriceCp(priceCp);
+            return item;
+        }).toList();
+        shopItemRepository.saveAll(toAdd);
+
+        return buildView(saved);
     }
 
     /** Change a line's price override (null = back to catalog price). */

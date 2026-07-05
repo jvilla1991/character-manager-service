@@ -1,9 +1,11 @@
 package com.moo.charactermanagerservice.controllers;
 
+import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.services.PCService;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -89,5 +91,21 @@ public class PCController {
         User user = (User) authentication.getPrincipal();
         pcService.deletePC(id, user.getUuid());
         return ResponseEntity.noContent().build();
+    }
+
+    /** The owning player appends a session note to their character. */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<PcNote> addNote(@PathVariable Long id, Authentication authentication,
+                                          @RequestBody AddPcNoteRequest request) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                pcService.addNote(id, request.body(), request.sessionId(), user.getUuid()));
+    }
+
+    /** A character's notes, newest first — owner or the campaign's DM. */
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<List<PcNote>> getNotes(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.notesFor(id, user.getUuid()));
     }
 }
