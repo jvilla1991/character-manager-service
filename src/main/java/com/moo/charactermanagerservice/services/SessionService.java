@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
@@ -838,6 +839,45 @@ public class SessionService {
         return s == null || s.isBlank() ? null : s;
     }
 
+    /** The party-location types the DM may pick, mirrored on the client. */
+    private static final Set<String> LOCATION_TYPES = Set.of("Settlement", "Wilderness", "Dungeon");
+    private static final int LOCATION_NAME_MAX = 60;
+
+    /**
+     * DM sets the party's current location. Party-wide (stored on the campaign,
+     * like the clock) and version-bumped, so every seated sheet updates via the
+     * poll. Name is free text (may be blank); type must be one of the three
+     * recognized kinds.
+     */
+    @Transactional
+    public SessionStateView setLocation(Long sessionId, SetLocationRequest request, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (request == null || request.type() == null || !LOCATION_TYPES.contains(request.type())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Location requires a type of Settlement, Wilderness, or Dungeon");
+        }
+        String name = request.name() == null ? "" : request.name().trim();
+        if (name.length() > LOCATION_NAME_MAX) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Location name must be at most " + LOCATION_NAME_MAX + " characters");
+        }
+
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        Map<String, Object> location = new LinkedHashMap<>();
+        location.put("name", name);
+        location.put("type", request.type());
+        campaign.setLocation(json.writeObject(location));
+        campaignRepository.save(campaign);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
     /**
      * A player casts one of their own seated PC's spells: spends a slot at
      * {@code atLevel} (nothing for a cantrip; upcasting allowed) and consumes a
@@ -1164,13 +1204,18 @@ public class SessionService {
                 .map(PC::getXp)
                 .orElse(null);
 
-        // The campaign clock rides every snapshot (null until the DM sets it).
-        // The sinceVersion 204 short-circuit returns before buildState, so idle
-        // polls never pay for this campaign read.
-        String storedTime = campaignService.findById(session.getCampaignId()).getGameTime();
+        // The campaign clock and party location ride every snapshot (each null
+        // until the DM sets it). The sinceVersion 204 short-circuit returns before
+        // buildState, so idle polls never pay for this campaign read.
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        String storedTime = campaign.getGameTime();
         Map<String, Object> gameTime = (storedTime == null || storedTime.isBlank())
                 ? null
                 : json.parseObject(storedTime);
+        String storedLocation = campaign.getLocation();
+        Map<String, Object> location = (storedLocation == null || storedLocation.isBlank())
+                ? null
+                : json.parseObject(storedLocation);
 
         return new SessionStateView(
                 session.getId(),
@@ -1188,6 +1233,7 @@ public class SessionService {
                 shopCategory,
                 myXp,
                 gameTime,
+                location,
                 views
         );
     }

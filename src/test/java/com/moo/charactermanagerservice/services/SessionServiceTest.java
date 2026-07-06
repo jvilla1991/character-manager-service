@@ -1039,6 +1039,41 @@ class SessionServiceTest {
         verify(campaignRepository, never()).save(any());
     }
 
+    // --- setLocation (party location) ---
+
+    @Test
+    void setLocation_writesNameAndType() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setLocation(1L,
+                new com.moo.charactermanagerservice.dto.SetLocationRequest("Neverwinter", "Settlement"), dmId);
+
+        assertThat(campaign.getLocation())
+                .contains("\"name\":\"Neverwinter\"").contains("\"type\":\"Settlement\"");
+        verify(campaignRepository).save(campaign);
+    }
+
+    @Test
+    void setLocation_throws400_onAnUnknownType() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.setLocation(1L,
+                new com.moo.charactermanagerservice.dto.SetLocationRequest("X", "Tavern"), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void setLocation_throws403_forNonDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.setLocation(1L,
+                new com.moo.charactermanagerservice.dto.SetLocationRequest("Neverwinter", "Settlement"), strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
     // --- longRest ---
 
     private void seatForLongRest(PC pc) {

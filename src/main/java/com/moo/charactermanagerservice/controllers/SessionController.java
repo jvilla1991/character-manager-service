@@ -13,6 +13,7 @@ import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.SetSoundRequest;
+import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.SetVisibilityRequest;
 import com.moo.charactermanagerservice.dto.User;
@@ -235,6 +236,15 @@ public class SessionController {
                                                     Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.setTime(id, request, user.getUuid()));
+    }
+
+    /** DM sets the party's current location (name + type), broadcast to every sheet. */
+    @PutMapping("/session/{id}/location")
+    public ResponseEntity<SessionStateView> setLocation(@PathVariable Long id,
+                                                        @RequestBody SetLocationRequest request,
+                                                        Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.setLocation(id, request, user.getUuid()));
     }
 
     /**
