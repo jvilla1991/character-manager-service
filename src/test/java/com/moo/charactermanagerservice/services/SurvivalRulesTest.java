@@ -1,13 +1,12 @@
 package com.moo.charactermanagerservice.services;
 
-import com.moo.charactermanagerservice.dto.SurvivalAction;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
-/** Darker Dungeons ch. 31 stage math: time-of-day bumps, player actions, clamping. */
+/** Darker Dungeons ch. 31 stage math: the auto-consume day-segment and clamping. */
 class SurvivalRulesTest {
 
     @Test
@@ -24,9 +23,20 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void morning_bumpsHungerAndThirst() {
+    void morning_whenFed_holdsHungerAndThirst() {
+        // ate + drank → hunger/thirst do NOT rise; morning has no fatigue step
         Map<String, Object> out =
-                SurvivalRules.applyTimeBump(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning");
+                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning", true, true);
+        assertThat(out)
+                .containsEntry("hunger", 2)
+                .containsEntry("thirst", 2)
+                .containsEntry("fatigue", 2);
+    }
+
+    @Test
+    void morning_whenOutOfSupplies_raisesHungerAndThirst() {
+        Map<String, Object> out =
+                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning", false, false);
         assertThat(out)
                 .containsEntry("hunger", 3)
                 .containsEntry("thirst", 3)
@@ -34,41 +44,50 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void noon_bumpsFatigueOnly_fromTheOkDefault() {
-        assertThat(SurvivalRules.applyTimeBump(Map.of(), "noon"))
+    void noon_raisesFatigueOnly_regardlessOfSupplies() {
+        assertThat(SurvivalRules.applySegment(Map.of(), "noon", false, false))
                 .containsEntry("hunger", 2)
                 .containsEntry("thirst", 2)
                 .containsEntry("fatigue", 3);
     }
 
     @Test
-    void night_bumpsAllThree_clampedAtStarving() {
-        // night carries dusk's triple bump under the three-segment mapping
+    void night_whenFed_stillRaisesFatigue_butHoldsHungerThirst() {
         Map<String, Object> out =
-                SurvivalRules.applyTimeBump(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "night");
+                SurvivalRules.applySegment(Map.of("hunger", 5, "thirst", 5, "fatigue", 5), "night", true, true);
         assertThat(out)
-                .containsEntry("hunger", 6)   // already starving — stays 6
+                .containsEntry("hunger", 5)   // fed → held
+                .containsEntry("thirst", 5)
+                .containsEntry("fatigue", 6);  // fatigue always climbs (clamped at 6)
+    }
+
+    @Test
+    void night_whenStarving_raisesAllThree_clampedAtStarving() {
+        Map<String, Object> out =
+                SurvivalRules.applySegment(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "night", false, false);
+        assertThat(out)
+                .containsEntry("hunger", 6)
                 .containsEntry("thirst", 6)
                 .containsEntry("fatigue", 1);
     }
 
     @Test
-    void unknownSegment_appliesNoBumps() {
-        assertThat(SurvivalRules.applyTimeBump(Map.of("hunger", 3), "dusk")) // v1 segment
-                .containsEntry("hunger", 3)
-                .containsEntry("thirst", 2)
-                .containsEntry("fatigue", 2);
+    void applySegment_preservesExtraKeys_likeSeeded() {
+        Map<String, Object> out = SurvivalRules.applySegment(
+                Map.of("hunger", 2, "thirst", 2, "fatigue", 2, "seeded", true), "noon", false, false);
+        assertThat(out).containsEntry("seeded", true);
     }
 
     @Test
-    void actions_applyTheBookDeltas_flooredAtZero() {
-        assertThat(SurvivalRules.applyAction(Map.of("hunger", 4), SurvivalAction.EAT))
-                .containsEntry("hunger", 3);
-        assertThat(SurvivalRules.applyAction(Map.of("thirst", 1), SurvivalAction.DRINK))
-                .containsEntry("thirst", 0);
-        assertThat(SurvivalRules.applyAction(Map.of("fatigue", 2), SurvivalAction.SLEEP_GOOD))
-                .containsEntry("fatigue", 0); // −3 floored at 0
-        assertThat(SurvivalRules.applyAction(Map.of("fatigue", 5), SurvivalAction.SLEEP_DISTURBED))
-                .containsEntry("fatigue", 4);
+    void isSupplyStep_isTrueForMorningAndNight() {
+        assertThat(SurvivalRules.isSupplyStep("morning")).isTrue();
+        assertThat(SurvivalRules.isSupplyStep("night")).isTrue();
+        assertThat(SurvivalRules.isSupplyStep("noon")).isFalse();
+    }
+
+    @Test
+    void bump_appliesADeltaFlooredAndCapped() {
+        assertThat(SurvivalRules.bump(Map.of("fatigue", 2), "fatigue", -3)).containsEntry("fatigue", 0);
+        assertThat(SurvivalRules.bump(Map.of("fatigue", 5), "fatigue", -1)).containsEntry("fatigue", 4);
     }
 }

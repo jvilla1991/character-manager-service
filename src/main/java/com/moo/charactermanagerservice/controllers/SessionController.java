@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.CastSpellRequest;
+import com.moo.charactermanagerservice.dto.LongRestRequest;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
@@ -237,16 +238,16 @@ public class SessionController {
     }
 
     /**
-     * A player improves their own seated PC's survival condition (eat / drink /
-     * sleep). Returns the new stages plus the possibly-decremented inventory.
+     * DM long rest for the seated party: recovers all spell slots and (in a
+     * survival campaign) sheds fatigue — 3 for an undisturbed rest, 1 otherwise.
      */
-    @PostMapping("/session/{id}/survival/consume")
-    public ResponseEntity<ConsumeResult> consumeSurvival(@PathVariable Long id,
-                                                         @RequestBody ConsumeSurvivalRequest request,
-                                                         Authentication authentication) {
+    @PostMapping("/session/{id}/long-rest")
+    public ResponseEntity<SessionStateView> longRest(@PathVariable Long id,
+                                                     @RequestBody LongRestRequest request,
+                                                     Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(sessionService.consumeSurvival(
-                id, request.pcId(), request.action(), user.getUuid()));
+        return ResponseEntity.ok(sessionService.longRest(
+                id, Boolean.TRUE.equals(request.undisturbed()), user.getUuid()));
     }
 
     /**

@@ -52,39 +52,35 @@ final class SurvivalRules {
     }
 
     /**
-     * The book's time-of-day table mapped onto the three-segment day (owner
-     * decision): morning takes dawn's +1 hunger +1 thirst, noon keeps
-     * +1 fatigue, and night takes dusk's +1 to all three (sleep happens
-     * during the night before the next morning). Unknown segments: no change.
+     * Apply one day-segment under the auto-consume model. Time worsens the
+     * party per the book's three-segment table (morning +hunger +thirst, noon
+     * +fatigue, night +all three), but the characters automatically eat/drink
+     * their supplies: hunger and thirst rise ONLY when the ration/waterskin ran
+     * out ({@code ate}/{@code drank} false). Fatigue has no resource and always
+     * rises on its segments. Extra keys on the map (e.g. {@code seeded}) are
+     * preserved.
      */
-    static Map<String, Object> applyTimeBump(Map<String, Object> survival, String timeOfDay) {
-        Map<String, Object> out = normalize(survival);
-        switch (timeOfDay == null ? "" : timeOfDay) {
-            case "morning" -> {
-                out.put("hunger", clamp((int) out.get("hunger") + 1));
-                out.put("thirst", clamp((int) out.get("thirst") + 1));
-            }
-            case "noon" -> out.put("fatigue", clamp((int) out.get("fatigue") + 1));
-            case "night" -> {
-                out.put("hunger", clamp((int) out.get("hunger") + 1));
-                out.put("thirst", clamp((int) out.get("thirst") + 1));
-                out.put("fatigue", clamp((int) out.get("fatigue") + 1));
-            }
-            default -> { /* unknown segment — no bumps */ }
-        }
+    static Map<String, Object> applySegment(Map<String, Object> survival, String segment,
+                                            boolean ate, boolean drank) {
+        Map<String, Object> out = new LinkedHashMap<>(survival);
+        int hunger = stageOf(survival, "hunger");
+        int thirst = stageOf(survival, "thirst");
+        int fatigue = stageOf(survival, "fatigue");
+
+        boolean htStep = "morning".equals(segment) || "night".equals(segment);
+        boolean fatigueStep = "noon".equals(segment) || "night".equals(segment);
+        if (htStep && !ate) hunger = clamp(hunger + 1);
+        if (htStep && !drank) thirst = clamp(thirst + 1);
+        if (fatigueStep) fatigue = clamp(fatigue + 1);
+
+        out.put("hunger", hunger);
+        out.put("thirst", thirst);
+        out.put("fatigue", fatigue);
         return out;
     }
 
-    /**
-     * A player's improvement action: eat a ration (−1 hunger), drink (−1 thirst),
-     * a good night's sleep (−3 fatigue) or a disturbed one (−1 fatigue).
-     */
-    static Map<String, Object> applyAction(Map<String, Object> survival, SurvivalAction action) {
-        return switch (action) {
-            case EAT -> bump(survival, "hunger", -1);
-            case DRINK -> bump(survival, "thirst", -1);
-            case SLEEP_GOOD -> bump(survival, "fatigue", -3);
-            case SLEEP_DISTURBED -> bump(survival, "fatigue", -1);
-        };
+    /** Whether this day-segment consumes rations/water (a hunger/thirst step). */
+    static boolean isSupplyStep(String segment) {
+        return "morning".equals(segment) || "night".equals(segment);
     }
 }
