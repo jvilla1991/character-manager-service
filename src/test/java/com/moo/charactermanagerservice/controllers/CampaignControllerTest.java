@@ -210,7 +210,8 @@ class CampaignControllerTest {
     @Test
     void getSummary_returns200_forMemberVisibleHeader() {
         var summary = new com.moo.charactermanagerservice.dto.CampaignSummaryView(
-                1L, "The Veiled Compass", java.util.Map.of("slotInventory", true));
+                1L, "The Veiled Compass", java.util.Map.of("slotInventory", true),
+                java.util.Map.of("name", "Neverwinter", "type", "Settlement"));
         when(campaignService.getSummary(1L, dmId)).thenReturn(summary);
 
         var response = campaignController.getSummary(1L, auth);
