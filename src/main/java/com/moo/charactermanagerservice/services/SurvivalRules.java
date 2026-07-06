@@ -1,5 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.SurvivalAction;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 

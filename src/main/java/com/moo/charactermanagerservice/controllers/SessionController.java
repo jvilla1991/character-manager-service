@@ -5,6 +5,8 @@ import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.CastSpellRequest;
 import com.moo.charactermanagerservice.dto.LongRestRequest;
+import com.moo.charactermanagerservice.dto.ConsumeResult;
+import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;

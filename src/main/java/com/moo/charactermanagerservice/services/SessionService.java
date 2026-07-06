@@ -33,6 +33,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -922,6 +923,26 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return new CastResult(pcId, slots, inventory, warning);
+    }
+
+    /**
+     * Decrement one unit of the first live line with this catalog key; the line
+     * is removed at zero. No matching line is fine — the action still applies.
+     */
+    private void consumeInventoryLine(List<Map<String, Object>> inventory, String catalogKey) {
+        for (Iterator<Map<String, Object>> it = inventory.iterator(); it.hasNext(); ) {
+            Map<String, Object> line = it.next();
+            if (!catalogKey.equals(line.get("catalogKey"))) continue;
+            if ("dropped".equals(line.get("status"))) continue;
+            int qty = line.get("qty") instanceof Number n ? n.intValue() : 0;
+            if (qty <= 0) continue;
+            if (qty == 1) {
+                it.remove();
+            } else {
+                line.put("qty", qty - 1);
+            }
+            return;
+        }
     }
 
     /** Load a participant and assert it belongs to the given session (404 otherwise). */
