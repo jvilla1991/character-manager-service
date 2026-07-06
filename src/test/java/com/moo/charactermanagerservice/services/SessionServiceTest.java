@@ -907,21 +907,45 @@ class SessionServiceTest {
     }
 
     @Test
-    void advanceTime_intoNight_bumpsAllThree() {
+    void advanceTime_intoNight_seedsSuppliesThenAutoEats_holdingHungerThirst() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
         campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         PC member = pc(7L, "Gorath", 0);
-        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}");
+        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}"); // unseeded → gets supplies
         when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(member));
 
         sessionService.advanceTime(1L, dmId);
 
-        // night carries dusk's triple bump under the three-segment mapping
         assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"night\"");
+        // fed from the just-seeded supplies → hunger/thirst held, only fatigue climbs
+        assertThat(member.getSurvival())
+                .contains("\"hunger\":2").contains("\"thirst\":2").contains("\"fatigue\":3")
+                .contains("\"seeded\":true");
+        // 5 seeded, 1 of each eaten/drunk this night → 4 left
+        assertThat(member.getInventory())
+                .contains("\"catalogKey\":\"rations\"").contains("\"catalogKey\":\"waterskin\"")
+                .contains("\"qty\":4");
+    }
+
+    @Test
+    void advanceTime_whenSuppliesRunOut_raisesHungerAndThirst() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        PC member = pc(7L, "Gorath", 0);
+        // already seeded, but the boxes are empty — nothing left to eat
+        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2,\"seeded\":true}");
+        member.setInventory("[]");
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(member));
+
+        sessionService.advanceTime(1L, dmId); // → night
+
         assertThat(member.getSurvival())
                 .contains("\"hunger\":3").contains("\"thirst\":3").contains("\"fatigue\":3");
+        assertThat(member.getInventory()).doesNotContain("rations"); // seeded flag blocks a refill
     }
 
     @Test
@@ -1015,131 +1039,62 @@ class SessionServiceTest {
         verify(campaignRepository, never()).save(any());
     }
 
-    // --- consumeSurvival ---
+    // --- longRest ---
 
-    private PC survivalPc(String survival, String inventory) {
-        PC pc = pc(7L, "Gorath", 0);
-        pc.setSurvival(survival);
-        pc.setInventory(inventory);
-        return pc;
-    }
-
-    private void seatConsumer(PC pc) {
-        campaign.setVariantRules("{\"survivalConditions\":true}");
+    private void seatForLongRest(PC pc) {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        SessionParticipant seat = participant(50L, 7L);
-        seat.setOwnerUserId(playerId);
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(List.of(participant(50L, 7L)));
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc)); // buildState's batch load
     }
 
     @Test
-    void consume_eat_decrementsARationsLine_andRelievesHunger() {
-        PC pc = survivalPc("{\"hunger\":4,\"thirst\":2,\"fatigue\":1}",
-                "[{\"catalogKey\":\"rations\",\"name\":\"Rations (1 day)\",\"qty\":2}]");
-        seatConsumer(pc);
-
-        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
-
-        assertThat(result.survival()).containsEntry("hunger", 3);
-        assertThat(result.inventory()).hasSize(1);
-        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1);
-        assertThat(pc.getSurvival()).contains("\"hunger\":3");
-        verify(pcRepository).save(pc);
-        verify(sessionRepository).save(session); // version bumped for every viewer
-    }
-
-    @Test
-    void consume_eat_removesTheLine_atTheLastRation() {
-        PC pc = survivalPc("{\"hunger\":1,\"thirst\":0,\"fatigue\":0}",
-                "[{\"catalogKey\":\"rations\",\"qty\":1},{\"catalogKey\":\"longsword\",\"qty\":1}]");
-        seatConsumer(pc);
-
-        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
-
-        assertThat(result.inventory()).hasSize(1);
-        assertThat(result.inventory().get(0).get("catalogKey")).isEqualTo("longsword");
-    }
-
-    @Test
-    void consume_eat_withoutRations_stillRelievesHunger() {
-        PC pc = survivalPc("{\"hunger\":4,\"thirst\":0,\"fatigue\":0}", "[]");
-        seatConsumer(pc);
-
-        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
-
-        assertThat(result.survival()).containsEntry("hunger", 3);
-        assertThat(result.inventory()).isEmpty();
-    }
-
-    @Test
-    void consume_drink_decrementsAWaterskin_andSkipsDroppedLines() {
-        PC pc = survivalPc("{\"hunger\":0,\"thirst\":5,\"fatigue\":0}",
-                "[{\"catalogKey\":\"waterskin\",\"qty\":1,\"status\":\"dropped\"},"
-                        + "{\"catalogKey\":\"waterskin\",\"qty\":3}]");
-        seatConsumer(pc);
-
-        var result = sessionService.consumeSurvival(1L, 7L, "DRINK", playerId);
-
-        assertThat(result.survival()).containsEntry("thirst", 4);
-        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1); // dropped line untouched
-        assertThat(result.inventory().get(1).get("qty")).isEqualTo(2);
-    }
-
-    @Test
-    void consume_sleep_adjustsFatigueOnly_flooredAtZero() {
-        PC pc = survivalPc("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}", "[]");
-        seatConsumer(pc);
-
-        var result = sessionService.consumeSurvival(1L, 7L, "SLEEP_GOOD", playerId);
-
-        assertThat(result.survival())
-                .containsEntry("fatigue", 0)  // −3 floored
-                .containsEntry("hunger", 2);
-    }
-
-    @Test
-    void consume_throws409_whenTheCampaignHasNoSurvivalVariant() {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // no variant rules
-
-        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
-    }
-
-    @Test
-    void consume_throws403_whenThePcIsNotSeated() {
+    void longRest_restoresSlots_andShedsFatigue_undisturbed() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":2}}");
+        pc.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
+        seatForLongRest(pc);
 
-        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
+        sessionService.longRest(1L, true, dmId); // undisturbed → -3 fatigue
+
+        assertThat(pc.getSpellSlots()).contains("\"used\":0").doesNotContain("\"used\":3");
+        assertThat(pc.getSurvival()).contains("\"fatigue\":2"); // 5 - 3
+        verify(sessionRepository).save(session); // version bumped
+    }
+
+    @Test
+    void longRest_disturbed_shedsOnlyOneFatigue() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
+        seatForLongRest(pc);
+
+        sessionService.longRest(1L, false, dmId);
+
+        assertThat(pc.getSurvival()).contains("\"fatigue\":4"); // 5 - 1
+    }
+
+    @Test
+    void longRest_nonSurvivalCampaign_restoresSlotsOnly() {
+        PC pc = pc(7L, "Gorath", 0); // campaign has no variant rules
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":4}}");
+        seatForLongRest(pc);
+
+        sessionService.longRest(1L, true, dmId);
+
+        assertThat(pc.getSpellSlots()).contains("\"used\":0");
+        assertThat(pc.getSurvival()).isNull(); // no fatigue to shed
+    }
+
+    @Test
+    void longRest_throws403_forNonDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.longRest(1L, true, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
-    }
-
-    @Test
-    void consume_throws403_forSomeoneElsesCharacter() {
-        campaign.setVariantRules("{\"survivalConditions\":true}");
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        SessionParticipant seat = participant(50L, 7L);
-        seat.setOwnerUserId(playerId);
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
-
-        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", strangerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
-        verify(pcRepository, never()).save(any());
-    }
-
-    @Test
-    void consume_throws400_onAnUnknownAction() {
-        campaign.setVariantRules("{\"survivalConditions\":true}");
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-
-        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "NAP", playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
     // --- castSpell ---
