@@ -5,6 +5,7 @@ import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.services.PCService;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
@@ -107,5 +108,12 @@ public class PCController {
     public ResponseEntity<List<PcNote>> getNotes(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(pcService.notesFor(id, user.getUuid()));
+    }
+
+    /** A character's latest 10 activity log entries, newest first — owner or the campaign's DM. */
+    @GetMapping("/{id}/log")
+    public ResponseEntity<List<PcActivityLog>> getActivityLog(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.activityLogFor(id, user.getUuid()));
     }
 }
