@@ -280,4 +280,95 @@ class PcActivityLogServiceTest {
         assertThat(description).contains("and 2 more");
         verify(activityLogRepository).pruneToLatest(1L);
     }
+
+    // --- logDmEdit(4-arg): DM-authored description -------------------------------
+
+    @Test
+    void logDmEdit_withDescription_logsOneVerbatimEntry_noDiff() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 15);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 16);
+
+        activityLogService.logDmEdit(before, after, actorId, "DM changed AC 15 -> 16 for cover");
+
+        ArgumentCaptor<PcActivityLog> captor = ArgumentCaptor.forClass(PcActivityLog.class);
+        verify(activityLogRepository, times(1)).save(captor.capture());
+        PcActivityLog saved = captor.getValue();
+        assertThat(saved.getDescription()).isEqualTo("DM changed AC 15 -> 16 for cover");
+        assertThat(saved.getActionType()).isEqualTo(PcActivityType.DM_EDIT);
+        verify(activityLogRepository).pruneToLatest(1L);
+    }
+
+    @Test
+    void logDmEdit_withDescription_trimsWhitespace() {
+        PC before = new PC();
+        before.setId(1L);
+        PC after = new PC();
+        after.setId(1L);
+
+        activityLogService.logDmEdit(before, after, actorId, "   Custom note   ");
+
+        verify(activityLogRepository).save(argThat(e -> "Custom note".equals(e.getDescription())));
+    }
+
+    @Test
+    void logDmEdit_withDescription_capsAt500Characters() {
+        PC before = new PC();
+        before.setId(1L);
+        PC after = new PC();
+        after.setId(1L);
+        String longDescription = "x".repeat(600);
+
+        activityLogService.logDmEdit(before, after, actorId, longDescription);
+
+        ArgumentCaptor<PcActivityLog> captor = ArgumentCaptor.forClass(PcActivityLog.class);
+        verify(activityLogRepository).save(captor.capture());
+        assertThat(captor.getValue().getDescription()).hasSize(500);
+    }
+
+    @Test
+    void logDmEdit_nullDescription_fallsBackToAutoDiff() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 15);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 16);
+
+        activityLogService.logDmEdit(before, after, actorId, null);
+
+        verify(activityLogRepository).save(argThat(e -> "DM changed AC 15 → 16".equals(e.getDescription())));
+    }
+
+    @Test
+    void logDmEdit_blankDescription_fallsBackToAutoDiff() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 15);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 16);
+
+        activityLogService.logDmEdit(before, after, actorId, "   ");
+
+        verify(activityLogRepository).save(argThat(e -> "DM changed AC 15 → 16".equals(e.getDescription())));
+    }
+
+    @Test
+    void logDmEdit_withDescription_logsEvenWhenNoFieldsChanged() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 15);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 15);
+
+        activityLogService.logDmEdit(before, after, actorId, "DM note with no stat change");
+
+        verify(activityLogRepository).save(argThat(e -> "DM note with no stat change".equals(e.getDescription())));
+        verify(activityLogRepository).pruneToLatest(1L);
+    }
 }

@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.controllers;
 import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityLog;
@@ -15,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -65,13 +67,22 @@ public class PCController {
         return ResponseEntity.ok(pcService.findPCByIdForDm(id, user.getUuid()));
     }
 
-    /** DM-authorized update of a campaign member's PC (campaign-DM ownership). */
+    /**
+     * DM-authorized update of a campaign member's PC (campaign-DM ownership).
+     * The body wraps the PC alongside an optional DM-authored log description
+     * that replaces the automatic before/after diff — see
+     * {@link UpdatePcAsDmRequest}.
+     */
     @PutMapping("/{id}/as-dm")
     public ResponseEntity<PC> updatePCAsDm(@PathVariable Long id, Authentication authentication,
-                                           @RequestBody PC pc) {
+                                           @RequestBody UpdatePcAsDmRequest request) {
+        if (request.pc() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pc is required");
+        }
         User user = (User) authentication.getPrincipal();
+        PC pc = request.pc();
         pc.setId(id);
-        return ResponseEntity.ok(pcService.updatePCAsDm(pc, user.getUuid()));
+        return ResponseEntity.ok(pcService.updatePCAsDm(pc, request.description(), user.getUuid()));
     }
 
     @GetMapping("/{id}/level-up/preview")

@@ -35,6 +35,9 @@ public class PcActivityLogService {
     /** Individual entries are logged one-per-change up to this many; beyond it, one summary row. */
     private static final int DM_DIFF_ENTRY_CAP = 3;
 
+    /** A DM-authored log description (see {@link #logDmEdit(PC, PC, UUID, String)}) is truncated to this many characters. */
+    static final int DM_DESCRIPTION_CAP = 500;
+
     private static final List<String> ABILITIES = List.of("STR", "DEX", "CON", "INT", "WIS", "CHA");
 
     private final PcActivityLogRepository activityLogRepository;
@@ -98,6 +101,31 @@ public class PcActivityLogService {
             descriptions = List.of(summary);
         }
         logAll(after.getId(), PcActivityType.DM_EDIT, descriptions, dmUserId);
+    }
+
+    /**
+     * Diff a DM's edit of a character, but let the DM's own words replace the
+     * automatic diff when they supplied one. A non-blank {@code description}
+     * logs as a single verbatim DM_EDIT entry — no diff is computed, and it
+     * logs even if the diff would otherwise have been empty (the UI's
+     * canSave guard already means a description-only save is deliberate).
+     * A null/blank description falls back to the existing auto-diff behavior.
+     */
+    public void logDmEdit(PC before, PC after, UUID dmUserId, String description) {
+        String normalized = normalizeDescription(description);
+        if (normalized == null) {
+            logDmEdit(before, after, dmUserId);
+            return;
+        }
+        log(after.getId(), PcActivityType.DM_EDIT, normalized, dmUserId);
+    }
+
+    /** Trim, collapse blank to null, and cap at {@link #DM_DESCRIPTION_CAP} characters. */
+    private String normalizeDescription(String description) {
+        if (description == null) return null;
+        String trimmed = description.trim();
+        if (trimmed.isEmpty()) return null;
+        return trimmed.length() > DM_DESCRIPTION_CAP ? trimmed.substring(0, DM_DESCRIPTION_CAP) : trimmed;
     }
 
     // --- The as-dm diff -----------------------------------------------------

@@ -29,6 +29,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -211,7 +212,7 @@ class PCServiceTest {
         PC incoming = new PC();
         incoming.setId(1L);
 
-        PC result = pcService.updatePCAsDm(incoming, dmId);
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
 
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
     }
@@ -351,7 +352,7 @@ class PCServiceTest {
         incoming.setCampaignId(999L);
         incoming.setHpCurrent((short) 12);
 
-        PC result = pcService.updatePCAsDm(incoming, dmId);
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
 
         assertThat(result.getHpCurrent()).isEqualTo((short) 12);
         assertThat(result.getUserId()).isEqualTo(ownerId);     // owner preserved
@@ -371,7 +372,7 @@ class PCServiceTest {
         PC incoming = new PC();
         incoming.setId(1L);
 
-        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, strangerId))
+        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, null, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
@@ -407,13 +408,33 @@ class PCServiceTest {
         incoming.setId(1L);
         incoming.setAc((short) 18);
 
-        pcService.updatePCAsDm(incoming, dmId);
+        pcService.updatePCAsDm(incoming, null, dmId);
 
         ArgumentCaptor<PC> beforeCaptor = ArgumentCaptor.forClass(PC.class);
         ArgumentCaptor<PC> afterCaptor = ArgumentCaptor.forClass(PC.class);
-        verify(activityLogService).logDmEdit(beforeCaptor.capture(), afterCaptor.capture(), eq(dmId));
+        verify(activityLogService).logDmEdit(beforeCaptor.capture(), afterCaptor.capture(), eq(dmId), isNull());
         assertThat(beforeCaptor.getValue().getAc()).isEqualTo((short) 15); // pre-save AC, not clobbered
         assertThat(afterCaptor.getValue().getAc()).isEqualTo((short) 18);
+    }
+
+    @Test
+    void updatePCAsDm_passesTheDescriptionThrough_toTheActivityLog() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setAc((short) 18);
+
+        pcService.updatePCAsDm(incoming, "DM changed AC 15 -> 18 for cover", dmId);
+
+        verify(activityLogService).logDmEdit(any(PC.class), any(PC.class), eq(dmId),
+                eq("DM changed AC 15 -> 18 for cover"));
     }
 
     // --- levelUpPC ---
