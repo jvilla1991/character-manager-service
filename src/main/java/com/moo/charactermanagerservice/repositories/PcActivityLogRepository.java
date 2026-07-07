@@ -19,12 +19,15 @@ public interface PcActivityLogRepository extends JpaRepository<PcActivityLog, Lo
      * created_at desc, id desc — the same tiebreak the read uses). A plain
      * JPQL delete can't express LIMIT, so this is native SQL. Runs after
      * every insert, so the subquery only ever scans ~10+few rows per PC.
+     * Native SQL bypasses hibernate.default_schema, so the table must be
+     * schema-qualified via the {h-schema} placeholder (resolves to
+     * "character." here) or Postgres won't find it on the search_path.
      */
     @Modifying
     @Query(value = """
-        DELETE FROM pc_activity_log
+        DELETE FROM {h-schema}pc_activity_log
         WHERE pc_id = :pcId AND id NOT IN (
-            SELECT id FROM pc_activity_log WHERE pc_id = :pcId
+            SELECT id FROM {h-schema}pc_activity_log WHERE pc_id = :pcId
             ORDER BY created_at DESC, id DESC LIMIT 10)
         """, nativeQuery = true)
     void pruneToLatest(@Param("pcId") Long pcId);
