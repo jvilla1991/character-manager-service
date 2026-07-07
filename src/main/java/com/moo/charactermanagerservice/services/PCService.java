@@ -108,9 +108,13 @@ public class PCService {
      * taken before save() runs; diffing {@code existing} afterward would
      * always see "no change". {@code @Transactional} makes the load-diff-save-log
      * sequence atomic.
+     *
+     * @param description optional DM-authored log entry that replaces the
+     *                     automatic before/after diff; blank/null falls back
+     *                     to the diff (see {@link PcActivityLogService#logDmEdit(PC, PC, UUID, String)})
      */
     @Transactional
-    public PC updatePCAsDm(PC incoming, UUID dmUserId) {
+    public PC updatePCAsDm(PC incoming, String description, UUID dmUserId) {
         PC existing = findPCById(incoming.getId());
         assertCampaignDm(existing, dmUserId);
         PC before = snapshot(existing); // taken BEFORE save() clobbers `existing`
@@ -118,7 +122,7 @@ public class PCService {
         incoming.setCampaignId(existing.getCampaignId());
         preserveServerOwnedColumns(incoming, existing);
         PC saved = pcRepository.save(incoming);
-        activityLogService.logDmEdit(before, saved, dmUserId);
+        activityLogService.logDmEdit(before, saved, dmUserId, description);
         return saved;
     }
 
