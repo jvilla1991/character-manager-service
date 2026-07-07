@@ -6,6 +6,7 @@ import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
@@ -55,6 +56,7 @@ class SessionServiceTest {
     @Mock private CampaignRepository campaignRepository;
     @Mock private EncounterRepository encounterRepository;
     @Mock private EncounterCreatureRepository encounterCreatureRepository;
+    @Mock private PcActivityLogService activityLogService;
 
     private SessionService sessionService;
 
@@ -68,7 +70,7 @@ class SessionServiceTest {
     void setUp() {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
                 shopAttendeeRepository, pcRepository, pcService, campaignService, campaignRepository,
-                encounterRepository, encounterCreatureRepository, new ObjectMapper());
+                encounterRepository, encounterCreatureRepository, activityLogService, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -114,6 +116,7 @@ class SessionServiceTest {
         assertThat(result.awarded().get(0).delta()).isEqualTo(500);
         verify(pcRepository).save(pc);
         verify(sessionRepository).save(session); // version bumped
+        verify(activityLogService).log(7L, PcActivityType.XP_AWARD, "Awarded 500 XP", dmId);
     }
 
     @Test
@@ -128,6 +131,21 @@ class SessionServiceTest {
         assertThat(pc.getXp()).isZero();
         assertThat(result.awarded().get(0).xp()).isZero();
         assertThat(result.awarded().get(0).delta()).isEqualTo(-100); // actual change, not requested -250
+        // Logs the APPLIED delta (100, after flooring), not the requested -250.
+        verify(activityLogService).log(7L, PcActivityType.XP_AWARD, "Removed 100 XP", dmId);
+    }
+
+    @Test
+    void awardXp_skipsLog_whenFlooringMakesTheAppliedDeltaZero() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0); // already at zero — a further negative award applies no change
+
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.awardXp(1L, 5L, -100, dmId);
+
+        verify(activityLogService, never()).log(any(), any(), any(), any());
     }
 
     @Test
@@ -189,6 +207,8 @@ class SessionServiceTest {
         assertThat(result.awarded()).allSatisfy(e -> assertThat(e.delta()).isEqualTo(300));
         verify(pcRepository, times(2)).save(any(PC.class));
         verify(sessionRepository).save(session); // single version bump
+        verify(activityLogService).log(7L, PcActivityType.XP_AWARD, "Awarded 300 XP", dmId);
+        verify(activityLogService).log(8L, PcActivityType.XP_AWARD, "Awarded 300 XP", dmId);
     }
 
     // --- startEncounter ---
@@ -1097,6 +1117,7 @@ class SessionServiceTest {
         assertThat(pc.getSpellSlots()).contains("\"used\":0").doesNotContain("\"used\":3");
         assertThat(pc.getSurvival()).contains("\"fatigue\":2"); // 5 - 3
         verify(sessionRepository).save(session); // version bumped
+        verify(activityLogService).log(7L, PcActivityType.LONG_REST, "Completed a long rest", dmId);
     }
 
     @Test

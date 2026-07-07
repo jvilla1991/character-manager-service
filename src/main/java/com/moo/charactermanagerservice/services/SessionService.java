@@ -12,6 +12,7 @@ import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
@@ -70,6 +71,7 @@ public class SessionService {
     private final CampaignRepository campaignRepository;
     private final EncounterRepository encounterRepository;
     private final EncounterCreatureRepository encounterCreatureRepository;
+    private final PcActivityLogService activityLogService;
     private final PcJsonColumns json;
 
     @Autowired
@@ -83,6 +85,7 @@ public class SessionService {
                           CampaignRepository campaignRepository,
                           EncounterRepository encounterRepository,
                           EncounterCreatureRepository encounterCreatureRepository,
+                          PcActivityLogService activityLogService,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -94,6 +97,7 @@ public class SessionService {
         this.campaignRepository = campaignRepository;
         this.encounterRepository = encounterRepository;
         this.encounterCreatureRepository = encounterCreatureRepository;
+        this.activityLogService = activityLogService;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -572,6 +576,7 @@ public class SessionService {
      * the session snapshot, so the result carries the new total for the DM's
      * confirmation toast. Bumps the session version.
      */
+    @Transactional
     public XpAwardResult awardXp(Long sessionId, Long participantId, Integer amount, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -589,7 +594,7 @@ public class SessionService {
         }
 
         PC pc = pcService.findPCById(participant.getPcId());
-        XpAwardResult.Entry entry = applyXpDelta(pc, amount);
+        XpAwardResult.Entry entry = applyXpDelta(pc, amount, dmUserId);
 
         session.bumpVersion();
         sessionRepository.save(session);
@@ -601,6 +606,7 @@ public class SessionService {
      * are skipped. DM only. Each PC's total is written through and floored at 0, and
      * the version bumps once. Returns one entry per awarded PC for the DM toast.
      */
+    @Transactional
     public XpAwardResult awardXpToAll(Long sessionId, Integer amount, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -620,7 +626,7 @@ public class SessionService {
             if (p.getPcId() == null) continue;        // NPCs have no XP
             PC pc = pcsById.get(p.getPcId());
             if (pc == null) continue;
-            awarded.add(applyXpDelta(pc, amount));
+            awarded.add(applyXpDelta(pc, amount, dmUserId));
         }
 
         session.bumpVersion();
@@ -628,13 +634,24 @@ public class SessionService {
         return new XpAwardResult(awarded);
     }
 
-    /** Apply an XP delta to a PC (floored at 0), persist it, and report the result. */
-    private XpAwardResult.Entry applyXpDelta(PC pc, int amount) {
+    /**
+     * Apply an XP delta to a PC (floored at 0), persist it, and report the
+     * result. Logs the APPLIED delta (after flooring) — not the requested
+     * amount — and skips the log entirely when flooring reduced it to zero
+     * (nothing actually changed).
+     */
+    private XpAwardResult.Entry applyXpDelta(PC pc, int amount, UUID dmUserId) {
         int current = pc.getXp() == null ? 0 : pc.getXp();
         int updated = Math.max(0, current + amount);
+        int applied = updated - current;
         pc.setXp(updated);
         pcRepository.save(pc);
-        return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, updated - current);
+        if (applied != 0) {
+            String verb = applied > 0 ? "Awarded " : "Removed ";
+            activityLogService.log(pc.getId(), PcActivityType.XP_AWARD,
+                    verb + Math.abs(applied) + " XP", dmUserId);
+        }
+        return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, applied);
     }
 
     /** True when the session's campaign runs the survival-conditions variant. */
@@ -745,6 +762,8 @@ public class SessionService {
                             SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", -fatigueRelief)));
                 }
                 pcRepository.save(pc);
+                activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
+                        "Completed a long rest", dmUserId);
             });
         }
         session.bumpVersion();
