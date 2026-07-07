@@ -138,7 +138,8 @@ public class CampaignService {
         Campaign campaign = findById(campaignId);
         assertDmOrMemberOwner(campaign, pcRepository.findByCampaignId(campaignId), userId);
         return new CampaignSummaryView(
-                campaign.getId(), campaign.getName(), json.parseObject(campaign.getVariantRules()));
+                campaign.getId(), campaign.getName(), json.parseObject(campaign.getVariantRules()),
+                json.parseObject(campaign.getLocation()));
     }
 
     /**

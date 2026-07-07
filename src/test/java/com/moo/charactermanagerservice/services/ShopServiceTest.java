@@ -6,6 +6,7 @@ import com.moo.charactermanagerservice.dto.SellResult;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionShopAttendee;
@@ -47,6 +48,7 @@ class ShopServiceTest {
     @Mock private ShopRepository curatedShopRepository;
     @Mock private ShopItemRepository curatedItemRepository;
     @Mock private PCRepository pcRepository;
+    @Mock private PcActivityLogService activityLogService;
 
     private ShopService shopService;
 
@@ -60,7 +62,7 @@ class ShopServiceTest {
     void setUp() {
         shopService = new ShopService(sessionRepository, shopRepository, attendeeRepository,
                 participantRepository, srdItemRepository, curatedShopRepository, curatedItemRepository,
-                pcRepository, new ObjectMapper());
+                pcRepository, activityLogService, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -196,6 +198,20 @@ class ShopServiceTest {
                 .containsEntry("damage", "1d8 slashing");
         verify(pcRepository).findByIdForUpdate(7L); // locked read
         verify(pcRepository).save(pc);
+        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword for 1 pp 5 gp", playerId);
+    }
+
+    @Test
+    void purchase_logsQtySuffix_whenBuyingMoreThanOne() {
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":100}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        shopService.purchase(1L, 7L, "longsword", 2, playerId);
+
+        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword ×2 for 3 pp", playerId);
     }
 
     @Test
@@ -329,6 +345,7 @@ class ShopServiceTest {
         assertThat(result.inventory()).isEmpty();
         verify(pcRepository).findByIdForUpdate(7L);
         verify(pcRepository).save(pc);
+        verify(activityLogService).log(7L, PcActivityType.SALE, "Sold Longsword for 7 gp 5 sp", playerId);
     }
 
     @Test

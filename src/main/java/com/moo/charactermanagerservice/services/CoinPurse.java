@@ -68,4 +68,25 @@ final class CoinPurse {
         Object v = m.get(key);
         return v instanceof Number num ? num.longValue() : 0L;
     }
+
+    /**
+     * Render a copper amount as a human-readable denomination string for the
+     * activity log, e.g. {@code 150 -> "1 gp 5 sp"}, {@code 0 -> "0 cp"}.
+     * Greedy pp/gp/sp/cp (electrum is never minted, mirrors {@link #fromCopper});
+     * zero-value denominations are omitted except when the whole amount is 0.
+     */
+    static String format(long cp) {
+        if (cp <= 0) return "0 cp";
+        long pp = cp / PP; cp %= PP;
+        long gp = cp / GP; cp %= GP;
+        long sp = cp / SP; cp %= SP;
+        long remaining = cp;
+
+        StringBuilder sb = new StringBuilder();
+        if (pp > 0) sb.append(pp).append(" pp ");
+        if (gp > 0) sb.append(gp).append(" gp ");
+        if (sp > 0) sb.append(sp).append(" sp ");
+        if (remaining > 0) sb.append(remaining).append(" cp ");
+        return sb.toString().trim();
+    }
 }

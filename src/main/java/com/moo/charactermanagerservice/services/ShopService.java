@@ -8,6 +8,7 @@ import com.moo.charactermanagerservice.dto.PurchaseResult;
 import com.moo.charactermanagerservice.dto.SellResult;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionShopAttendee;
@@ -69,6 +70,7 @@ public class ShopService {
     private final ShopRepository curatedShopRepository;
     private final ShopItemRepository curatedItemRepository;
     private final PCRepository pcRepository;
+    private final PcActivityLogService activityLogService;
     private final PcJsonColumns json;
 
     @Autowired
@@ -80,6 +82,7 @@ public class ShopService {
                        ShopRepository curatedShopRepository,
                        ShopItemRepository curatedItemRepository,
                        PCRepository pcRepository,
+                       PcActivityLogService activityLogService,
                        ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.shopRepository = shopRepository;
@@ -89,6 +92,7 @@ public class ShopService {
         this.curatedShopRepository = curatedShopRepository;
         this.curatedItemRepository = curatedItemRepository;
         this.pcRepository = pcRepository;
+        this.activityLogService = activityLogService;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -257,6 +261,10 @@ public class ShopService {
         pc.setInventory(json.write(inventory));
         pcRepository.save(pc);
 
+        String qtySuffix = qty > 1 ? " ×" + qty : "";
+        activityLogService.log(pcId, PcActivityType.PURCHASE,
+                "Bought " + item.getName() + qtySuffix + " for " + CoinPurse.format(totalCostCp), userId);
+
         return new PurchaseResult(newCoins, inventory, totalCostCp);
     }
 
@@ -321,6 +329,9 @@ public class ShopService {
 
         int qty = entry.get("qty") instanceof Number n ? n.intValue() : 1;
         long totalGainCp = (baseUnitCp * qty) / 2;
+        // Capture the item's name before it's removed — the log message needs it
+        // after the entry is gone from the inventory list.
+        String itemName = entry.get("name") instanceof String s ? s : "item";
 
         inventory.remove(index.intValue());
         Map<String, Object> coins = json.parseObject(pc.getCoins());
@@ -329,6 +340,9 @@ public class ShopService {
         pc.setCoins(json.writeObject(newCoins));
         pc.setInventory(json.write(inventory));
         pcRepository.save(pc);
+
+        activityLogService.log(pcId, PcActivityType.SALE,
+                "Sold " + itemName + " for " + CoinPurse.format(totalGainCp), userId);
 
         return new SellResult(newCoins, inventory, totalGainCp);
     }

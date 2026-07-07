@@ -62,6 +62,11 @@ public class Campaign implements Serializable {
     @Column(name = "game_time", columnDefinition = "TEXT")
     private String gameTime;
 
+    // Party's current location: {"name":"Neverwinter","type":"Settlement"}; NULL
+    // = never set. The DM changes it from Session Mode; broadcast to every sheet.
+    @Column(columnDefinition = "TEXT")
+    private String location;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -97,4 +102,5 @@ public class Campaign implements Serializable {
     public void setThreads(String threads) { this.threads = threads; }
     public void setVariantRules(String variantRules) { this.variantRules = variantRules; }
     public void setGameTime(String gameTime) { this.gameTime = gameTime; }
+    public void setLocation(String location) { this.location = location; }
 }

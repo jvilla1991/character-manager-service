@@ -60,4 +60,31 @@ class CoinPurseTest {
         Map<String, Object> purse = Map.of("gp", 15);
         assertThat(CoinPurse.deduct(purse, 1500L)).containsEntry("gp", 0).containsEntry("cp", 0);
     }
+
+    // --- format (activity log display) ---
+
+    @Test
+    void format_singleCopper() {
+        assertThat(CoinPurse.format(1L)).isEqualTo("1 cp");
+    }
+
+    @Test
+    void format_tenCopper_asOneSilver() {
+        assertThat(CoinPurse.format(10L)).isEqualTo("1 sp");
+    }
+
+    @Test
+    void format_mixedGoldAndSilver() {
+        assertThat(CoinPurse.format(150L)).isEqualTo("1 gp 5 sp");
+    }
+
+    @Test
+    void format_platinumGoldAndSilver() {
+        assertThat(CoinPurse.format(1250L)).isEqualTo("1 pp 2 gp 5 sp");
+    }
+
+    @Test
+    void format_zero() {
+        assertThat(CoinPurse.format(0L)).isEqualTo("0 cp");
+    }
 }

@@ -3,8 +3,10 @@ package com.moo.charactermanagerservice.controllers;
 import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.services.PCService;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
@@ -14,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -64,13 +67,22 @@ public class PCController {
         return ResponseEntity.ok(pcService.findPCByIdForDm(id, user.getUuid()));
     }
 
-    /** DM-authorized update of a campaign member's PC (campaign-DM ownership). */
+    /**
+     * DM-authorized update of a campaign member's PC (campaign-DM ownership).
+     * The body wraps the PC alongside an optional DM-authored log description
+     * that replaces the automatic before/after diff — see
+     * {@link UpdatePcAsDmRequest}.
+     */
     @PutMapping("/{id}/as-dm")
     public ResponseEntity<PC> updatePCAsDm(@PathVariable Long id, Authentication authentication,
-                                           @RequestBody PC pc) {
+                                           @RequestBody UpdatePcAsDmRequest request) {
+        if (request.pc() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pc is required");
+        }
         User user = (User) authentication.getPrincipal();
+        PC pc = request.pc();
         pc.setId(id);
-        return ResponseEntity.ok(pcService.updatePCAsDm(pc, user.getUuid()));
+        return ResponseEntity.ok(pcService.updatePCAsDm(pc, request.description(), user.getUuid()));
     }
 
     @GetMapping("/{id}/level-up/preview")
@@ -107,5 +119,12 @@ public class PCController {
     public ResponseEntity<List<PcNote>> getNotes(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(pcService.notesFor(id, user.getUuid()));
+    }
+
+    /** A character's latest 10 activity log entries, newest first — owner or the campaign's DM. */
+    @GetMapping("/{id}/log")
+    public ResponseEntity<List<PcActivityLog>> getActivityLog(@PathVariable Long id, Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.activityLogFor(id, user.getUuid()));
     }
 }

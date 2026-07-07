@@ -6,6 +6,8 @@ import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityLog;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
@@ -27,14 +29,17 @@ public class PCService {
     private final LevelUpService levelUpService;
     private final CampaignRepository campaignRepository;
     private final PcNoteRepository pcNoteRepository;
+    private final PcActivityLogService activityLogService;
 
     @Autowired
     public PCService(PCRepository pcRepository, LevelUpService levelUpService,
-                     CampaignRepository campaignRepository, PcNoteRepository pcNoteRepository) {
+                     CampaignRepository campaignRepository, PcNoteRepository pcNoteRepository,
+                     PcActivityLogService activityLogService) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
         this.campaignRepository = campaignRepository;
         this.pcNoteRepository = pcNoteRepository;
+        this.activityLogService = activityLogService;
     }
 
     public PC addPC(PC pc) {
@@ -95,14 +100,56 @@ public class PCService {
      * level, not by PC ownership. The character's owner ({@code userId}) and its
      * campaign binding are immutable on a DM edit — the incoming body cannot
      * reassign them (mirrors {@link CampaignService#updateCampaign}).
+     *
+     * <p>⚠️ {@code pcRepository.save(incoming)} merges the incoming entity onto
+     * the managed {@code existing} instance — after save, {@code existing}
+     * holds the NEW values too (same JPA session, same row). A before/after
+     * diff for the activity log MUST be computed off a defensive snapshot
+     * taken before save() runs; diffing {@code existing} afterward would
+     * always see "no change". {@code @Transactional} makes the load-diff-save-log
+     * sequence atomic.
+     *
+     * @param description optional DM-authored log entry that replaces the
+     *                     automatic before/after diff; blank/null falls back
+     *                     to the diff (see {@link PcActivityLogService#logDmEdit(PC, PC, UUID, String)})
      */
-    public PC updatePCAsDm(PC incoming, UUID dmUserId) {
+    @Transactional
+    public PC updatePCAsDm(PC incoming, String description, UUID dmUserId) {
         PC existing = findPCById(incoming.getId());
         assertCampaignDm(existing, dmUserId);
+        PC before = snapshot(existing); // taken BEFORE save() clobbers `existing`
         incoming.setUserId(existing.getUserId());
         incoming.setCampaignId(existing.getCampaignId());
         preserveServerOwnedColumns(incoming, existing);
-        return pcRepository.save(incoming);
+        PC saved = pcRepository.save(incoming);
+        activityLogService.logDmEdit(before, saved, dmUserId, description);
+        return saved;
+    }
+
+    /**
+     * A detached, independent copy of the fields {@link PcActivityLogService}'s
+     * diff reads — taken before a save() call that would otherwise merge new
+     * values onto the same managed instance and erase the "before" state.
+     */
+    private PC snapshot(PC pc) {
+        PC copy = new PC();
+        copy.setId(pc.getId());
+        copy.setLevel(pc.getLevel());
+        copy.setXp(pc.getXp());
+        copy.setHpMax(pc.getHpMax());
+        copy.setHpCurrent(pc.getHpCurrent());
+        copy.setAc(pc.getAc());
+        copy.setAbilityStr(pc.getAbilityStr());
+        copy.setAbilityDex(pc.getAbilityDex());
+        copy.setAbilityCon(pc.getAbilityCon());
+        copy.setAbilityInt(pc.getAbilityInt());
+        copy.setAbilityWis(pc.getAbilityWis());
+        copy.setAbilityCha(pc.getAbilityCha());
+        copy.setCoins(pc.getCoins());
+        copy.setInventory(pc.getInventory());
+        copy.setFeatures(pc.getFeatures());
+        copy.setSpells(pc.getSpells());
+        return copy;
     }
 
     /**
@@ -131,7 +178,10 @@ public class PCService {
         List<Map<String, Object>> newSpells = request == null ? null : request.newSpells();
         HpMode hpMode = request == null || request.hpMode() == null ? HpMode.AVERAGE : request.hpMode();
         levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode);
-        return pcRepository.save(pc);
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
+                "Leveled up to " + saved.getLevel(), userId);
+        return saved;
     }
 
     public void deletePC(Long id, UUID userId) {
@@ -172,6 +222,21 @@ public class PCService {
             assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
         }
         return pcNoteRepository.findByPcIdOrderByCreatedAtDesc(pcId);
+    }
+
+    // --- Per-character activity log -----------------------------------------
+
+    /**
+     * A character's latest 10 activity log entries, newest first. Same access
+     * rule as {@link #notesFor}: readable by the owning player and by the DM
+     * of the campaign the PC currently belongs to.
+     */
+    public List<PcActivityLog> activityLogFor(Long pcId, UUID userId) {
+        PC pc = findPCById(pcId);
+        if (!userId.equals(pc.getUserId())) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        return activityLogService.latestFor(pcId);
     }
 
     private void assertOwnership(PC pc, UUID userId) {

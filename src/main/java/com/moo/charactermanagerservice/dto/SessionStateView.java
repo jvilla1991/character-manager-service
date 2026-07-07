@@ -37,6 +37,10 @@ import java.util.Map;
  * <p>{@code gameTime} is the campaign's in-world clock
  * ({@code {year, month, day, timeOfDay}}), or null when the DM has never set or
  * advanced it. Broadcast to every viewer; only the DM may change it.
+ *
+ * <p>{@code location} is the party's current place ({@code {name, type}}, type
+ * one of Settlement|Wilderness|Dungeon), or null when the DM has never set it.
+ * Broadcast to every viewer; only the DM may change it.
  */
 public record SessionStateView(
         Long sessionId,
@@ -54,5 +58,6 @@ public record SessionStateView(
         String shopCategory,
         Integer myXp,
         Map<String, Object> gameTime,
+        Map<String, Object> location,
         List<ParticipantView> participants
 ) {}

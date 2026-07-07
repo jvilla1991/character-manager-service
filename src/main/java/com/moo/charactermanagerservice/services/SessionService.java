@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
+import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
@@ -11,6 +12,7 @@ import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
@@ -69,6 +71,7 @@ public class SessionService {
     private final CampaignRepository campaignRepository;
     private final EncounterRepository encounterRepository;
     private final EncounterCreatureRepository encounterCreatureRepository;
+    private final PcActivityLogService activityLogService;
     private final PcJsonColumns json;
 
     @Autowired
@@ -82,6 +85,7 @@ public class SessionService {
                           CampaignRepository campaignRepository,
                           EncounterRepository encounterRepository,
                           EncounterCreatureRepository encounterCreatureRepository,
+                          PcActivityLogService activityLogService,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -93,6 +97,7 @@ public class SessionService {
         this.campaignRepository = campaignRepository;
         this.encounterRepository = encounterRepository;
         this.encounterCreatureRepository = encounterCreatureRepository;
+        this.activityLogService = activityLogService;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -571,6 +576,7 @@ public class SessionService {
      * the session snapshot, so the result carries the new total for the DM's
      * confirmation toast. Bumps the session version.
      */
+    @Transactional
     public XpAwardResult awardXp(Long sessionId, Long participantId, Integer amount, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -588,7 +594,7 @@ public class SessionService {
         }
 
         PC pc = pcService.findPCById(participant.getPcId());
-        XpAwardResult.Entry entry = applyXpDelta(pc, amount);
+        XpAwardResult.Entry entry = applyXpDelta(pc, amount, dmUserId);
 
         session.bumpVersion();
         sessionRepository.save(session);
@@ -600,6 +606,7 @@ public class SessionService {
      * are skipped. DM only. Each PC's total is written through and floored at 0, and
      * the version bumps once. Returns one entry per awarded PC for the DM toast.
      */
+    @Transactional
     public XpAwardResult awardXpToAll(Long sessionId, Integer amount, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -619,7 +626,7 @@ public class SessionService {
             if (p.getPcId() == null) continue;        // NPCs have no XP
             PC pc = pcsById.get(p.getPcId());
             if (pc == null) continue;
-            awarded.add(applyXpDelta(pc, amount));
+            awarded.add(applyXpDelta(pc, amount, dmUserId));
         }
 
         session.bumpVersion();
@@ -627,13 +634,24 @@ public class SessionService {
         return new XpAwardResult(awarded);
     }
 
-    /** Apply an XP delta to a PC (floored at 0), persist it, and report the result. */
-    private XpAwardResult.Entry applyXpDelta(PC pc, int amount) {
+    /**
+     * Apply an XP delta to a PC (floored at 0), persist it, and report the
+     * result. Logs the APPLIED delta (after flooring) — not the requested
+     * amount — and skips the log entirely when flooring reduced it to zero
+     * (nothing actually changed).
+     */
+    private XpAwardResult.Entry applyXpDelta(PC pc, int amount, UUID dmUserId) {
         int current = pc.getXp() == null ? 0 : pc.getXp();
         int updated = Math.max(0, current + amount);
+        int applied = updated - current;
         pc.setXp(updated);
         pcRepository.save(pc);
-        return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, updated - current);
+        if (applied != 0) {
+            String verb = applied > 0 ? "Awarded " : "Removed ";
+            activityLogService.log(pc.getId(), PcActivityType.XP_AWARD,
+                    verb + Math.abs(applied) + " XP", dmUserId);
+        }
+        return new XpAwardResult.Entry(pc.getId(), pc.getName(), updated, applied);
     }
 
     /** True when the session's campaign runs the survival-conditions variant. */
@@ -744,6 +762,8 @@ public class SessionService {
                             SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", -fatigueRelief)));
                 }
                 pcRepository.save(pc);
+                activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
+                        "Completed a long rest", dmUserId);
             });
         }
         session.bumpVersion();
@@ -836,6 +856,45 @@ public class SessionService {
 
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s;
+    }
+
+    /** The party-location types the DM may pick, mirrored on the client. */
+    private static final Set<String> LOCATION_TYPES = Set.of("Settlement", "Wilderness", "Dungeon");
+    private static final int LOCATION_NAME_MAX = 60;
+
+    /**
+     * DM sets the party's current location. Party-wide (stored on the campaign,
+     * like the clock) and version-bumped, so every seated sheet updates via the
+     * poll. Name is free text (may be blank); type must be one of the three
+     * recognized kinds.
+     */
+    @Transactional
+    public SessionStateView setLocation(Long sessionId, SetLocationRequest request, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (request == null || request.type() == null || !LOCATION_TYPES.contains(request.type())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Location requires a type of Settlement, Wilderness, or Dungeon");
+        }
+        String name = request.name() == null ? "" : request.name().trim();
+        if (name.length() > LOCATION_NAME_MAX) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Location name must be at most " + LOCATION_NAME_MAX + " characters");
+        }
+
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        Map<String, Object> location = new LinkedHashMap<>();
+        location.put("name", name);
+        location.put("type", request.type());
+        campaign.setLocation(json.writeObject(location));
+        campaignRepository.save(campaign);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
     }
 
     /**
@@ -1164,13 +1223,18 @@ public class SessionService {
                 .map(PC::getXp)
                 .orElse(null);
 
-        // The campaign clock rides every snapshot (null until the DM sets it).
-        // The sinceVersion 204 short-circuit returns before buildState, so idle
-        // polls never pay for this campaign read.
-        String storedTime = campaignService.findById(session.getCampaignId()).getGameTime();
+        // The campaign clock and party location ride every snapshot (each null
+        // until the DM sets it). The sinceVersion 204 short-circuit returns before
+        // buildState, so idle polls never pay for this campaign read.
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        String storedTime = campaign.getGameTime();
         Map<String, Object> gameTime = (storedTime == null || storedTime.isBlank())
                 ? null
                 : json.parseObject(storedTime);
+        String storedLocation = campaign.getLocation();
+        Map<String, Object> location = (storedLocation == null || storedLocation.isBlank())
+                ? null
+                : json.parseObject(storedLocation);
 
         return new SessionStateView(
                 session.getId(),
@@ -1188,6 +1252,7 @@ public class SessionService {
                 shopCategory,
                 myXp,
                 gameTime,
+                location,
                 views
         );
     }

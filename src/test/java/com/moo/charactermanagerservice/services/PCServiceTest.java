@@ -6,6 +6,8 @@ import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.models.PcActivityLog;
+import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PcNoteRepository;
@@ -13,6 +15,7 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -25,6 +28,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,6 +46,9 @@ class PCServiceTest {
 
     @Mock
     private PcNoteRepository pcNoteRepository;
+
+    @Mock
+    private PcActivityLogService activityLogService;
 
     @InjectMocks
     private PCService pcService;
@@ -204,7 +212,7 @@ class PCServiceTest {
         PC incoming = new PC();
         incoming.setId(1L);
 
-        PC result = pcService.updatePCAsDm(incoming, dmId);
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
 
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
     }
@@ -255,6 +263,36 @@ class PCServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
+    }
+
+    // --- per-character activity log ---
+
+    @Test
+    void activityLogFor_readableByOwnerAndCampaignDm_deniedToStrangers() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(activityLogService.latestFor(1L)).thenReturn(List.of());
+
+        assertThat(pcService.activityLogFor(1L, ownerId)).isEmpty();  // owner reads
+        assertThat(pcService.activityLogFor(1L, dmId)).isEmpty();     // the campaign's DM reads
+
+        assertThatThrownBy(() -> pcService.activityLogFor(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+    }
+
+    @Test
+    void activityLogFor_returnsTheLatestEntries() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        PcActivityLog entry = new PcActivityLog();
+        entry.setPcId(1L);
+        entry.setActionType(PcActivityType.LEVEL_UP);
+        entry.setDescription("Leveled up to 2");
+        when(activityLogService.latestFor(1L)).thenReturn(List.of(entry));
+
+        assertThat(pcService.activityLogFor(1L, ownerId)).containsExactly(entry);
     }
 
     // --- findPCByIdForDm ---
@@ -314,7 +352,7 @@ class PCServiceTest {
         incoming.setCampaignId(999L);
         incoming.setHpCurrent((short) 12);
 
-        PC result = pcService.updatePCAsDm(incoming, dmId);
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
 
         assertThat(result.getHpCurrent()).isEqualTo((short) 12);
         assertThat(result.getUserId()).isEqualTo(ownerId);     // owner preserved
@@ -334,12 +372,69 @@ class PCServiceTest {
         PC incoming = new PC();
         incoming.setId(1L);
 
-        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, strangerId))
+        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, null, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
 
         verify(pcRepository, never()).save(any());
+    }
+
+    /**
+     * The critical ordering regression test: {@code pcRepository.save(incoming)}
+     * merges onto the same managed {@code existing} instance JPA loaded, so by
+     * the time {@code logDmEdit} would read {@code existing} after save() it
+     * would see the NEW values on both sides and report zero changes. PCService
+     * must snapshot the "before" state before save() runs — this asserts the
+     * diff sees the ORIGINAL pre-save AC, not the post-save one.
+     */
+    @Test
+    void updatePCAsDm_diffsThePreSaveSnapshot_notThePostSaveClobberedInstance() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setAc((short) 15);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        // Mirrors real JPA merge behavior: save(incoming) mutates `existing` in place.
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> {
+            PC incomingArg = inv.getArgument(0);
+            existing.setAc(incomingArg.getAc());
+            return incomingArg;
+        });
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setAc((short) 18);
+
+        pcService.updatePCAsDm(incoming, null, dmId);
+
+        ArgumentCaptor<PC> beforeCaptor = ArgumentCaptor.forClass(PC.class);
+        ArgumentCaptor<PC> afterCaptor = ArgumentCaptor.forClass(PC.class);
+        verify(activityLogService).logDmEdit(beforeCaptor.capture(), afterCaptor.capture(), eq(dmId), isNull());
+        assertThat(beforeCaptor.getValue().getAc()).isEqualTo((short) 15); // pre-save AC, not clobbered
+        assertThat(afterCaptor.getValue().getAc()).isEqualTo((short) 18);
+    }
+
+    @Test
+    void updatePCAsDm_passesTheDescriptionThrough_toTheActivityLog() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setAc((short) 18);
+
+        pcService.updatePCAsDm(incoming, "DM changed AC 15 -> 18 for cover", dmId);
+
+        verify(activityLogService).logDmEdit(any(PC.class), any(PC.class), eq(dmId),
+                eq("DM changed AC 15 -> 18 for cover"));
     }
 
     // --- levelUpPC ---
@@ -354,6 +449,17 @@ class PCServiceTest {
         assertThat(result).isSameAs(pc);
         verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
         verify(pcRepository).save(pc);
+    }
+
+    @Test
+    void levelUpPC_logsTheNewLevel() {
+        pc.setLevel((short) 4);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, null);
+
+        verify(activityLogService).log(1L, PcActivityType.LEVEL_UP, "Leveled up to 4", ownerId);
     }
 
     @Test

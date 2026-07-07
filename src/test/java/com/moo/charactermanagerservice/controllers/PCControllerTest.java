@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.PC;
@@ -197,22 +198,48 @@ class PCControllerTest {
     void updatePCAsDm_returns200_andStampsId() {
         PC incoming = new PC();
         incoming.setName("Aelindra Updated");
+        UpdatePcAsDmRequest request = new UpdatePcAsDmRequest(incoming, null);
 
-        when(pcService.updatePCAsDm(any(PC.class), eq(ownerId))).thenReturn(pc);
+        when(pcService.updatePCAsDm(any(PC.class), isNull(), eq(ownerId))).thenReturn(pc);
 
-        ResponseEntity<PC> response = pcController.updatePCAsDm(1L, auth, incoming);
+        ResponseEntity<PC> response = pcController.updatePCAsDm(1L, auth, request);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         // Controller must stamp the path id onto the body before delegating
-        verify(pcService).updatePCAsDm(argThat(p -> Long.valueOf(1L).equals(p.getId())), eq(ownerId));
+        verify(pcService).updatePCAsDm(argThat(p -> Long.valueOf(1L).equals(p.getId())), isNull(), eq(ownerId));
+    }
+
+    @Test
+    void updatePCAsDm_passesTheDescriptionThrough() {
+        PC incoming = new PC();
+        incoming.setName("Aelindra Updated");
+        UpdatePcAsDmRequest request = new UpdatePcAsDmRequest(incoming, "DM changed AC 15 -> 16");
+
+        when(pcService.updatePCAsDm(any(PC.class), eq("DM changed AC 15 -> 16"), eq(ownerId))).thenReturn(pc);
+
+        pcController.updatePCAsDm(1L, auth, request);
+
+        verify(pcService).updatePCAsDm(any(PC.class), eq("DM changed AC 15 -> 16"), eq(ownerId));
+    }
+
+    @Test
+    void updatePCAsDm_throws400_whenPcIsNull() {
+        UpdatePcAsDmRequest request = new UpdatePcAsDmRequest(null, "some description");
+
+        assertThatThrownBy(() -> pcController.updatePCAsDm(1L, auth, request))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+
+        verifyNoInteractions(pcService);
     }
 
     @Test
     void updatePCAsDm_propagates403_whenNotTheDm() {
-        when(pcService.updatePCAsDm(any(PC.class), eq(ownerId)))
+        UpdatePcAsDmRequest request = new UpdatePcAsDmRequest(pc, null);
+        when(pcService.updatePCAsDm(any(PC.class), isNull(), eq(ownerId)))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
 
-        assertThatThrownBy(() -> pcController.updatePCAsDm(1L, auth, pc))
+        assertThatThrownBy(() -> pcController.updatePCAsDm(1L, auth, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
