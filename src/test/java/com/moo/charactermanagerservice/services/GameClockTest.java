@@ -23,7 +23,7 @@ class GameClockTest {
     }
 
     @Test
-    void advances_throughTheThreeSegments_withoutTouchingTheDate() {
+    void advances_throughTheThreeSegments_steppingANumericDayOnTheRollover() {
         Map<String, Object> t = GameClock.of("1492 DR", "Hammer", "3rd", "morning",
                 "Far", new ArrayList<>(List.of("Far")), 2);
         t = GameClock.advanceSegment(t);
@@ -31,12 +31,47 @@ class GameClockTest {
         t = GameClock.advanceSegment(t);
         assertThat(t).containsEntry("timeOfDay", "night").containsEntry("day", "3rd");
         t = GameClock.advanceSegment(t);
-        // night wraps to morning; the DATE stays — free text is the DM's to edit
+        // night wraps to morning: a countable day steps forward; the rest of
+        // the date stays — free text is the DM's to edit
         assertThat(t)
                 .containsEntry("timeOfDay", "morning")
-                .containsEntry("day", "3rd")
+                .containsEntry("day", "4th")
+                .containsEntry("month", "Hammer")
+                .containsEntry("year", "1492 DR")
                 .containsEntry("weekday", "Far")
                 .containsEntry("week", 2);
+    }
+
+    @Test
+    void advanceSegment_leavesAFreeTextDayAlone_onTheRollover() {
+        Map<String, Object> t = GameClock.of("1", "1", "Midwinter", "night",
+                null, new ArrayList<>(), 1);
+        t = GameClock.advanceSegment(t);
+        // the clock can't count "Midwinter" — the DM updates it by hand
+        assertThat(t).containsEntry("timeOfDay", "morning").containsEntry("day", "Midwinter");
+    }
+
+    @Test
+    void incrementDayLabel_countsNumbersAndOrdinals_leavingTheRestAlone() {
+        // bare number in → bare number out
+        assertThat(GameClock.incrementDayLabel("3")).isEqualTo("4");
+        assertThat(GameClock.incrementDayLabel("9")).isEqualTo("10");
+        // ordinal in → correct ordinal out
+        assertThat(GameClock.incrementDayLabel("3rd")).isEqualTo("4th");
+        assertThat(GameClock.incrementDayLabel("20th")).isEqualTo("21st");
+        assertThat(GameClock.incrementDayLabel("21st")).isEqualTo("22nd");
+        assertThat(GameClock.incrementDayLabel("22nd")).isEqualTo("23rd");
+        assertThat(GameClock.incrementDayLabel("1st")).isEqualTo("2nd");
+        // the 11th–13th family always takes "th"
+        assertThat(GameClock.incrementDayLabel("10th")).isEqualTo("11th");
+        assertThat(GameClock.incrementDayLabel("11th")).isEqualTo("12th");
+        assertThat(GameClock.incrementDayLabel("12th")).isEqualTo("13th");
+        assertThat(GameClock.incrementDayLabel("112th")).isEqualTo("113th");
+        // unparseable, null, and blank pass through unchanged
+        assertThat(GameClock.incrementDayLabel("Midwinter")).isEqualTo("Midwinter");
+        assertThat(GameClock.incrementDayLabel("the third day")).isEqualTo("the third day");
+        assertThat(GameClock.incrementDayLabel(null)).isNull();
+        assertThat(GameClock.incrementDayLabel("  ")).isEqualTo("  ");
     }
 
     // --- defined week (weekDays) ---
