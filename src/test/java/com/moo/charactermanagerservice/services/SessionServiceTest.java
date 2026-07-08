@@ -88,6 +88,9 @@ class SessionServiceTest {
         campaign.setId(1L);
         campaign.setDmUserId(dmId);
         lenient().when(campaignService.findById(1L)).thenReturn(campaign);
+        // No defined week unless a test sets one — Mockito's default would be an
+        // empty list, but the real service contract is null for "no definition".
+        lenient().when(campaignService.parseWeekDays(any(Campaign.class))).thenReturn(null);
         lenient().when(campaignService.isVariantEnabled(any(Campaign.class), anyString()))
                 .thenAnswer(inv -> {
                     Campaign c = inv.getArgument(0);
@@ -969,19 +972,31 @@ class SessionServiceTest {
     }
 
     @Test
-    void advanceTime_pastNight_wrapsToMorning_dateUntouched_noBumpsWhenVariantOff() {
+    void advanceTime_pastNight_wrapsToMorning_stepsTheNumericDay_noBumpsWhenVariantOff() {
         campaign.setGameTime(
                 "{\"year\":\"1492 DR\",\"month\":\"Hammer\",\"day\":\"3rd\",\"timeOfDay\":\"night\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.advanceTime(1L, dmId);
 
-        // the DATE is free text — only the DM changes it (the client opens the
-        // edit form on this rollover); bumps skipped without the variant
+        // a countable day steps forward on the rollover; month/year are free
+        // text only the DM changes; bumps skipped without the variant
         assertThat(campaign.getGameTime())
                 .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
-                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"morning\"");
+                .contains("\"day\":\"4th\"").contains("\"timeOfDay\":\"morning\"");
         verify(pcRepository, never()).findByCampaignId(any());
+    }
+
+    @Test
+    void advanceTime_pastNight_leavesAFreeTextDayAlone() {
+        campaign.setGameTime(
+                "{\"year\":\"1\",\"month\":\"1\",\"day\":\"Midwinter\",\"timeOfDay\":\"night\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"day\":\"Midwinter\"").contains("\"timeOfDay\":\"morning\"");
     }
 
     @Test
@@ -990,7 +1005,7 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
-                "1492 DR", "Hammer", "3rd", "night", "Far"), dmId);
+                "1492 DR", "Hammer", "3rd", "night", "Far", null), dmId);
 
         assertThat(campaign.getGameTime())
                 .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
@@ -1008,7 +1023,7 @@ class SessionServiceTest {
 
         // "sul" was seen before (case-insensitive) → a full week has passed
         sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
-                "1", "1", "10th", "morning", "sul"), dmId);
+                "1", "1", "10th", "morning", "sul", null), dmId);
 
         assertThat(campaign.getGameTime())
                 .contains("\"week\":2")
@@ -1023,7 +1038,7 @@ class SessionServiceTest {
 
         // a date correction resubmits the same weekday — history must not move
         sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
-                "1", "1", "9th (corrected)", "morning", "Mol"), dmId);
+                "1", "1", "9th (corrected)", "morning", "Mol", null), dmId);
 
         assertThat(campaign.getGameTime())
                 .contains("\"week\":1")
@@ -1037,7 +1052,7 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
-                "1", "1", "10th", "morning", "Zol"), dmId);
+                "1", "1", "10th", "morning", "Zol", null), dmId);
 
         assertThat(campaign.getGameTime())
                 .contains("\"week\":1")
@@ -1049,14 +1064,108 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         for (com.moo.charactermanagerservice.dto.SetTimeRequest bad : List.of(
-                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "dawn", null),
-                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "midnight", null),
-                new com.moo.charactermanagerservice.dto.SetTimeRequest("x".repeat(41), "1", "1", "morning", null))) {
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "dawn", null, null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("1", "1", "1", "midnight", null, null),
+                new com.moo.charactermanagerservice.dto.SetTimeRequest("x".repeat(41), "1", "1", "morning", null, null))) {
             assertThatThrownBy(() -> sessionService.setTime(1L, bad, dmId))
                     .isInstanceOf(ResponseStatusException.class)
                     .satisfies(e -> assertThat(status(e)).isEqualTo(400));
         }
         verify(campaignRepository, never()).save(any());
+    }
+
+    // --- defined week (campaign weekDays) ---
+
+    @Test
+    void advanceTime_withDefinedWeek_autoAdvancesTheWeekdayOnTheRollover() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"3rd\",\"timeOfDay\":\"night\","
+                + "\"weekday\":\"Sul\",\"weekdaysSeen\":[],\"week\":1}");
+        when(campaignService.parseWeekDays(campaign)).thenReturn(List.of("Sul", "Mol", "Zol"));
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId); // night → next day's morning
+
+        assertThat(campaign.getGameTime())
+                .contains("\"timeOfDay\":\"morning\"")
+                .contains("\"weekday\":\"Mol\"")
+                .contains("\"week\":1");
+    }
+
+    @Test
+    void advanceTime_withDefinedWeek_wrapPastTheLastDay_incrementsTheWeek() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"3rd\",\"timeOfDay\":\"night\","
+                + "\"weekday\":\"Zol\",\"weekdaysSeen\":[],\"week\":4}");
+        when(campaignService.parseWeekDays(campaign)).thenReturn(List.of("Sul", "Mol", "Zol"));
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"weekday\":\"Sul\"")
+                .contains("\"week\":5");
+    }
+
+    @Test
+    void setTime_withDefinedWeek_throws400_onAWeekdayOutsideTheDefinition() {
+        when(campaignService.parseWeekDays(campaign)).thenReturn(List.of("Sul", "Mol", "Zol"));
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.setTime(1L,
+                new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                        "1", "1", "1", "morning", "Far", null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void setTime_withDefinedWeek_canonicalizesTheWeekday_withoutRepetitionTicksOrSeenWrites() {
+        // "mol" repeats a previously seen weekday — the fallback would tick the
+        // week and reset the history; a defined week must do neither.
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Zol\",\"weekdaysSeen\":[\"Mol\",\"Zol\"],\"week\":1}");
+        when(campaignService.parseWeekDays(campaign)).thenReturn(List.of("Sul", "Mol", "Zol"));
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "mol", null), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"weekday\":\"Mol\"")                 // defined casing, not "mol"
+                .contains("\"week\":1")                          // never inferred
+                .contains("\"weekdaysSeen\":[\"Mol\",\"Zol\"]"); // frozen, not reset
+    }
+
+    @Test
+    void setTime_withDefinedWeek_appliesAnExplicitWeek_flooredAtOne() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Sul\",\"weekdaysSeen\":[],\"week\":2}");
+        when(campaignService.parseWeekDays(campaign)).thenReturn(List.of("Sul", "Mol", "Zol"));
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "Sul", 7), dmId);
+        assertThat(campaign.getGameTime()).contains("\"week\":7");
+
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "Sul", -3), dmId);
+        assertThat(campaign.getGameTime()).contains("\"week\":1"); // floored
+    }
+
+    @Test
+    void setTime_withoutADefinition_ignoresTheWeekField() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"9th\",\"timeOfDay\":\"morning\","
+                + "\"weekday\":\"Mol\",\"weekdaysSeen\":[\"Mol\"],\"week\":1}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // no defined week (parseWeekDays → null): the fallback is byte-identical
+        // to today, so an explicit week in the body must change nothing.
+        sessionService.setTime(1L, new com.moo.charactermanagerservice.dto.SetTimeRequest(
+                "1", "1", "10th", "morning", "Zol", 9), dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"week\":1")
+                .contains("\"weekdaysSeen\":[\"Mol\",\"Zol\"]");
     }
 
     // --- setLocation (party location) ---

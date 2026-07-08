@@ -145,6 +145,113 @@ class CampaignServiceTest {
         assertThat(result.getGameTime()).isEqualTo("{\"year\":1,\"month\":2,\"day\":3,\"timeOfDay\":\"dusk\"}");
     }
 
+    // --- setWeekDays / parseWeekDays (defined week) ---
+
+    @Test
+    void setWeekDays_persistsTheTrimmedListAsJson() {
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(campaignRepository.save(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign result = campaignService.setWeekDays(1L, List.of("Sul", " Mol ", "Zol"), dmId);
+
+        assertThat(result.getWeekDays()).isEqualTo("[\"Sul\",\"Mol\",\"Zol\"]");
+        verify(campaignRepository).save(campaign);
+    }
+
+    @Test
+    void setWeekDays_nullOrEmpty_clearsTheDefinition() {
+        campaign.setWeekDays("[\"Sul\",\"Mol\"]");
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(campaignRepository.save(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(campaignService.setWeekDays(1L, null, dmId).getWeekDays()).isNull();
+
+        campaign.setWeekDays("[\"Sul\",\"Mol\"]");
+        assertThat(campaignService.setWeekDays(1L, List.of(), dmId).getWeekDays()).isNull();
+    }
+
+    @Test
+    void setWeekDays_throws403_whenNotOwner() {
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+
+        assertThatThrownBy(() -> campaignService.setWeekDays(1L, List.of("Sul", "Mol"), strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void setWeekDays_throws400_onAnInvalidDefinition() {
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+
+        for (List<String> bad : List.<List<String>>of(
+                List.of("Sul"),                 // too few
+                List.of("Sul", "sul"),          // duplicate, case-insensitive
+                List.of("Sul", " "),            // blank entry
+                List.of("Sul", "x".repeat(41)))) { // over-length entry
+            assertThatThrownBy(() -> campaignService.setWeekDays(1L, bad, dmId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+        }
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void updateCampaign_preservesWeekDays_whenBodyOmitsOrAltersThem() {
+        campaign.setWeekDays("[\"Sul\",\"Mol\"]");
+        when(campaignRepository.findById(1L)).thenReturn(Optional.of(campaign));
+        when(campaignRepository.save(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign incoming = new Campaign();
+        incoming.setId(1L);
+        incoming.setName("Renamed");
+        incoming.setWeekDays(null); // a body that omits the column — must not null it
+
+        Campaign result = campaignService.updateCampaign(incoming, dmId);
+
+        assertThat(result.getWeekDays()).isEqualTo("[\"Sul\",\"Mol\"]");
+    }
+
+    @Test
+    void createCampaign_validatesAndNormalizesAWeekDefinedUpFront() {
+        when(campaignRepository.findByInviteCode(anyString())).thenReturn(Optional.empty());
+        when(campaignRepository.saveAndFlush(any(Campaign.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Campaign fresh = new Campaign();
+        fresh.setName("Eberron Table");
+        fresh.setWeekDays("[\"Sul\",\" Mol \"]");
+
+        assertThat(campaignService.createCampaign(fresh).getWeekDays())
+                .isEqualTo("[\"Sul\",\"Mol\"]");
+    }
+
+    @Test
+    void createCampaign_throws400_onAMalformedOrInvalidWeek() {
+        for (String bad : List.of("not json", "[\"Sul\"]", "[\"Sul\",\"sul\"]")) {
+            Campaign fresh = new Campaign();
+            fresh.setName("Bad Week");
+            fresh.setWeekDays(bad);
+            assertThatThrownBy(() -> campaignService.createCampaign(fresh))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+        }
+        verify(campaignRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void parseWeekDays_isTolerant_nullOnMissingOrMalformed() {
+        assertThat(campaignService.parseWeekDays(campaign)).isNull(); // never set
+
+        campaign.setWeekDays("[\"Sul\",\"Mol\"]");
+        assertThat(campaignService.parseWeekDays(campaign)).containsExactly("Sul", "Mol");
+
+        campaign.setWeekDays("not json");
+        assertThat(campaignService.parseWeekDays(campaign)).isNull();
+
+        campaign.setWeekDays("[]");
+        assertThat(campaignService.parseWeekDays(campaign)).isNull();
+    }
+
     @Test
     void isVariantEnabled_readsAnyKeyFromTheRulesJson() {
         campaign.setVariantRules("{\"survivalConditions\":true,\"slotInventory\":false}");
