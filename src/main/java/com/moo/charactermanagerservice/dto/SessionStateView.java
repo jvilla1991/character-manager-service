@@ -41,6 +41,10 @@ import java.util.Map;
  * <p>{@code location} is the party's current place ({@code {name, type}}, type
  * one of Settlement|Wilderness|Dungeon), or null when the DM has never set it.
  * Broadcast to every viewer; only the DM may change it.
+ *
+ * <p>{@code weekDays} is the campaign's defined week — the ordered weekday
+ * names the clock walks on each night → morning rollover — or null when the
+ * DM never defined one (free-text weekdays, repetition counts weeks).
  */
 public record SessionStateView(
         Long sessionId,
@@ -59,5 +63,6 @@ public record SessionStateView(
         Integer myXp,
         Map<String, Object> gameTime,
         Map<String, Object> location,
+        List<String> weekDays,
         List<ParticipantView> participants
 ) {}

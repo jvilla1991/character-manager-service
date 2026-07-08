@@ -6,6 +6,7 @@ import com.moo.charactermanagerservice.dto.CampaignSummaryView;
 import com.moo.charactermanagerservice.dto.CreateNoteRequest;
 import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
 import com.moo.charactermanagerservice.dto.SessionNoteView;
+import com.moo.charactermanagerservice.dto.SetWeekDaysRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
@@ -89,6 +90,14 @@ public class CampaignController {
         User user = (User) authentication.getPrincipal();
         campaign.setId(id);
         return ResponseEntity.ok(campaignService.updateCampaign(campaign, user.getUuid()));
+    }
+
+    /** DM defines (or clears) the campaign's ordered weekday names. */
+    @PutMapping("/{id}/week-days")
+    public ResponseEntity<Campaign> setWeekDays(@PathVariable Long id, Authentication authentication,
+                                                @RequestBody SetWeekDaysRequest request) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(campaignService.setWeekDays(id, request.weekDays(), user.getUuid()));
     }
 
     @DeleteMapping("/{id}")

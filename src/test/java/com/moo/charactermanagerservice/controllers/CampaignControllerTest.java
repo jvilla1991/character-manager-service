@@ -143,6 +143,32 @@ class CampaignControllerTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }
 
+    // --- PUT /{id}/week-days ---
+
+    @Test
+    void setWeekDays_returns200_andDelegatesToTheService() {
+        List<String> days = List.of("Sul", "Mol", "Zol");
+        when(campaignService.setWeekDays(1L, days, dmId)).thenReturn(campaign);
+
+        ResponseEntity<Campaign> response = campaignController.setWeekDays(1L, auth,
+                new com.moo.charactermanagerservice.dto.SetWeekDaysRequest(days));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(campaign);
+        verify(campaignService).setWeekDays(1L, days, dmId);
+    }
+
+    @Test
+    void setWeekDays_propagates403_whenNotOwner() {
+        when(campaignService.setWeekDays(eq(1L), anyList(), eq(dmId)))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> campaignController.setWeekDays(1L, auth,
+                new com.moo.charactermanagerservice.dto.SetWeekDaysRequest(List.of("Sul", "Mol"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
     // --- DELETE /{id} ---
 
     @Test
