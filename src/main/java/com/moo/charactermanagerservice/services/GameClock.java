@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The in-world campaign clock: free-text date labels the DM curates plus a
@@ -15,10 +17,12 @@ import java.util.Set;
  * <pre>{"year":"1492 DR","month":"Hammer","day":"3rd","timeOfDay":"morning",
  *  "weekday":"Far","weekdaysSeen":["Sul","Mol"],"week":1}</pre>
  *
- * Advancing time only cycles morning → noon → night — the DATE is free text
- * (any homebrew calendar), so the DM updates it by hand when a new day starts.
- * The weekday history powers the week counter: re-entering any previously
- * seen weekday marks a completed week (handled in the session service).
+ * Advancing time cycles morning → noon → night. The date parts are free text
+ * (any homebrew calendar); on the night → morning rollover a NUMERIC day
+ * label ("3" / "3rd") also steps forward — anything else the DM updates by
+ * hand when a new day starts. The weekday history powers the week counter:
+ * re-entering any previously seen weekday marks a completed week (handled in
+ * the session service).
  *
  * <p>Older clocks stored numeric dates with dawn/noon/dusk/night segments;
  * {@link #normalize} converts those on read (numbers → strings, dawn →
@@ -92,8 +96,9 @@ final class GameClock {
 
     /**
      * Advance one segment: morning → noon → night → next day's MORNING. The
-     * date never changes here — it's free text the DM curates (the client
-     * opens the edit form on the night → morning rollover).
+     * rollover steps a numeric day label forward ({@link #incrementDayLabel});
+     * the rest of the date is free text the DM curates (the client opens the
+     * edit form on the night → morning rollover).
      */
     static Map<String, Object> advanceSegment(Map<String, Object> gameTime) {
         return advanceSegment(gameTime, null);
@@ -101,28 +106,69 @@ final class GameClock {
 
     /**
      * Advance one segment with an optional week definition. On the night →
-     * morning rollover a defined week walks the weekday to the next name in the
-     * list, and wrapping past the last day increments the week counter. A null
-     * or unknown current weekday (definition edited mid-campaign) leaves the
-     * weekday AND week untouched; a null definition is byte-identical to the
-     * 1-arg overload.
+     * morning rollover a numeric day label steps forward (with or without a
+     * definition), and a defined week walks the weekday to the next name in
+     * the list — wrapping past the last day increments the week counter. A
+     * null or unknown current weekday (definition edited mid-campaign) leaves
+     * the weekday AND week untouched; a null definition is byte-identical to
+     * the 1-arg overload.
      */
     static Map<String, Object> advanceSegment(Map<String, Object> gameTime, List<String> weekDays) {
         Map<String, Object> time = normalize(gameTime);
         int idx = SEGMENTS.indexOf(String.valueOf(time.get("timeOfDay")));
         boolean newDay = idx == SEGMENTS.size() - 1; // night wraps to the next morning
         time.put("timeOfDay", SEGMENTS.get((idx + 1) % SEGMENTS.size()));
-        if (newDay && weekDays != null && time.get("weekday") instanceof String current) {
-            String canonical = canonicalDay(weekDays, current);
-            if (canonical != null) {
-                int next = (weekDays.indexOf(canonical) + 1) % weekDays.size();
-                time.put("weekday", weekDays.get(next));
-                if (next == 0) { // wrapped past the last defined day — a week completed
-                    time.put("week", (int) time.get("week") + 1);
+        if (newDay) {
+            time.put("day", incrementDayLabel((String) time.get("day")));
+            if (weekDays != null && time.get("weekday") instanceof String current) {
+                String canonical = canonicalDay(weekDays, current);
+                if (canonical != null) {
+                    int next = (weekDays.indexOf(canonical) + 1) % weekDays.size();
+                    time.put("weekday", weekDays.get(next));
+                    if (next == 0) { // wrapped past the last defined day — a week completed
+                        time.put("week", (int) time.get("week") + 1);
+                    }
                 }
             }
         }
         return time;
+    }
+
+    // A day-of-month label the clock can count: an integer with an optional
+    // English ordinal suffix ("3", "3rd", "21st"). Anything else is left alone.
+    private static final Pattern COUNTABLE_DAY = Pattern.compile("(\\d+)(st|nd|rd|th)?", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The next day's label, when the current one is numeric: "3" → "4" and
+     * "3rd" → "4th" — ordinal in, correct ordinal out (11th/12th/13th
+     * included); bare number in, bare number out. Labels the clock can't
+     * count ("Midwinter"), and null/blank ones, are returned unchanged: months
+     * are free text with unknown lengths, so the DM stays in charge of those.
+     * There is deliberately no month/year rollover for the same reason.
+     */
+    static String incrementDayLabel(String day) {
+        if (day == null || day.isBlank()) return day;
+        Matcher m = COUNTABLE_DAY.matcher(day.trim());
+        if (!m.matches()) return day;
+        int next;
+        try {
+            next = Integer.parseInt(m.group(1)) + 1;
+        } catch (NumberFormatException e) {
+            return day; // numeric but absurdly long — leave it to the DM
+        }
+        return m.group(2) == null ? String.valueOf(next) : next + ordinalSuffix(next);
+    }
+
+    /** st/nd/rd/th for a day number, with the 11th–13th special cases. */
+    private static String ordinalSuffix(int n) {
+        int mod100 = n % 100;
+        if (mod100 >= 11 && mod100 <= 13) return "th";
+        return switch (n % 10) {
+            case 1 -> "st";
+            case 2 -> "nd";
+            case 3 -> "rd";
+            default -> "th";
+        };
     }
 
     /**

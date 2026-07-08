@@ -972,19 +972,31 @@ class SessionServiceTest {
     }
 
     @Test
-    void advanceTime_pastNight_wrapsToMorning_dateUntouched_noBumpsWhenVariantOff() {
+    void advanceTime_pastNight_wrapsToMorning_stepsTheNumericDay_noBumpsWhenVariantOff() {
         campaign.setGameTime(
                 "{\"year\":\"1492 DR\",\"month\":\"Hammer\",\"day\":\"3rd\",\"timeOfDay\":\"night\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
         sessionService.advanceTime(1L, dmId);
 
-        // the DATE is free text — only the DM changes it (the client opens the
-        // edit form on this rollover); bumps skipped without the variant
+        // a countable day steps forward on the rollover; month/year are free
+        // text only the DM changes; bumps skipped without the variant
         assertThat(campaign.getGameTime())
                 .contains("\"year\":\"1492 DR\"").contains("\"month\":\"Hammer\"")
-                .contains("\"day\":\"3rd\"").contains("\"timeOfDay\":\"morning\"");
+                .contains("\"day\":\"4th\"").contains("\"timeOfDay\":\"morning\"");
         verify(pcRepository, never()).findByCampaignId(any());
+    }
+
+    @Test
+    void advanceTime_pastNight_leavesAFreeTextDayAlone() {
+        campaign.setGameTime(
+                "{\"year\":\"1\",\"month\":\"1\",\"day\":\"Midwinter\",\"timeOfDay\":\"night\"}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId);
+
+        assertThat(campaign.getGameTime())
+                .contains("\"day\":\"Midwinter\"").contains("\"timeOfDay\":\"morning\"");
     }
 
     @Test
