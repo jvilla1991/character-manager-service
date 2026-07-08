@@ -1,9 +1,12 @@
 package com.moo.charactermanagerservice.services;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The in-world campaign clock: free-text date labels the DM curates plus a
@@ -25,6 +28,8 @@ final class GameClock {
 
     static final List<String> SEGMENTS = List.of("morning", "noon", "night");
     static final int MAX_LABEL_LENGTH = 40;
+    static final int MIN_WEEK_DAYS = 2;
+    static final int MAX_WEEK_DAYS = 20;
 
     private GameClock() {}
 
@@ -55,14 +60,68 @@ final class GameClock {
     }
 
     /**
+     * True when the list is a usable week definition: {@value #MIN_WEEK_DAYS}–
+     * {@value #MAX_WEEK_DAYS} entries, each a non-blank label of at most
+     * {@value #MAX_LABEL_LENGTH} characters, unique case-insensitively.
+     */
+    static boolean isValidWeekDays(List<String> weekDays) {
+        if (weekDays == null
+                || weekDays.size() < MIN_WEEK_DAYS || weekDays.size() > MAX_WEEK_DAYS) {
+            return false;
+        }
+        Set<String> seen = new HashSet<>();
+        for (String day : weekDays) {
+            if (day == null || day.isBlank() || day.trim().length() > MAX_LABEL_LENGTH) {
+                return false;
+            }
+            if (!seen.add(day.trim().toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The defined-casing entry matching {@code day} case-insensitively, or null
+     * when the day is not part of the definition (or either argument is null).
+     */
+    static String canonicalDay(List<String> weekDays, String day) {
+        if (weekDays == null || day == null) return null;
+        return weekDays.stream().filter(day::equalsIgnoreCase).findFirst().orElse(null);
+    }
+
+    /**
      * Advance one segment: morning → noon → night → next day's MORNING. The
      * date never changes here — it's free text the DM curates (the client
      * opens the edit form on the night → morning rollover).
      */
     static Map<String, Object> advanceSegment(Map<String, Object> gameTime) {
+        return advanceSegment(gameTime, null);
+    }
+
+    /**
+     * Advance one segment with an optional week definition. On the night →
+     * morning rollover a defined week walks the weekday to the next name in the
+     * list, and wrapping past the last day increments the week counter. A null
+     * or unknown current weekday (definition edited mid-campaign) leaves the
+     * weekday AND week untouched; a null definition is byte-identical to the
+     * 1-arg overload.
+     */
+    static Map<String, Object> advanceSegment(Map<String, Object> gameTime, List<String> weekDays) {
         Map<String, Object> time = normalize(gameTime);
         int idx = SEGMENTS.indexOf(String.valueOf(time.get("timeOfDay")));
+        boolean newDay = idx == SEGMENTS.size() - 1; // night wraps to the next morning
         time.put("timeOfDay", SEGMENTS.get((idx + 1) % SEGMENTS.size()));
+        if (newDay && weekDays != null && time.get("weekday") instanceof String current) {
+            String canonical = canonicalDay(weekDays, current);
+            if (canonical != null) {
+                int next = (weekDays.indexOf(canonical) + 1) % weekDays.size();
+                time.put("weekday", weekDays.get(next));
+                if (next == 0) { // wrapped past the last defined day — a week completed
+                    time.put("week", (int) time.get("week") + 1);
+                }
+            }
+        }
         return time;
     }
 

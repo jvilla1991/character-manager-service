@@ -67,6 +67,12 @@ public class Campaign implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String location;
 
+    // Ordered weekday names for the campaign's calendar: ["Sul","Mol",...]; NULL
+    // = no definition (free-text weekday whose repetition counts weeks). Written
+    // at creation and by the week-days endpoint; pinned on campaign updates.
+    @Column(name = "week_days", columnDefinition = "TEXT")
+    private String weekDays;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -103,4 +109,5 @@ public class Campaign implements Serializable {
     public void setVariantRules(String variantRules) { this.variantRules = variantRules; }
     public void setGameTime(String gameTime) { this.gameTime = gameTime; }
     public void setLocation(String location) { this.location = location; }
+    public void setWeekDays(String weekDays) { this.weekDays = weekDays; }
 }

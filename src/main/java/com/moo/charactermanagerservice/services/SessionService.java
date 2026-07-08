@@ -669,6 +669,10 @@ public class SessionService {
      *
      * <p>A campaign whose clock was never set is initialized to day 1 dawn with
      * NO bumps: the first click establishes the clock, it doesn't pass time.
+     *
+     * <p>With a defined week (campaign {@code weekDays}), the night → morning
+     * rollover also walks the weekday to the next defined name — wrapping past
+     * the last day increments the week counter (see {@link GameClock}).
      */
     @Transactional
     public SessionStateView advanceTime(Long sessionId, UUID dmUserId) {
@@ -683,7 +687,8 @@ public class SessionService {
         if (stored == null || stored.isBlank()) {
             campaign.setGameTime(json.writeObject(GameClock.initial()));
         } else {
-            Map<String, Object> advanced = GameClock.advanceSegment(json.parseObject(stored));
+            Map<String, Object> advanced = GameClock.advanceSegment(
+                    json.parseObject(stored), campaignService.parseWeekDays(campaign));
             campaign.setGameTime(json.writeObject(advanced));
             String segment = String.valueOf(advanced.get("timeOfDay"));
             // Survival campaigns: each member auto-eats/drinks their supplies as
@@ -797,6 +802,13 @@ public class SessionService {
      * passed — the counter ticks and the history resets to the new weekday.
      * An unchanged weekday (e.g. a date correction) never touches the history,
      * so resubmitting the form can't double-count.
+     *
+     * <p>With a defined week (campaign {@code weekDays}) the repetition logic
+     * is skipped entirely: the weekday must be one of the defined names
+     * (canonicalized to the defined casing), the week counter moves only when
+     * the request carries an explicit {@code week}, and {@code weekdaysSeen}
+     * is frozen — neither read nor written — so the fallback resumes untouched
+     * if the definition is ever removed.
      */
     @Transactional
     public SessionStateView setTime(Long sessionId, SetTimeRequest request, UUID dmUserId) {
@@ -827,15 +839,32 @@ public class SessionService {
                 ? null
                 : request.weekday().trim();
 
-        boolean weekdayChanged = newWeekday != null
-                && (currentWeekday == null || !newWeekday.equalsIgnoreCase(currentWeekday));
-        if (weekdayChanged) {
-            boolean seenBefore = weekdaysSeen.stream().anyMatch(newWeekday::equalsIgnoreCase);
-            if (seenBefore) {
-                week++;                                  // a full week has passed
-                weekdaysSeen = new ArrayList<>(List.of(newWeekday));
-            } else {
-                weekdaysSeen.add(newWeekday);
+        List<String> definedWeek = campaignService.parseWeekDays(campaign);
+        if (definedWeek != null) {
+            // Defined week: the weekday must be a defined name (stored in the
+            // defined casing) and the week counter never moves on its own —
+            // only an explicit request week (floored at 1) changes it.
+            if (newWeekday != null) {
+                newWeekday = GameClock.canonicalDay(definedWeek, newWeekday);
+                if (newWeekday == null) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "Weekday must be one of the campaign's defined days");
+                }
+            }
+            if (request.week() != null) {
+                week = Math.max(1, request.week());
+            }
+        } else {
+            boolean weekdayChanged = newWeekday != null
+                    && (currentWeekday == null || !newWeekday.equalsIgnoreCase(currentWeekday));
+            if (weekdayChanged) {
+                boolean seenBefore = weekdaysSeen.stream().anyMatch(newWeekday::equalsIgnoreCase);
+                if (seenBefore) {
+                    week++;                                  // a full week has passed
+                    weekdaysSeen = new ArrayList<>(List.of(newWeekday));
+                } else {
+                    weekdaysSeen.add(newWeekday);
+                }
             }
         }
 
@@ -1235,6 +1264,9 @@ public class SessionService {
         Map<String, Object> location = (storedLocation == null || storedLocation.isBlank())
                 ? null
                 : json.parseObject(storedLocation);
+        // The defined week (or null for free-text weekdays) rides along so the
+        // client can render the weekday dropdown and week field.
+        List<String> weekDays = campaignService.parseWeekDays(campaign);
 
         return new SessionStateView(
                 session.getId(),
@@ -1253,6 +1285,7 @@ public class SessionService {
                 myXp,
                 gameTime,
                 location,
+                weekDays,
                 views
         );
     }

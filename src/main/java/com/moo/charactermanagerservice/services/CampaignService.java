@@ -1,5 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CampaignMemberView;
 import com.moo.charactermanagerservice.dto.CampaignPreviewView;
@@ -36,6 +38,7 @@ public class CampaignService {
     private final PCService pcService;
     private final SlotInventoryConversionService conversionService;
     private final PcJsonColumns json;
+    private final ObjectMapper objectMapper;
 
     @Autowired
     public CampaignService(CampaignRepository campaignRepository,
@@ -48,11 +51,68 @@ public class CampaignService {
         this.pcService = pcService;
         this.conversionService = conversionService;
         this.json = new PcJsonColumns(objectMapper);
+        this.objectMapper = objectMapper;
     }
 
     public Campaign createCampaign(Campaign campaign) {
+        // A creation body may define the week up front — validate and normalize
+        // it exactly like the week-days endpoint (a bad list is a 400, never a
+        // silently broken column).
+        if (campaign.getWeekDays() != null && !campaign.getWeekDays().isBlank()) {
+            List<String> days = parseWeekDays(campaign);
+            if (days == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "weekDays must be a JSON array of weekday names");
+            }
+            campaign.setWeekDays(weekDaysJson(days));
+        }
         campaign.setInviteCode(generateUniqueInviteCode());
         return campaignRepository.saveAndFlush(campaign);
+    }
+
+    /**
+     * The campaign's defined week as an ordered list of weekday names, or null
+     * when the DM never defined one (or the column is malformed) — callers then
+     * fall back to the free-text weekday behavior.
+     */
+    public List<String> parseWeekDays(Campaign campaign) {
+        String stored = campaign.getWeekDays();
+        if (stored == null || stored.isBlank()) return null;
+        try {
+            List<String> days = objectMapper.readValue(stored, new TypeReference<List<String>>() {});
+            return days == null || days.isEmpty() ? null : days;
+        } catch (JsonProcessingException e) {
+            return null;
+        }
+    }
+
+    /**
+     * DM defines (or clears) the campaign's week: the ordered weekday names the
+     * clock walks on each night → morning rollover. Null or empty clears the
+     * definition, returning the campaign to free-text weekdays.
+     */
+    public Campaign setWeekDays(Long id, List<String> weekDays, UUID dmUserId) {
+        Campaign campaign = findById(id);
+        assertDmOwnership(campaign, dmUserId);
+        campaign.setWeekDays(weekDaysJson(weekDays));
+        return campaignRepository.save(campaign);
+    }
+
+    /** Validate, trim, and serialize a week definition; null/empty clears it. */
+    private String weekDaysJson(List<String> weekDays) {
+        if (weekDays == null || weekDays.isEmpty()) return null;
+        if (!GameClock.isValidWeekDays(weekDays)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Week requires " + GameClock.MIN_WEEK_DAYS + "-" + GameClock.MAX_WEEK_DAYS
+                            + " unique weekday names of at most "
+                            + GameClock.MAX_LABEL_LENGTH + " characters each");
+        }
+        try {
+            return objectMapper.writeValueAsString(weekDays.stream().map(String::trim).toList());
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to serialize week days");
+        }
     }
 
     /**
@@ -208,6 +268,9 @@ public class CampaignService {
         // the game clock is written only by the session time endpoints — a
         // campaign edit must not reset or null it.
         campaign.setGameTime(existing.getGameTime());
+        // the week definition has its own endpoint — a body that omits it
+        // (every existing client) must not null the column.
+        campaign.setWeekDays(existing.getWeekDays());
         return campaignRepository.save(campaign);
     }
 
