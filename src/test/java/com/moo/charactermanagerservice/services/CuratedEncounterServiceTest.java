@@ -2,11 +2,16 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.dto.EncounterSummaryView;
 import com.moo.charactermanagerservice.dto.EncounterView;
+import com.moo.charactermanagerservice.dto.ImportLootRequest;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
+import com.moo.charactermanagerservice.models.EncounterLootItem;
+import com.moo.charactermanagerservice.models.SrdItem;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
+import com.moo.charactermanagerservice.repositories.EncounterLootItemRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
+import com.moo.charactermanagerservice.repositories.SrdItemRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +33,8 @@ class CuratedEncounterServiceTest {
 
     @Mock private EncounterRepository encounterRepository;
     @Mock private EncounterCreatureRepository creatureRepository;
+    @Mock private EncounterLootItemRepository lootItemRepository;
+    @Mock private SrdItemRepository srdItemRepository;
     @Mock private CampaignService campaignService;
 
     private CuratedEncounterService service;
@@ -38,7 +45,8 @@ class CuratedEncounterServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CuratedEncounterService(encounterRepository, creatureRepository, campaignService);
+        service = new CuratedEncounterService(encounterRepository, creatureRepository,
+                lootItemRepository, srdItemRepository, campaignService);
         dmId = UUID.randomUUID();
         strangerId = UUID.randomUUID();
 
@@ -184,7 +192,174 @@ class CuratedEncounterServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(404));
     }
 
+    // --- loot lines ---
+
+    @Test
+    void addLootItem_catalogLine_persists_withDefaultedQty() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+
+        service.addLootItem(5L, "longsword", null, null, null, dmId);
+
+        ArgumentCaptor<EncounterLootItem> captor = ArgumentCaptor.forClass(EncounterLootItem.class);
+        verify(lootItemRepository).save(captor.capture());
+        EncounterLootItem saved = captor.getValue();
+        assertThat(saved.getCatalogItemKey()).isEqualTo("longsword");
+        assertThat(saved.getCustomName()).isNull();
+        assertThat(saved.getQty()).isEqualTo(1); // null qty → 1
+    }
+
+    @Test
+    void addLootItem_customLine_keepsNotes() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+
+        service.addLootItem(5L, null, "Cloak of Elvenkind", "Advantage on Stealth.", 1, dmId);
+
+        ArgumentCaptor<EncounterLootItem> captor = ArgumentCaptor.forClass(EncounterLootItem.class);
+        verify(lootItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getCustomName()).isEqualTo("Cloak of Elvenkind");
+        assertThat(captor.getValue().getCustomNotes()).isEqualTo("Advantage on Stealth.");
+        verify(srdItemRepository, never()).findByItemKey(any());
+    }
+
+    @Test
+    void addLootItem_throws400_whenBothOrNeitherOfKeyAndName() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        assertThatThrownBy(() -> service.addLootItem(5L, "longsword", "Cloak", null, 1, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.addLootItem(5L, "  ", null, null, 1, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootItemRepository, never()).save(any());
+    }
+
+    @Test
+    void addLootItem_throws404_whenCatalogKeyUnknown() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(srdItemRepository.findByItemKey("frostbrand")).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.addLootItem(5L, "frostbrand", null, null, 1, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
+    }
+
+    @Test
+    void getEncounter_resolvesLootLines_catalogAndCustom() {
+        encounter.setLootCoinCp(12550L);
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(lootItemRepository.findByEncounterIdOrderByIdAsc(5L)).thenReturn(List.of(
+                lootLine(1L, "longsword", null, null, 2),
+                lootLine(2L, null, "Cloak of Elvenkind", "Advantage on Stealth.", 1)));
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword"))).thenReturn(List.of(longsword()));
+
+        EncounterView view = service.getEncounter(5L, dmId);
+
+        assertThat(view.lootCoinCp()).isEqualTo(12550L);
+        assertThat(view.lootItems()).hasSize(2);
+        assertThat(view.lootItems().get(0).name()).isEqualTo("Longsword"); // resolved from catalog
+        assertThat(view.lootItems().get(0).custom()).isFalse();
+        assertThat(view.lootItems().get(1).name()).isEqualTo("Cloak of Elvenkind");
+        assertThat(view.lootItems().get(1).custom()).isTrue();
+        assertThat(view.lootItems().get(1).customNotes()).isEqualTo("Advantage on Stealth.");
+    }
+
+    // --- setLootCoins ---
+
+    @Test
+    void setLootCoins_storesRoundedCopper() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(encounterRepository.save(any(Encounter.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.setLootCoins(5L, 125.5, dmId);
+
+        assertThat(encounter.getLootCoinCp()).isEqualTo(12550L);
+    }
+
+    @Test
+    void setLootCoins_throws400_whenNegativeOrNull() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        assertThatThrownBy(() -> service.setLootCoins(5L, -1.0, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.setLootCoins(5L, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- importLoot ---
+
+    @Test
+    void importLoot_appendsLines_andAddsCoinsToPile() {
+        encounter.setLootCoinCp(100L);
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword"))).thenReturn(List.of(longsword()));
+
+        ImportLootRequest request = new ImportLootRequest(10.0, List.of(
+                new ImportLootRequest.Item("longsword", null, null, null),
+                new ImportLootRequest.Item(null, "Cloak of Elvenkind", "Advantage on Stealth.", 2)));
+        service.importLoot(5L, request, dmId);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<EncounterLootItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(lootItemRepository).saveAll(captor.capture());
+        List<EncounterLootItem> saved = captor.getValue();
+        assertThat(saved).hasSize(2);
+        assertThat(saved.get(0).getCatalogItemKey()).isEqualTo("longsword");
+        assertThat(saved.get(0).getQty()).isEqualTo(1); // null qty → 1
+        assertThat(saved.get(1).getCustomName()).isEqualTo("Cloak of Elvenkind");
+        assertThat(saved.get(1).getQty()).isEqualTo(2);
+        assertThat(encounter.getLootCoinCp()).isEqualTo(1100L); // 100 + 10 gp
+    }
+
+    @Test
+    void importLoot_throws400_listingUnknownKeys_savesNothing() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+        when(srdItemRepository.findByItemKeyIn(List.of("frostbrand"))).thenReturn(List.of());
+
+        ImportLootRequest request = new ImportLootRequest(null, List.of(
+                new ImportLootRequest.Item("frostbrand", null, null, 1)));
+        assertThatThrownBy(() -> service.importLoot(5L, request, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Unknown catalog keys: frostbrand")
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootItemRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void importLoot_throws400_whenLineHasBothKeyAndName() {
+        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
+
+        ImportLootRequest request = new ImportLootRequest(null, List.of(
+                new ImportLootRequest.Item("longsword", "Also a name", null, 1)));
+        assertThatThrownBy(() -> service.importLoot(5L, request, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootItemRepository, never()).saveAll(any());
+    }
+
     // --- helpers ---
+
+    private static SrdItem longsword() {
+        SrdItem item = new SrdItem();
+        item.setId(1L);
+        item.setItemKey("longsword");
+        item.setName("Longsword");
+        item.setCategory("WEAPON");
+        item.setCostCp(1500L);
+        item.setDetails("{}");
+        return item;
+    }
+
+    private static EncounterLootItem lootLine(Long id, String key, String customName, String notes, int qty) {
+        EncounterLootItem line = new EncounterLootItem();
+        line.setId(id);
+        line.setEncounterId(5L);
+        line.setCatalogItemKey(key);
+        line.setCustomName(customName);
+        line.setCustomNotes(notes);
+        line.setQty(qty);
+        return line;
+    }
 
     private static int status(Throwable e) {
         return ((ResponseStatusException) e).getStatusCode().value();
