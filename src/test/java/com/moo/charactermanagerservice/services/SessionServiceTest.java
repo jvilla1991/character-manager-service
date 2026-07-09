@@ -7,6 +7,7 @@ import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
@@ -16,6 +17,8 @@ import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -50,6 +53,8 @@ class SessionServiceTest {
     @Mock private SessionParticipantRepository participantRepository;
     @Mock private SessionShopRepository shopRepository;
     @Mock private SessionShopAttendeeRepository shopAttendeeRepository;
+    @Mock private SessionLootRepository lootRepository;
+    @Mock private SessionLootItemRepository lootItemRepository;
     @Mock private PCRepository pcRepository;
     @Mock private PCService pcService;
     @Mock private CampaignService campaignService;
@@ -69,8 +74,9 @@ class SessionServiceTest {
     @BeforeEach
     void setUp() {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
-                shopAttendeeRepository, pcRepository, pcService, campaignService, campaignRepository,
-                encounterRepository, encounterCreatureRepository, activityLogService, new ObjectMapper());
+                shopAttendeeRepository, lootRepository, lootItemRepository, pcRepository, pcService,
+                campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
+                activityLogService, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -867,7 +873,22 @@ class SessionServiceTest {
         assertThat(sessionService.getState(1L, playerId, null)).isNotNull();
     }
 
-    // --- helpers ---
+    // --- endSession (loot cleanup) ---
+
+    @Test
+    void endSession_discardsUnclaimedLoot() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(CombatSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        SessionLoot pool = new SessionLoot();
+        pool.setId(20L);
+        pool.setSessionId(1L);
+        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
+
+        sessionService.endSession(1L, dmId);
+
+        verify(lootItemRepository).deleteBySessionLootId(20L);
+        verify(lootRepository).delete(pool);
+    }
 
     // --- advanceTime / setTime (campaign clock) ---
 

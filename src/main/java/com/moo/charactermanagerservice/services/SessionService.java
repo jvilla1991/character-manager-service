@@ -13,6 +13,7 @@ import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
@@ -20,6 +21,8 @@ import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -65,6 +68,8 @@ public class SessionService {
     private final SessionParticipantRepository participantRepository;
     private final SessionShopRepository shopRepository;
     private final SessionShopAttendeeRepository shopAttendeeRepository;
+    private final SessionLootRepository lootRepository;
+    private final SessionLootItemRepository lootItemRepository;
     private final PCRepository pcRepository;
     private final PCService pcService;
     private final CampaignService campaignService;
@@ -79,6 +84,8 @@ public class SessionService {
                           SessionParticipantRepository participantRepository,
                           SessionShopRepository shopRepository,
                           SessionShopAttendeeRepository shopAttendeeRepository,
+                          SessionLootRepository lootRepository,
+                          SessionLootItemRepository lootItemRepository,
                           PCRepository pcRepository,
                           PCService pcService,
                           CampaignService campaignService,
@@ -91,6 +98,8 @@ public class SessionService {
         this.participantRepository = participantRepository;
         this.shopRepository = shopRepository;
         this.shopAttendeeRepository = shopAttendeeRepository;
+        this.lootRepository = lootRepository;
+        this.lootItemRepository = lootItemRepository;
         this.pcRepository = pcRepository;
         this.pcService = pcService;
         this.campaignService = campaignService;
@@ -1164,9 +1173,16 @@ public class SessionService {
     }
 
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */
+    @Transactional
     public SessionStateView endSession(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
+
+        // Unclaimed loot is discarded — the pool never outlives its session.
+        lootRepository.findBySessionId(sessionId).ifPresent(pool -> {
+            lootItemRepository.deleteBySessionLootId(pool.getId());
+            lootRepository.delete(pool);
+        });
 
         session.setStatus(SessionStatus.ENDED);
         session.bumpVersion();
@@ -1247,6 +1263,25 @@ public class SessionService {
                 .stream().anyMatch(a -> requesterId.equals(a.getOwnerUserId())));
         String shopCategory = shopForMe ? shop.getCategory() : null;
 
+        // Loot signal, caller-scoped like the shop's: "DRAFT" only for the DM
+        // (players never learn an undropped pool exists), "DROPPED" for the DM
+        // and for seated players, null otherwise. Pool contents are fetched
+        // separately from /loot, re-keyed on every version change (claims and
+        // DM edits mutate the pool under a stable status).
+        SessionLoot loot = lootRepository.findBySessionId(session.getId()).orElse(null);
+        String lootStatus = null;
+        String lootName = null;
+        if (loot != null) {
+            boolean seated = participants.stream()
+                    .anyMatch(p -> p.getPcId() != null && requesterId.equals(p.getOwnerUserId()));
+            if (isDm) {
+                lootStatus = loot.isDropped() ? "DROPPED" : "DRAFT";
+            } else if (loot.isDropped() && seated) {
+                lootStatus = "DROPPED";
+            }
+            lootName = lootStatus == null ? null : loot.getName();
+        }
+
         // Caller-scoped XP: only the requester's own seated PC, never a teammate's
         // (ParticipantView is broadcast to everyone, so XP can't live there).
         Integer myXp = participants.stream()
@@ -1286,6 +1321,8 @@ public class SessionService {
                 shopOpen,
                 shopForMe,
                 shopCategory,
+                lootStatus,
+                lootName,
                 myXp,
                 gameTime,
                 location,
