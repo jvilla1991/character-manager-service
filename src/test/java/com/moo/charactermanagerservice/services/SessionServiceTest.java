@@ -946,9 +946,11 @@ class SessionServiceTest {
         assertThat(member.getSurvival())
                 .contains("\"hunger\":2").contains("\"thirst\":2").contains("\"fatigue\":3")
                 .contains("\"seeded\":true");
-        // 5 seeded, 1 of each eaten/drunk this night → 4 left
+        // Starting kit seeded (1 box, 1 skin, 5 rations, 5 water); 1 ration and
+        // 1 water eaten/drunk this night → 4 charges left in each container.
         assertThat(member.getInventory())
                 .contains("\"catalogKey\":\"rations\"").contains("\"catalogKey\":\"waterskin\"")
+                .contains("\"catalogKey\":\"ration-box\"").contains("\"catalogKey\":\"water\"")
                 .contains("\"qty\":4");
     }
 
