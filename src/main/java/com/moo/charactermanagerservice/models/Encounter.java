@@ -32,6 +32,9 @@ public class Encounter implements Serializable {
     private String name;
     private String notes;
 
+    /** The prepped coin pile in copper (V31); its item lines are {@link EncounterLootItem}s. */
+    private long lootCoinCp;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -55,4 +58,5 @@ public class Encounter implements Serializable {
     public void setDmUserId(UUID dmUserId) { this.dmUserId = dmUserId; }
     public void setName(String name) { this.name = name; }
     public void setNotes(String notes) { this.notes = notes; }
+    public void setLootCoinCp(long lootCoinCp) { this.lootCoinCp = lootCoinCp; }
 }

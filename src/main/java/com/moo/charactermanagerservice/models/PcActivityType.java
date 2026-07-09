@@ -5,6 +5,7 @@ public enum PcActivityType {
     LEVEL_UP,
     PURCHASE,
     SALE,
+    LOOT,
     XP_AWARD,
     LONG_REST,
     DM_EDIT

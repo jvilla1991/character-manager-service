@@ -32,7 +32,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -270,7 +269,7 @@ public class ShopService {
                                 + held + " of " + capacity + "). Buy a ration box to raise capacity.");
             }
         }
-        addToInventory(inventory, item, qty, unitCostCp);
+        InventoryEntries.addCatalogItem(inventory, item, qty, unitCostCp, json);
 
         pc.setCoins(json.writeObject(newCoins));
         pc.setInventory(json.write(inventory));
@@ -326,7 +325,8 @@ public class ShopService {
         if ("dropped".equals(entry.get("status"))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Dropped items can't be sold");
         }
-        if (shop.getShopId() == null && !categoryLabel(shop.getCategory()).equals(entry.get("category"))) {
+        if (shop.getShopId() == null
+                && !InventoryEntries.categoryLabel(shop.getCategory()).equals(entry.get("category"))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "This shop doesn't buy that kind of item");
         }
 
@@ -382,35 +382,6 @@ public class ShopService {
     }
 
     // --- internals -----------------------------------------------------------
-
-    /** Append a purchased item, stacking quantity onto an existing line with the same catalog key. */
-    private void addToInventory(List<Map<String, Object>> inventory, SrdItem item, int qty, long unitCostCp) {
-        for (Map<String, Object> entry : inventory) {
-            if (item.getItemKey().equals(entry.get("catalogKey"))) {
-                int existing = entry.get("qty") instanceof Number n ? n.intValue() : 0;
-                entry.put("qty", existing + qty);
-                return;
-            }
-        }
-        inventory.add(newInventoryEntry(item, qty, unitCostCp));
-    }
-
-    /** Build a denormalized inventory line from a catalog item — a self-contained snapshot, like PcSpell. */
-    private Map<String, Object> newInventoryEntry(SrdItem item, int qty, long unitCostCp) {
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("catalogKey", item.getItemKey());
-        entry.put("name", item.getName());
-        entry.put("category", categoryLabel(item.getCategory()));
-        entry.put("qty", qty);
-        entry.put("unitCostCp", unitCostCp); // the price actually paid (curated override or catalog)
-        if (item.getWeight() != null) entry.put("weight", item.getWeight());
-        // Darker Dungeons bulk — stamped on every purchase so slot-variant
-        // campaigns can total it; inert everywhere else.
-        entry.put("bulk", BulkRules.bulkFor(item.getBulk(), item.getWeight()));
-        // Flatten the catalog details (damage, properties, …) into the owned item.
-        json.parseObject(item.getDetails()).forEach(entry::putIfAbsent);
-        return entry;
-    }
 
     private List<ShopItemView> catalogItems(String category) {
         return srdItemRepository.findByCategoryOrderByNameAsc(category).stream()
@@ -527,15 +498,5 @@ public class ShopService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported shop category: " + category);
         }
         return normalized;
-    }
-
-    /** Map a catalog category (WEAPON) to the lower-case inventory label ('weapon'). */
-    private String categoryLabel(String category) {
-        return switch (category) {
-            case "WEAPON" -> "weapon";
-            case "ARMOR" -> "armor";
-            case "MATERIAL_COMPONENT" -> "material-component";
-            default -> category.toLowerCase();
-        };
     }
 }
