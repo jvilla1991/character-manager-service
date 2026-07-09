@@ -1,6 +1,8 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.Campaign;
@@ -9,6 +11,7 @@ import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
@@ -20,15 +23,19 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +69,7 @@ class SessionServiceTest {
     @Mock private EncounterRepository encounterRepository;
     @Mock private EncounterCreatureRepository encounterCreatureRepository;
     @Mock private PcActivityLogService activityLogService;
+    @Mock private SessionRollRepository sessionRollRepository;
 
     private SessionService sessionService;
 
@@ -104,6 +112,9 @@ class SessionServiceTest {
                     String rules = c.getVariantRules();
                     return rules != null && rules.contains("\"" + key + "\":true");
                 });
+        // buildState's roll-log fetch — empty unless a test stubs specific rows.
+        lenient().when(sessionRollRepository.findTop50BySessionIdOrderByCreatedAtDescIdDesc(anyLong()))
+                .thenReturn(List.of());
     }
 
     // --- awardXp (single) ---
@@ -1512,6 +1523,177 @@ class SessionServiceTest {
 
         assertThat(pc.getHpCurrent()).isZero();
         assertThat(pc.getSurvival()).isNull();
+    }
+
+    // --- logRoll ---
+
+    private static LogRollRequest rollRequest(int sides, Integer... rolls) {
+        return new LogRollRequest(List.of(new LogRollRequest.DieGroup(sides, List.of(rolls))));
+    }
+
+    @Test
+    void logRoll_byOwner_succeeds_bumpsVersion_andSumsServerSide() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(mine));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(mine)));
+        PC pc = pc(7L, "Gorath", 0);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+        stubPcs();
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc));
+
+        // Client-sent total would be wrong (12) — the server ignores it and sums 4+2+6=12... use a
+        // deliberately-mismatched case: rolls sum to 12 regardless, so assert via captured entity.
+        sessionService.logRoll(1L, 5L, rollRequest(6, 4, 2, 6), playerId);
+
+        ArgumentCaptor<SessionRoll> captor = ArgumentCaptor.forClass(SessionRoll.class);
+        verify(sessionRollRepository).save(captor.capture());
+        SessionRoll saved = captor.getValue();
+        assertThat(saved.getGrandTotal()).isEqualTo(12); // server-summed from the validated rolls
+        assertThat(saved.getOwnerUserId()).isEqualTo(playerId);
+        assertThat(saved.getDisplayName()).isEqualTo("Gorath");
+        assertThat(saved.getSessionId()).isEqualTo(1L);
+        assertThat(saved.getParticipantId()).isEqualTo(5L);
+        verify(sessionRepository).save(session); // version bumped
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void logRoll_byDm_forSomeoneElsesParticipant_succeeds() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant theirs = participant(5L, 7L);
+        theirs.setOwnerUserId(playerId);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(theirs));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(theirs)));
+        PC pc = pc(7L, "Gorath", 0);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc));
+
+        sessionService.logRoll(1L, 5L, rollRequest(20, 15), dmId);
+
+        verify(sessionRollRepository).save(any(SessionRoll.class));
+    }
+
+    @Test
+    void logRoll_byStranger_throws403() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant theirs = participant(5L, 7L);
+        theirs.setOwnerUserId(playerId);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(theirs));
+
+        assertThatThrownBy(() -> sessionService.logRoll(1L, 5L, rollRequest(6, 4), strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(sessionRollRepository, never()).save(any());
+    }
+
+    @Test
+    void logRoll_invalidDieSize_throws400() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(mine));
+
+        assertThatThrownBy(() -> sessionService.logRoll(1L, 5L, rollRequest(7, 3), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(sessionRollRepository, never()).save(any());
+    }
+
+    @Test
+    void logRoll_rollOutOfRange_throws400() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(mine));
+
+        assertThatThrownBy(() -> sessionService.logRoll(1L, 5L, rollRequest(6, 7), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(sessionRollRepository, never()).save(any());
+    }
+
+    @Test
+    void logRoll_onEndedSession_throws409() {
+        session.setStatus(SessionStatus.ENDED);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.logRoll(1L, 5L, rollRequest(6, 4), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(sessionRollRepository, never()).save(any());
+    }
+
+    @Test
+    void buildState_dmSeesAllRolls_playerSeesOnlyOwn_mineFlagCorrect() {
+        SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant theirs = pcCombatant(2L, 8L, (short) 10, 1);
+        theirs.setOwnerUserId(strangerId);
+        arm(session, 1L, new ArrayList<>(List.of(mine, theirs)));
+        stubPcs();
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pcWithDex(7L, "Mine", 10), pcWithDex(8L, "Theirs", 10)));
+
+        SessionRoll myRoll = rollRow(1L, 1L, playerId, "Mine", "[{\"sides\":6,\"rolls\":[4]}]", 4);
+        SessionRoll theirRoll = rollRow(2L, 2L, strangerId, "Theirs", "[{\"sides\":6,\"rolls\":[5]}]", 5);
+        when(sessionRollRepository.findTop50BySessionIdOrderByCreatedAtDescIdDesc(1L))
+                .thenReturn(List.of(theirRoll, myRoll));
+
+        SessionStateView dmState = sessionService.getState(1L, dmId, null);
+        SessionStateView playerState = sessionService.getState(1L, playerId, null);
+
+        assertThat(dmState.rolls()).hasSize(2);
+        assertThat(playerState.rolls()).hasSize(1);
+        assertThat(playerState.rolls().get(0).rollId()).isEqualTo(1L);
+        assertThat(playerState.rolls().get(0).mine()).isTrue();
+        SessionRollView dmSeesTheirs = dmState.rolls().stream()
+                .filter(r -> r.rollId().equals(2L)).findFirst().orElseThrow();
+        assertThat(dmSeesTheirs.mine()).isFalse();
+    }
+
+    @Test
+    void endSession_purgesRollLog() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(CombatSession.class))).thenReturn(session);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(new ArrayList<>());
+
+        sessionService.endSession(1L, dmId);
+
+        verify(sessionRollRepository).deleteBySessionId(1L);
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.ENDED);
+    }
+
+    @Test
+    void ttlExpiry_purgesRollLog() {
+        // A session idle well past the 4h TTL is auto-ended on next access via
+        // getActiveSessionForCampaign → activeSession's lazy expiry branch.
+        session.setUpdatedAt(Instant.now().minus(Duration.ofHours(5)));
+        when(campaignService.findById(1L)).thenReturn(campaign);
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of());
+        when(sessionRepository.findByCampaignIdAndStatusNot(1L, SessionStatus.ENDED))
+                .thenReturn(Optional.of(session));
+
+        SessionStateView state = sessionService.getActiveSessionForCampaign(1L, dmId);
+
+        assertThat(state).isNull(); // expired → treated as "no active session"
+        assertThat(session.getStatus()).isEqualTo(SessionStatus.ENDED);
+        verify(sessionRollRepository).deleteBySessionId(1L);
+    }
+
+    private static SessionRoll rollRow(Long id, Long participantId, UUID ownerUserId, String displayName,
+                                       String breakdown, int grandTotal) {
+        SessionRoll r = new SessionRoll();
+        r.setId(id);
+        r.setSessionId(1L);
+        r.setParticipantId(participantId);
+        r.setOwnerUserId(ownerUserId);
+        r.setDisplayName(displayName);
+        r.setBreakdown(breakdown);
+        r.setGrandTotal(grandTotal);
+        return r;
     }
 
     private static int status(Throwable e) {
