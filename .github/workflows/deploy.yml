@@ -5,6 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# App Runner allows only one operation at a time; two merges landing
+# back-to-back made the second run's update-service fail with
+# InvalidStateException (OPERATION_IN_PROGRESS). Queue runs instead of
+# racing (never cancel — every merged SHA still deploys, in order).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 204318838594.dkr.ecr.us-east-1.amazonaws.com
@@ -53,6 +61,27 @@ jobs:
           docker push "$IMAGE_URI:${{ github.sha }}"
 
       # ── Deploy to App Runner ──────────────────────────────────────────────────
+
+      # Belt-and-braces with the concurrency group above: also covers operations
+      # started outside Actions (console deploys, Terraform applies).
+      - name: Wait for App Runner to be ready
+        run: |
+          echo "Ensuring no App Runner operation is in progress..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+              --query "Service.Status" \
+              --output text \
+              --region "$AWS_REGION")
+            echo "  [$i/30] Status: $STATUS"
+            if [ "$STATUS" != "OPERATION_IN_PROGRESS" ]; then
+              echo "Service is stable ($STATUS) — proceeding."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Timed out after 10 minutes waiting for the previous operation."
+          exit 1
 
       - name: Deploy to App Runner
         run: |
