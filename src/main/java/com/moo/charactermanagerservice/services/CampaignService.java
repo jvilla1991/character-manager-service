@@ -153,14 +153,16 @@ public class CampaignService {
     }
 
     /**
-     * Give a character joining a survival campaign its starting Rations box and
-     * Waterskin (5 charges each) unless already seeded — the {@code seeded} flag
-     * on the survival state prevents a re-grant after the supplies are consumed.
+     * Give a character joining a survival campaign its starting kit (1 ration
+     * box, 1 waterskin, 5 rations, 5 water) unless already seeded — the
+     * {@code seeded} flag on the survival state prevents a re-grant after the
+     * supplies are consumed. Legacy supply lines are container-normalized first.
      */
     private void seedSurvivalSupplies(PC pc) {
         java.util.Map<String, Object> survival = json.parseObject(pc.getSurvival());
         if (Boolean.TRUE.equals(survival.get("seeded"))) return;
         java.util.List<java.util.Map<String, Object>> inventory = json.parse(pc.getInventory());
+        SurvivalSupplies.normalize(inventory);
         SurvivalSupplies.seed(inventory);
         survival.put("seeded", true);
         pc.setInventory(json.write(inventory));
