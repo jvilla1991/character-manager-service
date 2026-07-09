@@ -326,6 +326,62 @@ class ShopServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
+    // --- purchase: ration container cap ---
+
+    @Test
+    void purchase_rations_refusedBeyondRationBoxCapacity() {
+        shop.setCategory("GEAR");
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("rations")).thenReturn(Optional.of(rations()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":10}",
+                "[{\"catalogKey\":\"ration-box\",\"qty\":1},{\"catalogKey\":\"rations\",\"qty\":4}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        // 1 box = capacity 5; carrying 4, buying 2 would overflow
+        assertThatThrownBy(() -> shopService.purchase(1L, 7L, "rations", 2, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    assertThat(status(e)).isEqualTo(400);
+                    assertThat(((ResponseStatusException) e).getReason()).contains("ration box");
+                });
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void purchase_rations_fillsUpToCapacity_countingTheLegacyImpliedBox() {
+        shop.setCategory("GEAR");
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("rations")).thenReturn(Optional.of(rations()));
+        // Legacy pc: rations but no ration-box line — normalization implies one box.
+        PC pc = pcOwnedBy(playerId, "{\"gp\":10}", "[{\"catalogKey\":\"rations\",\"qty\":3}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "rations", 2, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(20L); // 2 × 1 sp
+        assertThat(result.inventory())
+                .anySatisfy(l -> assertThat(l).containsEntry("catalogKey", "rations").containsEntry("qty", 5))
+                .anySatisfy(l -> assertThat(l).containsEntry("catalogKey", "ration-box").containsEntry("qty", 1));
+    }
+
+    @Test
+    void purchase_rationBox_alwaysAllowed_evenWhenRationsAreFull() {
+        shop.setCategory("GEAR");
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("ration-box")).thenReturn(Optional.of(rationBox()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":10}",
+                "[{\"catalogKey\":\"ration-box\",\"qty\":1},{\"catalogKey\":\"rations\",\"qty\":5}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, "ration-box", 1, playerId);
+
+        // The container purchase raises capacity 5 → 10.
+        assertThat(result.inventory())
+                .anySatisfy(l -> assertThat(l).containsEntry("catalogKey", "ration-box").containsEntry("qty", 2));
+    }
+
     // --- sell ---
 
     @Test
@@ -632,6 +688,28 @@ class ShopServiceTest {
 
     private static int status(Throwable e) {
         return ((ResponseStatusException) e).getStatusCode().value();
+    }
+
+    private static SrdItem rations() {
+        SrdItem item = new SrdItem();
+        item.setId(2L);
+        item.setItemKey("rations");
+        item.setName("Rations (1 day)");
+        item.setCategory("GEAR");
+        item.setCostCp(10L); // V30 reprice: 1 sp per serving
+        item.setDetails("{}");
+        return item;
+    }
+
+    private static SrdItem rationBox() {
+        SrdItem item = new SrdItem();
+        item.setId(3L);
+        item.setItemKey("ration-box");
+        item.setName("Ration box");
+        item.setCategory("GEAR");
+        item.setCostCp(50L);
+        item.setDetails("{}");
+        return item;
     }
 
     private static SrdItem longsword() {

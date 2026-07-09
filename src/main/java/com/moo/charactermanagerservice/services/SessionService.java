@@ -724,12 +724,16 @@ public class SessionService {
         Map<String, Object> survival = json.parseObject(pc.getSurvival());
         List<Map<String, Object>> inventory = json.parse(pc.getInventory());
 
+        // Container model: migrate legacy supply lines (implied box; waterskin
+        // qty was the water charges), then seed the starting kit once.
+        SurvivalSupplies.normalize(inventory);
         if (!Boolean.TRUE.equals(survival.get("seeded"))) {
             SurvivalSupplies.seed(inventory);
         }
         boolean supplyStep = SurvivalRules.isSupplyStep(segment);
         boolean ate = supplyStep && SurvivalSupplies.tryConsume(inventory, "rations");
-        boolean drank = supplyStep && SurvivalSupplies.tryConsume(inventory, "waterskin");
+        // Water is drunk from the 'water' charge line — never from the skin itself.
+        boolean drank = supplyStep && SurvivalSupplies.tryConsume(inventory, "water");
 
         Map<String, Object> next = SurvivalRules.applySegment(survival, segment, ate, drank);
         next.put("seeded", true);
