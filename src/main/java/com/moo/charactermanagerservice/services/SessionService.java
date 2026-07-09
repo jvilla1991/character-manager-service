@@ -2,7 +2,9 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
+import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.ParticipantView;
+import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
@@ -14,6 +16,7 @@ import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
@@ -21,6 +24,7 @@ import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
@@ -72,6 +76,7 @@ public class SessionService {
     private final EncounterRepository encounterRepository;
     private final EncounterCreatureRepository encounterCreatureRepository;
     private final PcActivityLogService activityLogService;
+    private final SessionRollRepository sessionRollRepository;
     private final PcJsonColumns json;
 
     @Autowired
@@ -86,6 +91,7 @@ public class SessionService {
                           EncounterRepository encounterRepository,
                           EncounterCreatureRepository encounterCreatureRepository,
                           PcActivityLogService activityLogService,
+                          SessionRollRepository sessionRollRepository,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -98,6 +104,7 @@ public class SessionService {
         this.encounterRepository = encounterRepository;
         this.encounterCreatureRepository = encounterCreatureRepository;
         this.activityLogService = activityLogService;
+        this.sessionRollRepository = sessionRollRepository;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -106,6 +113,7 @@ public class SessionService {
      * (enforced by {@link CampaignService#findByIdForDm}). Fails with 409 if a
      * non-ended session already exists for the campaign.
      */
+    @Transactional
     public SessionStateView createSession(Long campaignId, UUID dmUserId) {
         // Asserts the campaign exists (404) and the caller is its DM (403).
         campaignService.findByIdForDm(campaignId, dmUserId);
@@ -158,6 +166,7 @@ public class SessionService {
      * than {@link #getState}, so a player can discover and join a session before
      * they have a participant row.
      */
+    @Transactional
     public SessionStateView getActiveSessionForCampaign(Long campaignId, UUID userId) {
         Campaign campaign = campaignService.findById(campaignId);
         boolean isDm = userId.equals(campaign.getDmUserId());
@@ -181,9 +190,7 @@ public class SessionService {
         return sessionRepository.findByCampaignIdAndStatusNot(campaignId, SessionStatus.ENDED)
                 .filter(session -> {
                     if (isExpired(session)) {
-                        session.setStatus(SessionStatus.ENDED);
-                        session.bumpVersion();
-                        sessionRepository.save(session);
+                        endSessionInternal(session);
                         return false;
                     }
                     return true;
@@ -1164,14 +1171,136 @@ public class SessionService {
     }
 
     /** End the session. DM only. HP/conditions are already persisted on the PCs. */
+    @Transactional
     public SessionStateView endSession(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
 
+        CombatSession saved = endSessionInternal(session);
+        return buildState(saved, dmUserId);
+    }
+
+    /**
+     * Shared end-of-session transition: flip to ENDED, bump the version, and
+     * purge the ephemeral roll log. Used by both the DM's explicit
+     * {@link #endSession} and the lazy TTL-expiry branch inside
+     * {@link #activeSession} — the roll log must be purged on BOTH paths to
+     * ENDED, or a TTL-auto-ended session's rows silently accumulate forever
+     * (the ON DELETE CASCADE backstop only fires on campaign deletion).
+     */
+    private CombatSession endSessionInternal(CombatSession session) {
         session.setStatus(SessionStatus.ENDED);
         session.bumpVersion();
         CombatSession saved = sessionRepository.save(session);
-        return buildState(saved, dmUserId);
+        sessionRollRepository.deleteBySessionId(session.getId());
+        return saved;
+    }
+
+    /** Dice roll die sizes the client may log — mirrors the modal's palette. */
+    private static final Set<Integer> VALID_DIE_SIDES = Set.of(4, 6, 8, 10, 12, 20, 100);
+
+    /**
+     * Log a roll made during a live session — from the in-sheet dice modal or
+     * the Session Mode Roll button. The client has already rolled (the flight
+     * animation reveals pre-computed results); this validates and stores them,
+     * computing the grand total server-side so a tampered client total can't
+     * ride along. Caller must be the DM or the owner of the named participant
+     * — tighter than {@link #getState}'s "any session member" check, since a
+     * roll must be attributed to one specific combatant.
+     */
+    public SessionStateView logRoll(Long sessionId, Long participantId, LogRollRequest request, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        SessionParticipant participant = requireParticipant(sessionId, participantId);
+
+        boolean isDm = userId.equals(session.getDmUserId());
+        if (!isDm && !userId.equals(participant.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        if (request == null || request.groups() == null || request.groups().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "groups is required");
+        }
+        int grandTotal = 0;
+        for (LogRollRequest.DieGroup group : request.groups()) {
+            if (group.sides() == null || !VALID_DIE_SIDES.contains(group.sides())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid die size");
+            }
+            if (group.rolls() == null || group.rolls().isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "rolls is required");
+            }
+            for (Integer roll : group.rolls()) {
+                if (roll == null || roll < 1 || roll > group.sides()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "Roll value out of range for d" + group.sides());
+                }
+                grandTotal += roll;
+            }
+        }
+
+        SessionRoll roll = new SessionRoll();
+        roll.setSessionId(sessionId);
+        roll.setParticipantId(participantId);
+        roll.setOwnerUserId(userId);
+        roll.setDisplayName(rollerDisplayName(participant));
+        roll.setBreakdown(writeGroups(request.groups()));
+        roll.setGrandTotal(grandTotal);
+        sessionRollRepository.save(roll);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, userId);
+    }
+
+    /** The roller's display name for the log: the PC's canonical name, or the NPC display name. */
+    private String rollerDisplayName(SessionParticipant participant) {
+        if (participant.getPcId() != null) {
+            return pcService.findPCById(participant.getPcId()).getName();
+        }
+        return participant.getDisplayName();
+    }
+
+    /** Serialize logged die groups to the {@code session_roll.breakdown} TEXT column. */
+    private String writeGroups(List<LogRollRequest.DieGroup> groups) {
+        List<Map<String, Object>> asMaps = groups.stream().map(g -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("sides", g.sides());
+            m.put("rolls", g.rolls());
+            return m;
+        }).toList();
+        return json.write(asMaps);
+    }
+
+    /** Parse the stored breakdown JSON back into typed view groups, computing each subtotal. */
+    @SuppressWarnings("unchecked")
+    private List<SessionRollView.DieGroupView> parseGroups(String breakdown) {
+        List<Map<String, Object>> parsed = json.parse(breakdown);
+        List<SessionRollView.DieGroupView> views = new ArrayList<>();
+        for (Map<String, Object> m : parsed) {
+            Integer sides = m.get("sides") instanceof Number n ? n.intValue() : null;
+            List<Integer> rolls = ((List<Object>) m.getOrDefault("rolls", List.of())).stream()
+                    .map(o -> o instanceof Number n ? n.intValue() : 0)
+                    .toList();
+            int subtotal = rolls.stream().mapToInt(Integer::intValue).sum();
+            views.add(new SessionRollView.DieGroupView(sides, rolls, subtotal));
+        }
+        return views;
+    }
+
+    /** Project a stored roll row into its per-viewer view, with {@code mine} resolved. */
+    private SessionRollView toRollView(SessionRoll r, UUID requesterId) {
+        return new SessionRollView(
+                r.getId(),
+                r.getParticipantId(),
+                r.getDisplayName(),
+                requesterId.equals(r.getOwnerUserId()),
+                parseGroups(r.getBreakdown()),
+                r.getGrandTotal(),
+                r.getCreatedAt()
+        );
     }
 
     // --- internals ---
@@ -1272,6 +1401,17 @@ public class SessionService {
         // client can render the weekday dropdown and week field.
         List<String> weekDays = campaignService.parseWeekDays(campaign);
 
+        // Roll Log feed: newest-first, capped at 50, filtered per viewer (DM
+        // sees all; a player sees only their own). One extra indexed LIMIT-50
+        // query per non-204 poll — the sinceVersion short-circuit means idle
+        // polling never reaches this line, so it's naturally throttled.
+        List<SessionRoll> rollRows =
+                sessionRollRepository.findTop50BySessionIdOrderByCreatedAtDescIdDesc(session.getId());
+        List<SessionRollView> rolls = rollRows.stream()
+                .filter(r -> isDm || requesterId.equals(r.getOwnerUserId()))
+                .map(r -> toRollView(r, requesterId))
+                .toList();
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -1290,7 +1430,8 @@ public class SessionService {
                 gameTime,
                 location,
                 weekDays,
-                views
+                views,
+                rolls
         );
     }
 

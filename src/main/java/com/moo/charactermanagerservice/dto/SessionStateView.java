@@ -45,6 +45,12 @@ import java.util.Map;
  * <p>{@code weekDays} is the campaign's defined week — the ordered weekday
  * names the clock walks on each night → morning rollover — or null when the
  * DM never defined one (free-text weekdays, repetition counts weeks).
+ *
+ * <p>{@code rolls} is the Roll Log panel's feed — newest-first, capped at 50.
+ * The DM sees every roll made this session; a player sees only their own
+ * ({@code SessionRollView.mine} is also set so the DM's all-rolls view can
+ * style "your roll" differently). The log is ephemeral: purged wholesale when
+ * the session ends (explicit delete, not a DB cascade-on-status-change).
  */
 public record SessionStateView(
         Long sessionId,
@@ -64,5 +70,6 @@ public record SessionStateView(
         Map<String, Object> gameTime,
         Map<String, Object> location,
         List<String> weekDays,
-        List<ParticipantView> participants
+        List<ParticipantView> participants,
+        List<SessionRollView> rolls
 ) {}
