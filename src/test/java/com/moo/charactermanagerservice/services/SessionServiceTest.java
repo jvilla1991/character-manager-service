@@ -84,7 +84,7 @@ class SessionServiceTest {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
                 shopAttendeeRepository, lootRepository, lootItemRepository, pcRepository, pcService,
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
-                activityLogService, new ObjectMapper());
+                activityLogService, sessionRollRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
