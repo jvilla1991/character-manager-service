@@ -56,13 +56,17 @@ final class InventoryEntries {
     /**
      * Build a free-hand item line (custom loot: magic items, trophies). Never
      * stacked — each custom line is its own entry, since two "Cloak of
-     * Elvenkind"s are not interchangeable the way two longswords are.
+     * Elvenkind"s are not interchangeable the way two longswords are. Bulk is
+     * stamped exactly like every other acquisition (weight-band fallback — no
+     * weight means 1, "a small object"), so a claimed custom item totals the
+     * same slots a granted or converted one would.
      */
     static Map<String, Object> newCustomEntry(String name, int qty, String notes) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("name", name);
         entry.put("category", "gear");
         entry.put("qty", qty);
+        entry.put("bulk", BulkRules.bulkFor(null, null));
         if (notes != null && !notes.isBlank()) entry.put("notes", notes.trim());
         return entry;
     }
