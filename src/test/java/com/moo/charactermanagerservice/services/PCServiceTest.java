@@ -441,6 +441,7 @@ class PCServiceTest {
 
     @Test
     void levelUpPC_appliesRulesAndSaves_whenOwner() {
+        pc.setXp(1_000_000); // past every threshold — the XP gate is exercised separately
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
@@ -454,6 +455,7 @@ class PCServiceTest {
     @Test
     void levelUpPC_logsTheNewLevel() {
         pc.setLevel((short) 4);
+        pc.setXp(1_000_000);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
@@ -464,6 +466,7 @@ class PCServiceTest {
 
     @Test
     void levelUpPC_passesChoicesToRulesEngine() {
+        pc.setXp(1_000_000);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
@@ -475,6 +478,7 @@ class PCServiceTest {
 
     @Test
     void levelUpPC_forwardsRollHpMode() {
+        pc.setXp(1_000_000);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
@@ -485,6 +489,7 @@ class PCServiceTest {
 
     @Test
     void levelUpPC_nullHpMode_defaultsToAverage() {
+        pc.setXp(1_000_000);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
@@ -505,6 +510,104 @@ class PCServiceTest {
 
         verify(levelUpService, never()).applyLevelUp(any(), any(), any(), any(), any());
         verify(pcRepository, never()).save(any());
+    }
+
+    // --- level-up gate + DM grant ---
+
+    @Test
+    void levelUpPC_throws409_withoutXpOrGrant() {
+        // level 1, xp 0, no grant — the gate blocks the level-up.
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        assertThatThrownBy(() -> pcService.levelUpPC(1L, ownerId, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void levelUpPC_allowedByXpThreshold() {
+        pc.setLevel((short) 1);
+        pc.setXp(300); // exactly the L2 threshold
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, null);
+
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPC_allowedByDmGrant_andConsumesIt() {
+        pc.setLevel((short) 3);
+        pc.setXp(0);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, null);
+
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
+        assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
+    }
+
+    @Test
+    void setLevelGrant_byCampaignDm_setsTheFlag_andLogs() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        PC result = pcService.setLevelGrant(1L, true, dmId);
+
+        assertThat(result.getPendingLevelGrant()).isTrue();
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM granted a level-up", dmId);
+    }
+
+    @Test
+    void setLevelGrant_revoke_logsTheRevocation() {
+        pc.setCampaignId(7L);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        PC result = pcService.setLevelGrant(1L, false, dmId);
+
+        assertThat(result.getPendingLevelGrant()).isFalse();
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM revoked the granted level-up", dmId);
+    }
+
+    @Test
+    void setLevelGrant_throws403_whenCallerIsNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.setLevelGrant(1L, true, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_neverChangesThePendingLevelGrant() {
+        // Server-owned: even a body echoing a stale value can't flip the flag.
+        pc.setCampaignId(7L);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setPendingLevelGrant(false); // stale client echo
+
+        PC saved = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(saved.getPendingLevelGrant()).isTrue();
     }
 
     // --- previewLevelUp ---
