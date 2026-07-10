@@ -12,7 +12,11 @@ import java.util.Map;
  * {@code activeParticipantId} is the stable turn pointer — the participant whose
  * turn it is — and is null unless the encounter is ACTIVE.
  *
- * <p>Visibility is resolved server-side, per viewer, in one place: when the DM
+ * <p>Visibility is resolved server-side, per viewer, in one place. {@code
+ * enemyHpHidden} is the middle state — enemies visible but their health
+ * withheld: a player's enemy rows arrive with the HP fields nulled (the values
+ * never leave the server); the DM's rows always carry full health. It is
+ * ignored while {@code enemiesHidden} is true. When the DM
  * hides enemies, a player's {@code participants} list omits enemy rows entirely
  * (their names and initiatives never leave the server), {@code
  * activeParticipantId} is null while the turn sits on a combatant the viewer
@@ -70,6 +74,7 @@ public record SessionStateView(
         Long version,
         boolean dm,
         boolean enemiesHidden,
+        boolean enemyHpHidden,
         String turnSound,
         boolean shopOpen,
         boolean shopForMe,
