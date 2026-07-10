@@ -1198,7 +1198,7 @@ public class SessionService {
      */
     private CombatSession endSessionInternal(CombatSession session) {
         // Unclaimed loot is discarded — the pool never outlives its session.
-        lootRepository.findBySessionId(sessionId).ifPresent(pool -> {
+        lootRepository.findBySessionId(session.getId()).ifPresent(pool -> {
             lootItemRepository.deleteBySessionLootId(pool.getId());
             lootRepository.delete(pool);
         });
