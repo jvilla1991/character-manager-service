@@ -28,6 +28,14 @@ import java.util.Map;
  * then fetches the full catalog from {@code GET /session/{id}/shop}. Non-targeted
  * players see {@code shopForMe = false} and render nothing.
  *
+ * <p>{@code lootStatus} is the analogous caller-scoped signal for post-combat
+ * loot: null when there is no pool (or the caller may not see it), "DRAFT" for
+ * the DM while the pool is an unpublished draft, "DROPPED" once players can
+ * claim (sent to the DM and to seated players). The pool itself is fetched from
+ * {@code GET /session/{id}/loot}; clients must re-fetch on every version change
+ * while a status is set, since claims change the pool under a stable status.
+ * {@code lootName} is the drop's label for the panel header.
+ *
  * <p>{@code myXp} is deliberately caller-scoped rather than living on
  * {@link ParticipantView} (which is broadcast to every participant): it carries
  * the requester's own seated PC's current XP total so their sheet can update
@@ -45,6 +53,12 @@ import java.util.Map;
  * <p>{@code weekDays} is the campaign's defined week — the ordered weekday
  * names the clock walks on each night → morning rollover — or null when the
  * DM never defined one (free-text weekdays, repetition counts weeks).
+ *
+ * <p>{@code rolls} is the Roll Log panel's feed — newest-first, capped at 50.
+ * The DM sees every roll made this session; a player sees only their own
+ * ({@code SessionRollView.mine} is also set so the DM's all-rolls view can
+ * style "your roll" differently). The log is ephemeral: purged wholesale when
+ * the session ends (explicit delete, not a DB cascade-on-status-change).
  */
 public record SessionStateView(
         Long sessionId,
@@ -60,9 +74,12 @@ public record SessionStateView(
         boolean shopOpen,
         boolean shopForMe,
         String shopCategory,
+        String lootStatus,
+        String lootName,
         Integer myXp,
         Map<String, Object> gameTime,
         Map<String, Object> location,
         List<String> weekDays,
-        List<ParticipantView> participants
+        List<ParticipantView> participants,
+        List<SessionRollView> rolls
 ) {}

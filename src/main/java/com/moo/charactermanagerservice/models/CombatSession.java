@@ -86,4 +86,5 @@ public class CombatSession implements Serializable {
     public void setVersion(Long version) { this.version = version; }
     public void setEnemiesHidden(Boolean enemiesHidden) { this.enemiesHidden = enemiesHidden; }
     public void setTurnSound(String turnSound) { this.turnSound = turnSound; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

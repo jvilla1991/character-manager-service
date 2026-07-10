@@ -10,6 +10,7 @@ import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
+import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.SetSoundRequest;
@@ -273,6 +274,23 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.castSpell(
                 id, request.pcId(), request.spellName(), request.atLevel(), user.getUuid()));
+    }
+
+    /**
+     * Log a roll made during a live session (from the in-sheet dice modal or
+     * the Session Mode Roll button). Caller must be the DM or own the named
+     * participant. The server does not re-roll — it validates and stores the
+     * client's already-computed results, then bumps the session version so the
+     * Roll Log panel picks it up on the next poll.
+     */
+    @PostMapping("/session/{id}/participants/{participantId}/rolls")
+    public ResponseEntity<SessionStateView> logRoll(@PathVariable Long id,
+                                                    @PathVariable Long participantId,
+                                                    @RequestBody LogRollRequest request,
+                                                    Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                sessionService.logRoll(id, participantId, request, user.getUuid()));
     }
 
     /** DM ends the session. */
