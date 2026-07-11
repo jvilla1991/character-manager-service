@@ -769,7 +769,7 @@ class SessionServiceTest {
         when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
                 .thenReturn(new ArrayList<>());
 
-        SessionStateView state = sessionService.setVisibility(1L, false, dmId);
+        SessionStateView state = sessionService.setVisibility(1L, false, null, dmId);
 
         assertThat(session.getEnemiesHidden()).isFalse();
         assertThat(state.enemiesHidden()).isFalse();
@@ -780,7 +780,7 @@ class SessionServiceTest {
     void setVisibility_throws403_whenNotDm() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.setVisibility(1L, false, playerId))
+        assertThatThrownBy(() -> sessionService.setVisibility(1L, false, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
@@ -962,7 +962,7 @@ class SessionServiceTest {
     }
 
     @Test
-    void advanceTime_intoNight_seedsSuppliesThenAutoEats_holdingHungerThirst() {
+    void advanceTime_intoNight_seedsSupplies_andRaisesHungerThirstFatigue() {
         campaign.setVariantRules("{\"survivalConditions\":true}");
         campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
@@ -974,34 +974,36 @@ class SessionServiceTest {
         sessionService.advanceTime(1L, dmId);
 
         assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"night\"");
-        // fed from the just-seeded supplies → hunger/thirst held, only fatigue climbs
+        // Night is a dawn/night boundary: all three stages climb. Supplies are
+        // no longer eaten automatically — relief is the explicit consume flow.
         assertThat(member.getSurvival())
-                .contains("\"hunger\":2").contains("\"thirst\":2").contains("\"fatigue\":3")
+                .contains("\"hunger\":3").contains("\"thirst\":3").contains("\"fatigue\":3")
                 .contains("\"seeded\":true");
-        // Starting kit seeded (1 box, 1 skin, 5 rations, 5 water); 1 ration and
-        // 1 water eaten/drunk this night → 4 charges left in each container.
+        // Starting kit seeded (1 box, 1 skin, 5 rations, 5 water) and untouched.
         assertThat(member.getInventory())
                 .contains("\"catalogKey\":\"rations\"").contains("\"catalogKey\":\"waterskin\"")
                 .contains("\"catalogKey\":\"ration-box\"").contains("\"catalogKey\":\"water\"")
-                .contains("\"qty\":4");
+                .contains("\"qty\":5");
     }
 
     @Test
-    void advanceTime_whenSuppliesRunOut_raisesHungerAndThirst() {
+    void advanceTime_appliesBothDailyBumps_acrossAFullDay() {
+        // Dawn AND night each give +1 hunger +1 thirst — a full day of advances
+        // (noon → night → next morning) applies both boundaries.
         campaign.setVariantRules("{\"survivalConditions\":true}");
         campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         PC member = pc(7L, "Gorath", 0);
-        // already seeded, but the boxes are empty — nothing left to eat
-        member.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":2,\"seeded\":true}");
+        member.setSurvival("{\"hunger\":0,\"thirst\":0,\"fatigue\":0,\"seeded\":true}");
         member.setInventory("[]");
         when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(member));
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(member));
 
-        sessionService.advanceTime(1L, dmId); // → night
+        sessionService.advanceTime(1L, dmId); // noon → night (+1 H/T, +1 F)
+        sessionService.advanceTime(1L, dmId); // night → morning (+1 H/T)
 
         assertThat(member.getSurvival())
-                .contains("\"hunger\":3").contains("\"thirst\":3").contains("\"fatigue\":3");
+                .contains("\"hunger\":2").contains("\"thirst\":2").contains("\"fatigue\":1");
         assertThat(member.getInventory()).doesNotContain("rations"); // seeded flag blocks a refill
     }
 
@@ -1031,6 +1033,125 @@ class SessionServiceTest {
 
         assertThat(campaign.getGameTime())
                 .contains("\"day\":\"Midwinter\"").contains("\"timeOfDay\":\"morning\"");
+    }
+
+    // --- consumeSurvival (player Eat/Drink/Sleep relief) ---
+
+    private PC survivalPc(String survival, String inventory) {
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setSurvival(survival);
+        pc.setInventory(inventory);
+        return pc;
+    }
+
+    private void seatConsumer(PC pc) {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+    }
+
+    @Test
+    void consume_eat_decrementsARationCharge_andRelievesHunger() {
+        PC pc = survivalPc("{\"hunger\":4,\"thirst\":2,\"fatigue\":1,\"seeded\":true}",
+                "[{\"catalogKey\":\"rations\",\"name\":\"Rations (1 day)\",\"qty\":2}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.survival()).containsEntry("hunger", 3).containsEntry("seeded", true);
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1);
+        assertThat(pc.getSurvival()).contains("\"hunger\":3");
+        verify(pcRepository).save(pc);
+        verify(sessionRepository).save(session); // version bumped for every viewer
+    }
+
+    @Test
+    void consume_eat_keepsTheLine_atZeroCharges() {
+        // Container model: an emptied charge line persists at qty 0 for refills.
+        PC pc = survivalPc("{\"hunger\":1,\"thirst\":0,\"fatigue\":0}",
+                "[{\"catalogKey\":\"rations\",\"qty\":1}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(0);
+    }
+
+    @Test
+    void consume_eat_withoutRations_stillRelievesHunger() {
+        PC pc = survivalPc("{\"hunger\":4,\"thirst\":0,\"fatigue\":0}", "[]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "EAT", playerId);
+
+        assertThat(result.survival()).containsEntry("hunger", 3);
+        assertThat(result.inventory()).isEmpty();
+    }
+
+    @Test
+    void consume_drink_decrementsAWaterCharge_neverTheSkin_andSkipsDroppedLines() {
+        PC pc = survivalPc("{\"hunger\":0,\"thirst\":5,\"fatigue\":0}",
+                "[{\"catalogKey\":\"waterskin\",\"qty\":1},"
+                        + "{\"catalogKey\":\"water\",\"qty\":2,\"status\":\"dropped\"},"
+                        + "{\"catalogKey\":\"water\",\"qty\":3}]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "DRINK", playerId);
+
+        assertThat(result.survival()).containsEntry("thirst", 4);
+        assertThat(result.inventory().get(0).get("qty")).isEqualTo(1); // skin untouched
+        assertThat(result.inventory().get(1).get("qty")).isEqualTo(2); // dropped line untouched
+        assertThat(result.inventory().get(2).get("qty")).isEqualTo(2);
+    }
+
+    @Test
+    void consume_sleep_adjustsFatigueOnly_flooredAtZero() {
+        PC pc = survivalPc("{\"hunger\":2,\"thirst\":2,\"fatigue\":2}", "[]");
+        seatConsumer(pc);
+
+        var result = sessionService.consumeSurvival(1L, 7L, "SLEEP_GOOD", playerId);
+
+        assertThat(result.survival())
+                .containsEntry("fatigue", 0)  // −3 floored
+                .containsEntry("hunger", 2);
+    }
+
+    @Test
+    void consume_throws409_whenTheCampaignHasNoSurvivalVariant() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // no variant rules
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void consume_throws403_whenThePcIsNotSeated() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void consume_throws403_forSomeoneElsesCharacter() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        assertThatThrownBy(() -> sessionService.consumeSurvival(1L, 7L, "EAT", strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
 
     @Test
@@ -1523,6 +1644,99 @@ class SessionServiceTest {
 
         assertThat(pc.getHpCurrent()).isZero();
         assertThat(pc.getSurvival()).isNull();
+    }
+
+    // --- applyDamage: a defeated enemy leaves the initiative order ---
+
+    private SessionParticipant enemy(Long id, int hpMax, int hpCurrent) {
+        SessionParticipant e = participant(id, null);
+        e.setDisplayName("Goblin");
+        e.setNpcHpMax((short) hpMax);
+        e.setNpcHpCurrent((short) hpCurrent);
+        return e;
+    }
+
+    @Test
+    void damage_killingAnEnemy_removesItFromTheOrder_withoutTouchingThePointer() {
+        SessionParticipant goblin = enemy(6L, 10, 4);
+        SessionParticipant hero = participant(5L, 7L);
+        session.setCurrentTurnParticipantId(5L); // someone else's turn
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(6L)).thenReturn(Optional.of(goblin));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(hero)));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc(7L, "Hero", 0)));
+
+        sessionService.applyDamage(1L, 6L, 4, dmId);
+
+        verify(participantRepository).delete(goblin);
+        verify(participantRepository, never()).save(goblin);
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(5L);
+    }
+
+    @Test
+    void damage_killingTheActiveEnemy_advancesThePointerBeforeRemoval() {
+        SessionParticipant goblin = enemy(6L, 10, 3);
+        goblin.setOrderIndex((short) 0);
+        SessionParticipant hero = participant(5L, 7L);
+        hero.setOrderIndex((short) 1);
+        session.setCurrentTurnParticipantId(6L); // the dying goblin holds the turn
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(6L)).thenReturn(Optional.of(goblin));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(goblin, hero)));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc(7L, "Hero", 0)));
+
+        sessionService.applyDamage(1L, 6L, 5, dmId);
+
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(5L);
+        verify(participantRepository).delete(goblin);
+    }
+
+    @Test
+    void damage_killingTheOnlyCombatant_clearsThePointer() {
+        SessionParticipant goblin = enemy(6L, 10, 2);
+        session.setCurrentTurnParticipantId(6L);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(6L)).thenReturn(Optional.of(goblin));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(goblin)))  // pointer check
+                .thenReturn(new ArrayList<>());                // buildState after delete
+        sessionService.applyDamage(1L, 6L, 2, dmId);
+
+        assertThat(session.getCurrentTurnParticipantId()).isNull();
+        verify(participantRepository).delete(goblin);
+    }
+
+    @Test
+    void damage_woundedEnemy_staysInTheOrder() {
+        SessionParticipant goblin = enemy(6L, 10, 8);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(6L)).thenReturn(Optional.of(goblin));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(goblin)));
+
+        sessionService.applyDamage(1L, 6L, 3, dmId);
+
+        assertThat(goblin.getNpcHpCurrent()).isEqualTo((short) 5);
+        verify(participantRepository).save(goblin);
+        verify(participantRepository, never()).delete(any(SessionParticipant.class));
+    }
+
+    @Test
+    void damage_droppingAPcToZero_keepsThePcInTheOrder() {
+        // PCs at 0 HP stay seated (dying / death saves) — removal is enemies only.
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 3);
+        pc.setHpMax((short) 10);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 5, dmId);
+
+        assertThat(pc.getHpCurrent()).isZero();
+        verify(participantRepository, never()).delete(any(SessionParticipant.class));
     }
 
     // --- logRoll ---

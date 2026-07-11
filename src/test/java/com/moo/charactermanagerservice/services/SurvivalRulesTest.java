@@ -1,12 +1,13 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.SurvivalAction;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
-/** Darker Dungeons ch. 31 stage math: the auto-consume day-segment and clamping. */
+/** Darker Dungeons ch. 31 stage math: day-segment bumps, consume actions, clamping. */
 class SurvivalRulesTest {
 
     @Test
@@ -23,20 +24,10 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void morning_whenFed_holdsHungerAndThirst() {
-        // ate + drank → hunger/thirst do NOT rise; morning has no fatigue step
+    void morning_raisesHungerAndThirst() {
+        // The dawn boundary: +1 hunger, +1 thirst — no fatigue step.
         Map<String, Object> out =
-                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning", true, true);
-        assertThat(out)
-                .containsEntry("hunger", 2)
-                .containsEntry("thirst", 2)
-                .containsEntry("fatigue", 2);
-    }
-
-    @Test
-    void morning_whenOutOfSupplies_raisesHungerAndThirst() {
-        Map<String, Object> out =
-                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning", false, false);
+                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 2, "fatigue", 2), "morning");
         assertThat(out)
                 .containsEntry("hunger", 3)
                 .containsEntry("thirst", 3)
@@ -44,27 +35,27 @@ class SurvivalRulesTest {
     }
 
     @Test
-    void noon_raisesFatigueOnly_regardlessOfSupplies() {
-        assertThat(SurvivalRules.applySegment(Map.of(), "noon", false, false))
+    void noon_raisesFatigueOnly() {
+        assertThat(SurvivalRules.applySegment(Map.of(), "noon"))
                 .containsEntry("hunger", 2)
                 .containsEntry("thirst", 2)
                 .containsEntry("fatigue", 3);
     }
 
     @Test
-    void night_whenFed_stillRaisesFatigue_butHoldsHungerThirst() {
+    void night_raisesAllThree() {
         Map<String, Object> out =
-                SurvivalRules.applySegment(Map.of("hunger", 5, "thirst", 5, "fatigue", 5), "night", true, true);
+                SurvivalRules.applySegment(Map.of("hunger", 2, "thirst", 3, "fatigue", 5), "night");
         assertThat(out)
-                .containsEntry("hunger", 5)   // fed → held
-                .containsEntry("thirst", 5)
-                .containsEntry("fatigue", 6);  // fatigue always climbs (clamped at 6)
+                .containsEntry("hunger", 3)
+                .containsEntry("thirst", 4)
+                .containsEntry("fatigue", 6);
     }
 
     @Test
-    void night_whenStarving_raisesAllThree_clampedAtStarving() {
+    void night_clampsAtTheWorstStage() {
         Map<String, Object> out =
-                SurvivalRules.applySegment(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "night", false, false);
+                SurvivalRules.applySegment(Map.of("hunger", 6, "thirst", 5, "fatigue", 0), "night");
         assertThat(out)
                 .containsEntry("hunger", 6)
                 .containsEntry("thirst", 6)
@@ -74,20 +65,36 @@ class SurvivalRulesTest {
     @Test
     void applySegment_preservesExtraKeys_likeSeeded() {
         Map<String, Object> out = SurvivalRules.applySegment(
-                Map.of("hunger", 2, "thirst", 2, "fatigue", 2, "seeded", true), "noon", false, false);
+                Map.of("hunger", 2, "thirst", 2, "fatigue", 2, "seeded", true), "noon");
         assertThat(out).containsEntry("seeded", true);
     }
 
     @Test
-    void isSupplyStep_isTrueForMorningAndNight() {
-        assertThat(SurvivalRules.isSupplyStep("morning")).isTrue();
-        assertThat(SurvivalRules.isSupplyStep("night")).isTrue();
-        assertThat(SurvivalRules.isSupplyStep("noon")).isFalse();
+    void applyAction_improvesTheMatchingStage() {
+        Map<String, Object> stages = Map.of("hunger", 4, "thirst", 4, "fatigue", 4);
+        assertThat(SurvivalRules.applyAction(stages, SurvivalAction.EAT)).containsEntry("hunger", 3);
+        assertThat(SurvivalRules.applyAction(stages, SurvivalAction.DRINK)).containsEntry("thirst", 3);
+        assertThat(SurvivalRules.applyAction(stages, SurvivalAction.SLEEP_GOOD)).containsEntry("fatigue", 1);
+        assertThat(SurvivalRules.applyAction(stages, SurvivalAction.SLEEP_DISTURBED)).containsEntry("fatigue", 3);
+    }
+
+    @Test
+    void applyAction_preservesExtraKeys_likeSeeded() {
+        Map<String, Object> out = SurvivalRules.applyAction(
+                Map.of("hunger", 4, "thirst", 2, "fatigue", 2, "seeded", true), SurvivalAction.EAT);
+        assertThat(out).containsEntry("seeded", true).containsEntry("hunger", 3);
     }
 
     @Test
     void bump_appliesADeltaFlooredAndCapped() {
         assertThat(SurvivalRules.bump(Map.of("fatigue", 2), "fatigue", -3)).containsEntry("fatigue", 0);
         assertThat(SurvivalRules.bump(Map.of("fatigue", 5), "fatigue", -1)).containsEntry("fatigue", 4);
+    }
+
+    @Test
+    void bump_preservesExtraKeys_likeSeeded() {
+        assertThat(SurvivalRules.bump(Map.of("fatigue", 5, "seeded", true), "fatigue", -1))
+                .containsEntry("fatigue", 4)
+                .containsEntry("seeded", true);
     }
 }

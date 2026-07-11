@@ -68,4 +68,21 @@ public record ParticipantView(
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
         );
     }
+
+    /**
+     * A copy with the HP fields withheld — used for a player's enemy rows in
+     * the "see enemies, hide health" visibility state, so the values never
+     * enter that viewer's payload. Everything else (name, portrait, turn
+     * order, conditions) stays visible.
+     */
+    public ParticipantView withoutHp() {
+        return new ParticipantView(
+                participantId, pcId, npc, ownedByMe, currentTurn,
+                name, clazz, level, portraitTint, portraitInitials,
+                initiative, initRolled, dexModifier, orderIndex,
+                null, null, null, ac,
+                conditions, survival, spellSlots,
+                deathSaveSuccesses, deathSaveFailures
+        );
+    }
 }

@@ -48,6 +48,10 @@ public class PC implements Serializable {
     // stays the explicit player-driven flow. Defaults to 0 so inserts never send
     // null against the NOT NULL column (see V17).
     private Integer xp = 0;
+    // DM-granted level-up permission (V34): lets the player level once without
+    // meeting the XP threshold; cleared when the level-up is applied. Server-
+    // owned — generic update bodies never change it (preserveServerOwnedColumns).
+    private Boolean pendingLevelGrant = false;
     private String playerName;
     private UUID userId;
 
@@ -168,6 +172,7 @@ public class PC implements Serializable {
     public void setClazz(String clazz) { this.clazz = clazz; }
     public void setLevel(Short level) { this.level = level; }
     public void setXp(Integer xp) { this.xp = xp; }
+    public void setPendingLevelGrant(Boolean pendingLevelGrant) { this.pendingLevelGrant = pendingLevelGrant; }
     public void setPlayerName(String playerName) { this.playerName = playerName; }
     public void setUserId(UUID userId) { this.userId = userId; }
     public void setCampaignId(Long campaignId) { this.campaignId = campaignId; }

@@ -9,6 +9,7 @@ import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
+import com.moo.charactermanagerservice.progression.XpThresholds;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.PcNoteRepository;
@@ -74,11 +75,16 @@ public class PCService {
      * advancement, consuming rations); a full-entity update body that omits them
      * must not wipe those changes. Clients adjust survival by sending it — they
      * can never clear it to NULL, which nothing legitimately does.
+     *
+     * <p>The pending level grant is fully server-owned: only the DM's grant
+     * endpoint sets it and only an applied level-up clears it, so a generic
+     * update body (even one echoing a stale value) never changes it.
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
         }
+        incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
     }
 
     /**
@@ -167,20 +173,52 @@ public class PCService {
      * selection), never computed stats. {@code @Transactional} keeps the load-modify-save atomic
      * so a level can't be applied twice from a single request.
      *
+     * <p>Gated: a level-up is allowed only when the character's XP has crossed
+     * the next 2024 PHB threshold ({@link XpThresholds}) OR the campaign's DM
+     * granted a pending level-up. Applying the level-up consumes the grant.
+     *
      * @param request the player's level-up choices (subclass, ASI), or {@code null} when none
      */
     @Transactional
     public PC levelUpPC(Long id, UUID userId, LevelUpRequest request) {
         PC pc = findPCByIdForUser(id, userId);
+        boolean granted = Boolean.TRUE.equals(pc.getPendingLevelGrant());
+        boolean earned = XpThresholds.isReadyToLevel(
+                pc.getLevel() == null ? 1 : pc.getLevel(), pc.getXp() == null ? 0 : pc.getXp());
+        if (!granted && !earned) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Not enough XP to level up — reach the next threshold or ask your DM to grant a level");
+        }
         String subclass = request == null ? null : request.subclass();
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
         String feat = request == null ? null : request.feat();
         List<Map<String, Object>> newSpells = request == null ? null : request.newSpells();
         HpMode hpMode = request == null || request.hpMode() == null ? HpMode.AVERAGE : request.hpMode();
         levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode);
+        pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
                 "Leveled up to " + saved.getLevel(), userId);
+        return saved;
+    }
+
+    /**
+     * DM grants (or revokes) a pending level-up for a campaign member —
+     * authorized by campaign-DM ownership like {@link #updatePCAsDm}. The flag
+     * lets the player level once without meeting the XP threshold and is
+     * cleared when the level-up is applied.
+     */
+    @Transactional
+    public PC setLevelGrant(Long id, boolean granted, UUID dmUserId) {
+        PC pc = findPCById(id);
+        assertCampaignDm(pc, dmUserId);
+        boolean was = Boolean.TRUE.equals(pc.getPendingLevelGrant());
+        pc.setPendingLevelGrant(granted);
+        PC saved = pcRepository.save(pc);
+        if (granted != was) {
+            activityLogService.log(saved.getId(), PcActivityType.DM_EDIT,
+                    granted ? "DM granted a level-up" : "DM revoked the granted level-up", dmUserId);
+        }
         return saved;
     }
 

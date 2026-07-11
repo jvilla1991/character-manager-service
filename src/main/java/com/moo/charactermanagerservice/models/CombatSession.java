@@ -48,6 +48,11 @@ public class CombatSession implements Serializable {
     // entirely — glow/on-deck are computed per viewer against what they can see.
     private Boolean enemiesHidden = true;
 
+    // Third visibility state: enemies visible but their HEALTH is not — when
+    // true (and enemies aren't hidden outright), players get the enemy rows
+    // with the HP fields nulled server-side. Ignored while enemiesHidden.
+    private Boolean enemyHpHidden = false;
+
     // Encounter-level turn-cue key chosen by the DM; clients play it on turn
     // change (each device can mute locally). Null = no sound.
     private String turnSound;
@@ -85,6 +90,7 @@ public class CombatSession implements Serializable {
     public void setCurrentTurnParticipantId(Long currentTurnParticipantId) { this.currentTurnParticipantId = currentTurnParticipantId; }
     public void setVersion(Long version) { this.version = version; }
     public void setEnemiesHidden(Boolean enemiesHidden) { this.enemiesHidden = enemiesHidden; }
+    public void setEnemyHpHidden(Boolean enemyHpHidden) { this.enemyHpHidden = enemyHpHidden; }
     public void setTurnSound(String turnSound) { this.turnSound = turnSound; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

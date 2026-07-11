@@ -157,8 +157,8 @@ public class CuratedEncounterService {
     public EncounterView addLootItem(Long encounterId, String catalogItemKey, String customName,
                                      String customNotes, Integer qty, UUID dmUserId) {
         Encounter encounter = requireOwnedEncounter(encounterId, dmUserId);
-        validateLootLine(catalogItemKey, customName, qty);
-        String key = catalogItemKey == null || catalogItemKey.isBlank() ? null : catalogItemKey.trim();
+        LootLines.validate(catalogItemKey, customName, qty);
+        String key = LootLines.normalizeKey(catalogItemKey);
         if (key != null && srdItemRepository.findByItemKey(key).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + key);
         }
@@ -328,18 +328,6 @@ public class CuratedEncounterService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Loot item not found in this encounter");
         }
         return item;
-    }
-
-    private void validateLootLine(String catalogItemKey, String customName, Integer qty) {
-        boolean hasKey = catalogItemKey != null && !catalogItemKey.isBlank();
-        boolean hasName = customName != null && !customName.isBlank();
-        if (hasKey == hasName) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Provide either a catalogItemKey or a customName (not both)");
-        }
-        if (qty != null && qty < 1) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "qty must be at least 1");
-        }
     }
 
     private Encounter requireOwnedEncounter(Long encounterId, UUID dmUserId) {
