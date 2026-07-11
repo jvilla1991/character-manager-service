@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
+import com.moo.charactermanagerservice.dto.LevelGrantRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
@@ -83,6 +84,22 @@ public class PCController {
         PC pc = request.pc();
         pc.setId(id);
         return ResponseEntity.ok(pcService.updatePCAsDm(pc, request.description(), user.getUuid()));
+    }
+
+    /**
+     * DM grants (or revokes) a pending level-up for a campaign member —
+     * campaign-DM authorized like the as-dm endpoints. The player may then
+     * level once without meeting the XP threshold; applying the level-up
+     * consumes the grant.
+     */
+    @PutMapping("/{id}/level-grant")
+    public ResponseEntity<PC> setLevelGrant(@PathVariable Long id, Authentication authentication,
+                                            @RequestBody LevelGrantRequest request) {
+        if (request == null || request.granted() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "granted is required");
+        }
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.setLevelGrant(id, request.granted(), user.getUuid()));
     }
 
     @GetMapping("/{id}/level-up/preview")

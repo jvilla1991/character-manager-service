@@ -198,14 +198,18 @@ public class SessionController {
                 sessionService.loadEncounter(id, request.encounterId(), user.getUuid()));
     }
 
-    /** DM toggles whether players can see enemy combatants. */
+    /**
+     * DM sets enemy visibility: hidden entirely, visible, or visible with
+     * health hidden ({@code enemyHpHidden}; null leaves that flag unchanged
+     * for old clients).
+     */
     @PutMapping("/session/{id}/visibility")
     public ResponseEntity<SessionStateView> setVisibility(@PathVariable Long id,
                                                           @RequestBody SetVisibilityRequest request,
                                                           Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(
-                sessionService.setVisibility(id, request.enemiesHidden(), user.getUuid()));
+        return ResponseEntity.ok(sessionService.setVisibility(
+                id, request.enemiesHidden(), request.enemyHpHidden(), user.getUuid()));
     }
 
     /** DM sets (or clears) the encounter-level turn-cue sound. */
@@ -259,6 +263,19 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.longRest(
                 id, Boolean.TRUE.equals(request.undisturbed()), user.getUuid()));
+    }
+
+    /**
+     * A player improves their own seated PC's survival condition (eat / drink /
+     * sleep). Returns the new stages plus the possibly-decremented inventory.
+     */
+    @PostMapping("/session/{id}/survival/consume")
+    public ResponseEntity<ConsumeResult> consumeSurvival(@PathVariable Long id,
+                                                         @RequestBody ConsumeSurvivalRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.consumeSurvival(
+                id, request.pcId(), request.action(), user.getUuid()));
     }
 
     /**

@@ -2,7 +2,9 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
+import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -523,7 +525,14 @@ public class SessionService {
      * persists after the session ends — temporary HP absorbs damage first, and
      * healing is capped at max HP. For an NPC the change lands on the participant
      * row. Current HP never drops below zero.
+     *
+     * <p>An ENEMY (NPC row) dropping to 0 HP is defeated and removed from the
+     * initiative order entirely — PCs at 0 stay (dying / death saves). If the
+     * removed enemy held the turn, the pointer advances to the next combatant
+     * first so it is never left pointing at a nonexistent row; when the enemy
+     * was the only combatant the pointer clears instead.
      */
+    @Transactional
     public SessionStateView applyDamage(Long sessionId, Long participantId, Integer amount, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -551,16 +560,47 @@ public class SessionService {
             }
             pcRepository.save(pc);
         } else {
+            int before = participant.getNpcHpCurrent() == null ? 0 : participant.getNpcHpCurrent();
             int[] hp = applyHpDelta(participant.getNpcHpCurrent(), participant.getNpcHpTemp(),
                     participant.getNpcHpMax(), amount);
             participant.setNpcHpCurrent((short) hp[0]);
             participant.setNpcHpTemp((short) hp[1]);
-            participantRepository.save(participant);
+            // A defeated enemy leaves the initiative order. Only on the
+            // transition into 0 (a damage hit), never on an enemy that simply
+            // has no HP tracked (npcHpMax null keeps before == 0 == after only
+            // when no damage was applied — amount > 0 with before 0 means the
+            // DM is hammering an already-dead row, which removal makes moot).
+            if (participant.getNpcHpMax() != null && before > 0 && hp[0] == 0) {
+                removeDefeatedEnemy(session, participant);
+            } else {
+                participantRepository.save(participant);
+            }
         }
 
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /**
+     * Remove a defeated enemy row from the session. If the enemy holds the turn
+     * pointer, the pointer advances to the next combatant in order BEFORE the
+     * row is deleted (the ID-based pointer never re-derives from a position);
+     * an enemy that was the sole combatant clears the pointer instead. Loot is
+     * untouched — session loot pools reference the encounter's prep lines, not
+     * participant rows.
+     */
+    private void removeDefeatedEnemy(CombatSession session, SessionParticipant enemy) {
+        if (enemy.getId().equals(session.getCurrentTurnParticipantId())) {
+            List<SessionParticipant> ordered =
+                    participantRepository.findBySessionIdOrderByOrderIndexAsc(session.getId());
+            if (ordered.size() <= 1) {
+                session.setCurrentTurnParticipantId(null);
+            } else {
+                movePointerToNext(session, ordered);
+            }
+        }
+        participantRepository.delete(enemy);
     }
 
     /**
@@ -732,9 +772,11 @@ public class SessionService {
 
     /**
      * Advance one member's survival for a day-segment: seed their starting
-     * supplies once (covers members who predate the feature), auto-consume a
-     * ration/water on hunger/thirst steps, and apply the resulting stage
-     * changes — persisting the updated survival and inventory together.
+     * supplies once (covers members who predate the feature), then apply the
+     * book's stage bumps — +1 hunger and +1 thirst on the morning (dawn) and
+     * night boundaries, fatigue on its own segments. Supplies are NOT eaten
+     * automatically: relief is the player's explicit Eat/Drink action
+     * ({@link #consumeSurvival}), which spends a ration/water charge.
      */
     private void advanceSurvival(PC pc, String segment) {
         Map<String, Object> survival = json.parseObject(pc.getSurvival());
@@ -746,16 +788,66 @@ public class SessionService {
         if (!Boolean.TRUE.equals(survival.get("seeded"))) {
             SurvivalSupplies.seed(inventory);
         }
-        boolean supplyStep = SurvivalRules.isSupplyStep(segment);
-        boolean ate = supplyStep && SurvivalSupplies.tryConsume(inventory, "rations");
-        // Water is drunk from the 'water' charge line — never from the skin itself.
-        boolean drank = supplyStep && SurvivalSupplies.tryConsume(inventory, "water");
 
-        Map<String, Object> next = SurvivalRules.applySegment(survival, segment, ate, drank);
+        Map<String, Object> next = SurvivalRules.applySegment(survival, segment);
         next.put("seeded", true);
         pc.setSurvival(json.writeObject(next));
         pc.setInventory(json.write(inventory));
         pcRepository.save(pc);
+    }
+
+    /**
+     * A player improves their own seated PC's survival condition (eat / drink /
+     * sleep). Eating spends a {@code rations} charge and drinking a {@code water}
+     * charge when one is live (the container model's serving lines); with no
+     * charge left the stage still improves — the party can forage, and the DM
+     * arbitrates offline. Sleep actions adjust fatigue only. 409 when the
+     * campaign doesn't run the variant — the client never shows these buttons
+     * then, so reaching this is a stale client. Bumps the version so every
+     * viewer sees the new stages.
+     */
+    @Transactional
+    public ConsumeResult consumeSurvival(Long sessionId, Long pcId, String actionRaw, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (!survivalConditionsEnabled(session)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This campaign does not use survival conditions");
+        }
+        SurvivalAction action = SurvivalAction.parse(actionRaw);
+        if (pcId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
+        }
+
+        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Character is not seated in this session"));
+        if (!userId.equals(seated.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        // Same row lock as purchase/sell — inventory and survival are read-modify-write.
+        PC pc = pcRepository.findByIdForUpdate(pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
+
+        List<Map<String, Object>> inventory = json.parse(pc.getInventory());
+        if (action == SurvivalAction.EAT) {
+            SurvivalSupplies.tryConsume(inventory, "rations");
+        } else if (action == SurvivalAction.DRINK) {
+            // Water is drunk from the 'water' charge line — never from the skin itself.
+            SurvivalSupplies.tryConsume(inventory, "water");
+        }
+
+        Map<String, Object> survival = SurvivalRules.applyAction(json.parseObject(pc.getSurvival()), action);
+        pc.setSurvival(json.writeObject(survival));
+        pc.setInventory(json.write(inventory));
+        pcRepository.save(pc);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new ConsumeResult(pcId, survival, inventory);
     }
 
     /**
@@ -1148,8 +1240,14 @@ public class SessionService {
         return buildState(session, dmUserId);
     }
 
-    /** DM toggles whether players can see enemy combatants at all. */
-    public SessionStateView setVisibility(Long sessionId, Boolean enemiesHidden, UUID dmUserId) {
+    /**
+     * DM sets enemy visibility. {@code enemiesHidden} omits enemy rows from
+     * player snapshots entirely; {@code enemyHpHidden} (a null leaves it
+     * unchanged, for old clients) keeps visible enemy rows but nulls their HP
+     * — the "players see enemies, hide health" middle state.
+     */
+    public SessionStateView setVisibility(Long sessionId, Boolean enemiesHidden,
+                                          Boolean enemyHpHidden, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
         if (session.getStatus() == SessionStatus.ENDED) {
@@ -1160,6 +1258,9 @@ public class SessionService {
         }
 
         session.setEnemiesHidden(enemiesHidden);
+        if (enemyHpHidden != null) {
+            session.setEnemyHpHidden(enemyHpHidden);
+        }
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -1357,6 +1458,7 @@ public class SessionService {
         boolean isDm = requesterId.equals(session.getDmUserId());
         boolean active = session.getStatus() == SessionStatus.ACTIVE;
         boolean enemiesHidden = Boolean.TRUE.equals(session.getEnemiesHidden());
+        boolean enemyHpHidden = Boolean.TRUE.equals(session.getEnemyHpHidden());
 
         List<SessionParticipant> visible = (isDm || !enemiesHidden)
                 ? participants
@@ -1379,7 +1481,11 @@ public class SessionService {
             PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
             boolean ownedByMe = requesterId.equals(p.getOwnerUserId());
             boolean currentTurn = p.getId().equals(activeIdForViews);
-            return ParticipantView.from(p, pc, ownedByMe, currentTurn);
+            ParticipantView view = ParticipantView.from(p, pc, ownedByMe, currentTurn);
+            // "See enemies, hide health": a player's enemy rows lose their HP
+            // fields server-side — the values never enter the payload. The DM
+            // always sees full health.
+            return (!isDm && enemyHpHidden && view.npc()) ? view.withoutHp() : view;
         }).toList();
 
         // Targeted-shop signal: a shop is open, and it's visible to the DM or to a
@@ -1455,6 +1561,7 @@ public class SessionService {
                 session.getVersion(),
                 isDm,
                 enemiesHidden,
+                enemyHpHidden,
                 session.getTurnSound(),
                 shopOpen,
                 shopForMe,

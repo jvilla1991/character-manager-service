@@ -11,8 +11,8 @@ import java.util.Map;
  * dehydrated/barely awake). Pure map-in/map-out helpers over the JSON shape
  * stored in {@code pc.survival}; a NULL/empty stored value means all zeros.
  *
- * <p>Time of day worsens conditions (dawn +1 hunger +1 thirst, noon +1 fatigue,
- * dusk +1 all three; night is the sleep window and applies nothing). Eating,
+ * <p>Time of day worsens conditions on the three-segment clock (morning
+ * +1 hunger +1 thirst, noon +1 fatigue, night +1 all three). Eating,
  * drinking, and sleeping improve them. All results clamp to 0..6.
  */
 final class SurvivalRules {
@@ -44,24 +44,27 @@ final class SurvivalRules {
         return clamp(value instanceof Number n ? n.intValue() : DEFAULT_STAGE);
     }
 
-    /** One condition bumped by {@code delta} (either sign), clamped. */
+    /**
+     * One condition bumped by {@code delta} (either sign), clamped. Extra keys
+     * on the map (e.g. {@code seeded}) are preserved — dropping them would
+     * re-trigger the one-time supply seeding on the next time advance.
+     */
     static Map<String, Object> bump(Map<String, Object> survival, String key, int delta) {
-        Map<String, Object> out = normalize(survival);
-        out.put(key, clamp((int) out.get(key) + delta));
+        Map<String, Object> out = new LinkedHashMap<>(survival);
+        out.putAll(normalize(survival));
+        out.put(key, clamp(stageOf(survival, key) + delta));
         return out;
     }
 
     /**
-     * Apply one day-segment under the auto-consume model. Time worsens the
-     * party per the book's three-segment table (morning +hunger +thirst, noon
-     * +fatigue, night +all three), but the characters automatically eat/drink
-     * their supplies: hunger and thirst rise ONLY when the ration/waterskin ran
-     * out ({@code ate}/{@code drank} false). Fatigue has no resource and always
-     * rises on its segments. Extra keys on the map (e.g. {@code seeded}) are
-     * preserved.
+     * Apply one day-segment: the passage of time ALWAYS worsens the party per
+     * the book's three-segment table — morning (dawn) +1 hunger +1 thirst,
+     * noon +1 fatigue, night +1 all three — so hunger and thirst tick twice
+     * per day (at dawn and at night). Relief is the explicit consume flow
+     * ({@link #applyAction}) and the DM's long rest, never automatic. Extra
+     * keys on the map (e.g. {@code seeded}) are preserved.
      */
-    static Map<String, Object> applySegment(Map<String, Object> survival, String segment,
-                                            boolean ate, boolean drank) {
+    static Map<String, Object> applySegment(Map<String, Object> survival, String segment) {
         Map<String, Object> out = new LinkedHashMap<>(survival);
         int hunger = stageOf(survival, "hunger");
         int thirst = stageOf(survival, "thirst");
@@ -69,8 +72,8 @@ final class SurvivalRules {
 
         boolean htStep = "morning".equals(segment) || "night".equals(segment);
         boolean fatigueStep = "noon".equals(segment) || "night".equals(segment);
-        if (htStep && !ate) hunger = clamp(hunger + 1);
-        if (htStep && !drank) thirst = clamp(thirst + 1);
+        if (htStep) hunger = clamp(hunger + 1);
+        if (htStep) thirst = clamp(thirst + 1);
         if (fatigueStep) fatigue = clamp(fatigue + 1);
 
         out.put("hunger", hunger);
@@ -79,8 +82,17 @@ final class SurvivalRules {
         return out;
     }
 
-    /** Whether this day-segment consumes rations/water (a hunger/thirst step). */
-    static boolean isSupplyStep(String segment) {
-        return "morning".equals(segment) || "night".equals(segment);
+    /**
+     * Apply a player's improvement action: eat −1 hunger, drink −1 thirst,
+     * good sleep −3 fatigue, disturbed sleep −1 fatigue. Extra keys on the
+     * map (e.g. {@code seeded}) are preserved.
+     */
+    static Map<String, Object> applyAction(Map<String, Object> survival, SurvivalAction action) {
+        return switch (action) {
+            case EAT -> bump(survival, "hunger", -1);
+            case DRINK -> bump(survival, "thirst", -1);
+            case SLEEP_GOOD -> bump(survival, "fatigue", -3);
+            case SLEEP_DISTURBED -> bump(survival, "fatigue", -1);
+        };
     }
 }
