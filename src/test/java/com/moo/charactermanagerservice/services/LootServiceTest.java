@@ -1,11 +1,12 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.AddLootItemRequest;
 import com.moo.charactermanagerservice.dto.ClaimResult;
 import com.moo.charactermanagerservice.dto.LootView;
 import com.moo.charactermanagerservice.models.CombatSession;
-import com.moo.charactermanagerservice.models.Encounter;
-import com.moo.charactermanagerservice.models.EncounterLootItem;
+import com.moo.charactermanagerservice.models.CuratedLoot;
+import com.moo.charactermanagerservice.models.CuratedLootItem;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionLoot;
@@ -14,8 +15,8 @@ import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.SrdItem;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
-import com.moo.charactermanagerservice.repositories.EncounterLootItemRepository;
-import com.moo.charactermanagerservice.repositories.EncounterRepository;
+import com.moo.charactermanagerservice.repositories.CuratedLootItemRepository;
+import com.moo.charactermanagerservice.repositories.CuratedLootRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
@@ -29,6 +30,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -51,8 +53,8 @@ class LootServiceTest {
     @Mock private SessionLootRepository lootRepository;
     @Mock private SessionLootItemRepository lootItemRepository;
     @Mock private SessionParticipantRepository participantRepository;
-    @Mock private EncounterRepository encounterRepository;
-    @Mock private EncounterLootItemRepository encounterLootItemRepository;
+    @Mock private CuratedLootRepository curatedLootRepository;
+    @Mock private CuratedLootItemRepository curatedLootItemRepository;
     @Mock private SrdItemRepository srdItemRepository;
     @Mock private PCRepository pcRepository;
     @Mock private PcActivityLogService activityLogService;
@@ -68,7 +70,7 @@ class LootServiceTest {
     @BeforeEach
     void setUp() {
         lootService = new LootService(sessionRepository, lootRepository, lootItemRepository,
-                participantRepository, encounterRepository, encounterLootItemRepository,
+                participantRepository, curatedLootRepository, curatedLootItemRepository,
                 srdItemRepository, pcRepository, activityLogService, new ObjectMapper());
 
         dmId = UUID.randomUUID();
@@ -93,7 +95,7 @@ class LootServiceTest {
     // --- openLoot ---
 
     @Test
-    void openLoot_seedsFromEncounter_copyingLinesAndCoins() {
+    void openLoot_seedsFromCuratedList_copyingLinesCoinsAndAttributes() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.empty());
         when(lootRepository.save(any(SessionLoot.class))).thenAnswer(inv -> {
@@ -101,17 +103,21 @@ class LootServiceTest {
             p.setId(20L);
             return p;
         });
-        Encounter encounter = encounter(dmId, 1L);
-        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter));
-        when(encounterLootItemRepository.findByEncounterIdOrderByIdAsc(5L)).thenReturn(List.of(
-                encounterLine("longsword", null, null, 2),
-                encounterLine(null, "Cloak of Elvenkind", "Advantage on Stealth.", 1)));
+        CuratedLoot curated = curatedList(dmId, 1L);
+        when(curatedLootRepository.findById(5L)).thenReturn(Optional.of(curated));
+        CuratedLootItem rich = curatedLine(null, "Flametongue", "Ignites on command.", 1);
+        rich.setCategory("weapon");
+        rich.setUnitCostCp(500000L);
+        rich.setWeight(new BigDecimal("3"));
+        rich.setDamage("1d8 slashing + 2d6 fire");
+        when(curatedLootItemRepository.findByLootIdOrderByIdAsc(5L)).thenReturn(List.of(
+                curatedLine("longsword", null, null, 2), rich));
         when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
 
         LootView view = lootService.openLoot(1L, 5L, null, dmId);
 
-        assertThat(view.name()).isEqualTo("Goblin Ambush"); // defaults to the encounter's name
-        assertThat(view.dropped()).isFalse();               // opens as an invisible draft
+        assertThat(view.name()).isEqualTo("Goblin Ambush loot"); // defaults to the list's name
+        assertThat(view.dropped()).isFalse();                    // opens as an invisible draft
         assertThat(view.coinCpTotal()).isEqualTo(500L);
         assertThat(view.coinCpRemaining()).isEqualTo(500L);
 
@@ -123,8 +129,13 @@ class LootServiceTest {
         assertThat(copies.get(0).getCatalogItemKey()).isEqualTo("longsword");
         assertThat(copies.get(0).getQty()).isEqualTo(2);
         assertThat(copies.get(0).getQtyRemaining()).isEqualTo(2);
-        assertThat(copies.get(1).getCustomName()).isEqualTo("Cloak of Elvenkind");
-        assertThat(copies.get(1).getCustomNotes()).isEqualTo("Advantage on Stealth.");
+        assertThat(copies.get(1).getCustomName()).isEqualTo("Flametongue");
+        assertThat(copies.get(1).getCustomNotes()).isEqualTo("Ignites on command.");
+        // The custom line's attributes ride the copy so claims can stamp them.
+        assertThat(copies.get(1).getCategory()).isEqualTo("weapon");
+        assertThat(copies.get(1).getUnitCostCp()).isEqualTo(500000L);
+        assertThat(copies.get(1).getWeight()).isEqualByComparingTo("3");
+        assertThat(copies.get(1).getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
         verify(sessionRepository).save(session); // version bumped
     }
 
@@ -148,10 +159,10 @@ class LootServiceTest {
     }
 
     @Test
-    void openLoot_throws403_whenEncounterNotOwnedByDm() {
+    void openLoot_throws403_whenListNotOwnedByDm() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.empty());
-        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter(strangerId, 1L)));
+        when(curatedLootRepository.findById(5L)).thenReturn(Optional.of(curatedList(strangerId, 1L)));
 
         assertThatThrownBy(() -> lootService.openLoot(1L, 5L, null, dmId))
                 .isInstanceOf(ResponseStatusException.class)
@@ -159,10 +170,10 @@ class LootServiceTest {
     }
 
     @Test
-    void openLoot_throws403_whenEncounterBelongsToOtherCampaign() {
+    void openLoot_throws403_whenListBelongsToOtherCampaign() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.empty());
-        when(encounterRepository.findById(5L)).thenReturn(Optional.of(encounter(dmId, 99L)));
+        when(curatedLootRepository.findById(5L)).thenReturn(Optional.of(curatedList(dmId, 99L)));
 
         assertThatThrownBy(() -> lootService.openLoot(1L, 5L, null, dmId))
                 .isInstanceOf(ResponseStatusException.class)
@@ -232,10 +243,10 @@ class LootServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
 
-        assertThatThrownBy(() -> lootService.addItem(1L, "longsword", "Cloak", null, 1, dmId))
+        assertThatThrownBy(() -> lootService.addItem(1L, addRequest("longsword", "Cloak"), dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        assertThatThrownBy(() -> lootService.addItem(1L, null, "  ", null, 1, dmId))
+        assertThatThrownBy(() -> lootService.addItem(1L, addRequest(null, "  "), dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
         verify(lootItemRepository, never()).save(any());
@@ -247,9 +258,39 @@ class LootServiceTest {
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
         when(srdItemRepository.findByItemKey("frostbrand")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> lootService.addItem(1L, "frostbrand", null, null, 1, dmId))
+        assertThatThrownBy(() -> lootService.addItem(1L, addRequest("frostbrand", null), dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(404));
+    }
+
+    @Test
+    void addItem_customLine_stampsAttributes() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
+        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
+
+        lootService.addItem(1L, new AddLootItemRequest(null, "Flametongue", "Ignites.", 1,
+                "weapon", 50.0, 3.0, "1d8 slashing + 2d6 fire", null), dmId);
+
+        ArgumentCaptor<SessionLootItem> captor = ArgumentCaptor.forClass(SessionLootItem.class);
+        verify(lootItemRepository).save(captor.capture());
+        SessionLootItem saved = captor.getValue();
+        assertThat(saved.getCategory()).isEqualTo("weapon");
+        assertThat(saved.getUnitCostCp()).isEqualTo(5000L);
+        assertThat(saved.getWeight()).isEqualByComparingTo("3.0");
+        assertThat(saved.getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
+    }
+
+    @Test
+    void addItem_throws400_whenCatalogLineCarriesAttributes() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
+
+        assertThatThrownBy(() -> lootService.addItem(1L, new AddLootItemRequest(
+                "longsword", null, null, 1, "weapon", null, null, null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootItemRepository, never()).save(any());
     }
 
     @Test
@@ -314,7 +355,9 @@ class LootServiceTest {
     }
 
     @Test
-    void claimItem_customLine_appendsGearEntryWithNotes() {
+    void claimItem_legacyCustomLine_defaultsToGearEntryWithNotes() {
+        // A pre-V35 pool line has all-null attributes: the claim must still land
+        // safely — category defaults to 'gear', bulk to the unknown-weight band.
         stubClaimableSessionWithSeatedPc();
         SessionLootItem line = poolLine(31L, null, "Cloak of Elvenkind", 1);
         line.setCustomNotes("Advantage on Stealth.");
@@ -329,9 +372,64 @@ class LootServiceTest {
         assertThat(result.inventory().get(0))
                 .containsEntry("name", "Cloak of Elvenkind")
                 .containsEntry("category", "gear")
+                .containsEntry("bulk", BigDecimal.ONE) // unknown weight → 1, "a small object"
                 .containsEntry("notes", "Advantage on Stealth.")
-                .doesNotContainKey("catalogKey");
+                .doesNotContainKey("catalogKey")
+                .doesNotContainKey("unitCostCp")
+                .doesNotContainKey("weight")
+                .doesNotContainKey("damage")
+                .doesNotContainKey("armorClass");
         verify(activityLogService).log(7L, PcActivityType.LOOT, "Looted Cloak of Elvenkind", playerId);
+    }
+
+    @Test
+    void claimItem_customLineWithAttributes_stampsThemLikeADmGrant() {
+        stubClaimableSessionWithSeatedPc();
+        SessionLootItem line = poolLine(31L, null, "Flametongue", 1);
+        line.setCustomNotes("Ignites on command.");
+        line.setCategory("weapon");
+        line.setUnitCostCp(500000L);
+        line.setWeight(new BigDecimal("3"));
+        line.setDamage("1d8 slashing + 2d6 fire");
+        when(lootItemRepository.findByIdForUpdate(31L)).thenReturn(Optional.of(line));
+        PC pc = pcOwnedBy(playerId, null, null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
+
+        ClaimResult result = lootService.claimItem(1L, 7L, 31L, 1, playerId);
+
+        assertThat(result.inventory().get(0))
+                .containsEntry("name", "Flametongue")
+                .containsEntry("category", "weapon")
+                .containsEntry("unitCostCp", 500000L)
+                .containsEntry("weight", new BigDecimal("3"))
+                // 3 lb → the ≤5 lb band, same bulk a DM grant would stamp client-side.
+                .containsEntry("bulk", new BigDecimal("2"))
+                .containsEntry("damage", "1d8 slashing + 2d6 fire")
+                .containsEntry("notes", "Ignites on command.")
+                .doesNotContainKey("catalogKey")
+                .doesNotContainKey("armorClass");
+    }
+
+    @Test
+    void claimItem_customArmorLine_carriesArmorClass() {
+        stubClaimableSessionWithSeatedPc();
+        SessionLootItem line = poolLine(31L, null, "Mithral Plate", 1);
+        line.setCategory("armor");
+        line.setArmorClass("18");
+        when(lootItemRepository.findByIdForUpdate(31L)).thenReturn(Optional.of(line));
+        PC pc = pcOwnedBy(playerId, null, null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
+
+        ClaimResult result = lootService.claimItem(1L, 7L, 31L, 1, playerId);
+
+        assertThat(result.inventory().get(0))
+                .containsEntry("category", "armor")
+                .containsEntry("armorClass", "18")
+                .doesNotContainKey("damage");
     }
 
     @Test
@@ -445,24 +543,28 @@ class LootServiceTest {
         return ((ResponseStatusException) e).getStatusCode().value();
     }
 
-    private static Encounter encounter(UUID owner, Long campaignId) {
-        Encounter e = new Encounter();
-        e.setId(5L);
-        e.setCampaignId(campaignId);
-        e.setDmUserId(owner);
-        e.setName("Goblin Ambush");
-        e.setLootCoinCp(500L);
-        return e;
+    private static CuratedLoot curatedList(UUID owner, Long campaignId) {
+        CuratedLoot l = new CuratedLoot();
+        l.setId(5L);
+        l.setCampaignId(campaignId);
+        l.setDmUserId(owner);
+        l.setName("Goblin Ambush loot");
+        l.setCoinCp(500L);
+        return l;
     }
 
-    private static EncounterLootItem encounterLine(String key, String customName, String notes, int qty) {
-        EncounterLootItem line = new EncounterLootItem();
-        line.setEncounterId(5L);
+    private static CuratedLootItem curatedLine(String key, String customName, String notes, int qty) {
+        CuratedLootItem line = new CuratedLootItem();
+        line.setLootId(5L);
         line.setCatalogItemKey(key);
         line.setCustomName(customName);
         line.setCustomNotes(notes);
         line.setQty(qty);
         return line;
+    }
+
+    private static AddLootItemRequest addRequest(String key, String customName) {
+        return new AddLootItemRequest(key, customName, null, 1, null, null, null, null, null);
     }
 
     private static SessionLootItem poolLine(Long id, String key, String customName, int qty) {

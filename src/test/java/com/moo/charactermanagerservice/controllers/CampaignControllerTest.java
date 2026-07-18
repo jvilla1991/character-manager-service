@@ -276,7 +276,7 @@ class CampaignControllerTest {
 
     @Test
     void addNote_returns201_withCreatedNote() {
-        SessionNoteView view = new SessionNoteView(5L, 1L, null, "A new clue surfaces", java.time.Instant.now());
+        SessionNoteView view = new SessionNoteView(5L, 1L, null, "A new clue surfaces", java.time.Instant.now(), null);
         when(sessionNoteService.addNote(1L, "A new clue surfaces", null, dmId)).thenReturn(view);
 
         ResponseEntity<SessionNoteView> response =
@@ -288,7 +288,7 @@ class CampaignControllerTest {
 
     @Test
     void addNote_passesSessionId_whenTakenInSession() {
-        SessionNoteView view = new SessionNoteView(6L, 1L, 9L, "Mid-combat ruling", java.time.Instant.now());
+        SessionNoteView view = new SessionNoteView(6L, 1L, 9L, "Mid-combat ruling", java.time.Instant.now(), null);
         when(sessionNoteService.addNote(1L, "Mid-combat ruling", 9L, dmId)).thenReturn(view);
 
         ResponseEntity<SessionNoteView> response =
@@ -302,7 +302,7 @@ class CampaignControllerTest {
 
     @Test
     void getNotes_returns200_withList() {
-        SessionNoteView view = new SessionNoteView(5L, 1L, null, "Recap", java.time.Instant.now());
+        SessionNoteView view = new SessionNoteView(5L, 1L, null, "Recap", java.time.Instant.now(), null);
         when(sessionNoteService.listNotes(1L, dmId)).thenReturn(List.of(view));
 
         ResponseEntity<List<SessionNoteView>> response = campaignController.getNotes(1L, auth);
@@ -317,6 +317,32 @@ class CampaignControllerTest {
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
 
         assertThatThrownBy(() -> campaignController.getNotes(1L, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- PUT /{id}/notes/{noteId} ---
+
+    @Test
+    void updateNote_returns200_withUpdatedNote() {
+        SessionNoteView view = new SessionNoteView(5L, 1L, null, "Edited recap",
+                java.time.Instant.now(), java.time.Instant.now());
+        when(sessionNoteService.updateNote(1L, 5L, "Edited recap", dmId)).thenReturn(view);
+
+        ResponseEntity<SessionNoteView> response = campaignController.updateNote(
+                1L, 5L, new com.moo.charactermanagerservice.dto.UpdateNoteRequest("Edited recap"), auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(view);
+    }
+
+    @Test
+    void updateNote_propagates403_whenNotOwner() {
+        when(sessionNoteService.updateNote(1L, 5L, "x", dmId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> campaignController.updateNote(
+                1L, 5L, new com.moo.charactermanagerservice.dto.UpdateNoteRequest("x"), auth))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
     }

@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.models.SrdItem;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,17 +57,26 @@ final class InventoryEntries {
     /**
      * Build a free-hand item line (custom loot: magic items, trophies). Never
      * stacked — each custom line is its own entry, since two "Cloak of
-     * Elvenkind"s are not interchangeable the way two longswords are. Bulk is
-     * stamped exactly like every other acquisition (weight-band fallback — no
-     * weight means 1, "a small object"), so a claimed custom item totals the
-     * same slots a granted or converted one would.
+     * Elvenkind"s are not interchangeable the way two longswords are. The
+     * attribute fields mirror what the DM grant form stamps client-side —
+     * category (default 'gear' when absent, matching legacy rows), value,
+     * weight, and the category stat (weapon damage / armor class) — so a
+     * claimed custom item is exactly as stat'd as a granted one. Bulk is
+     * stamped like every other acquisition (weight-band fallback — no weight
+     * means 1, "a small object").
      */
-    static Map<String, Object> newCustomEntry(String name, int qty, String notes) {
+    static Map<String, Object> newCustomEntry(String name, String category, int qty, Long unitCostCp,
+                                              BigDecimal weight, String damage, String armorClass,
+                                              String notes) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("name", name);
-        entry.put("category", "gear");
+        entry.put("category", category == null || category.isBlank() ? "gear" : category);
         entry.put("qty", qty);
-        entry.put("bulk", BulkRules.bulkFor(null, null));
+        if (unitCostCp != null) entry.put("unitCostCp", unitCostCp);
+        if (weight != null) entry.put("weight", weight);
+        entry.put("bulk", BulkRules.bulkFor(null, weight));
+        if (damage != null && !damage.isBlank()) entry.put("damage", damage.trim());
+        if (armorClass != null && !armorClass.isBlank()) entry.put("armorClass", armorClass.trim());
         if (notes != null && !notes.isBlank()) entry.put("notes", notes.trim());
         return entry;
     }

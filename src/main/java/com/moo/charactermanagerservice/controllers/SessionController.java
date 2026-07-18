@@ -178,14 +178,14 @@ public class SessionController {
                 sessionService.advanceTurn(id, request.expectedActiveParticipantId(), user.getUuid()));
     }
 
-    /** DM adds an enemy (with a DM-calculated DEX modifier), lobby or mid-encounter. */
+    /** DM adds an enemy (with an optional armor class), lobby or mid-encounter. */
     @PostMapping("/session/{id}/enemies")
     public ResponseEntity<SessionStateView> addEnemy(@PathVariable Long id,
                                                      @RequestBody AddEnemyRequest request,
                                                      Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.status(HttpStatus.CREATED).body(sessionService.addEnemy(
-                id, request.name(), request.dexModifier(), request.hpMax(), user.getUuid()));
+                id, request.name(), request.armorClass(), request.hpMax(), user.getUuid()));
     }
 
     /** DM loads a curated encounter's creatures into the session as enemy combatants. */

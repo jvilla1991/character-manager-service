@@ -9,19 +9,21 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A DM-curated encounter: a persistent, reusable encounter definition (a free-hand
- * list of enemy creatures). Owned by the campaign's DM ({@code dmUserId}); DM-only
- * actions assert that ownership, mirroring {@link Shop}. Loaded into a live session
- * by {@code SessionService.loadEncounter}, which turns each {@link EncounterCreature}
- * into an enemy combatant. Its lines are {@link EncounterCreature}s.
+ * A DM-curated loot list: a persistent, reusable set of prepped spoils (item
+ * lines plus a coin pile) a DM builds on the campaign screen and later drops
+ * into a live session's claim pool. Owned by the campaign's DM ({@code dmUserId});
+ * DM-only actions assert that ownership, mirroring {@link Shop} and
+ * {@link Encounter}. Dropping COPIES the lines into a {@link SessionLoot} pool —
+ * the curated list is never mutated, so it survives being dropped any number of
+ * times. Its lines are {@link CuratedLootItem}s.
  */
 @Getter
 @JsonIgnoreProperties(ignoreUnknown = true)
 @Entity
-@Table(name = "encounter")
-public class Encounter implements Serializable {
+@Table(name = "curated_loot")
+public class CuratedLoot implements Serializable {
 
-    public Encounter() {}
+    public CuratedLoot() {}
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -31,6 +33,9 @@ public class Encounter implements Serializable {
     private UUID dmUserId;
     private String name;
     private String notes;
+
+    /** The prepped coin pile in copper (1 gp = 100 cp). */
+    private long coinCp;
 
     @Column(name = "created_at")
     private Instant createdAt;
@@ -55,4 +60,5 @@ public class Encounter implements Serializable {
     public void setDmUserId(UUID dmUserId) { this.dmUserId = dmUserId; }
     public void setName(String name) { this.name = name; }
     public void setNotes(String notes) { this.notes = notes; }
+    public void setCoinCp(long coinCp) { this.coinCp = coinCp; }
 }

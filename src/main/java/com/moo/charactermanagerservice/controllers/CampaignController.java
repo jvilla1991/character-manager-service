@@ -7,6 +7,7 @@ import com.moo.charactermanagerservice.dto.CreateNoteRequest;
 import com.moo.charactermanagerservice.dto.JoinCampaignRequest;
 import com.moo.charactermanagerservice.dto.SessionNoteView;
 import com.moo.charactermanagerservice.dto.SetWeekDaysRequest;
+import com.moo.charactermanagerservice.dto.UpdateNoteRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
@@ -123,6 +124,15 @@ public class CampaignController {
     public ResponseEntity<List<SessionNoteView>> getNotes(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionNoteService.listNotes(id, user.getUuid()));
+    }
+
+    /** Edit a session note's body (DM only — same ownership guard as creation). */
+    @PutMapping("/{id}/notes/{noteId}")
+    public ResponseEntity<SessionNoteView> updateNote(@PathVariable Long id, @PathVariable Long noteId,
+                                                      @RequestBody UpdateNoteRequest request,
+                                                      Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionNoteService.updateNote(id, noteId, request.body(), user.getUuid()));
     }
 
     @DeleteMapping("/{id}/notes/{noteId}")

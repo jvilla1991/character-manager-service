@@ -1,15 +1,11 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.AddCreatureRequest;
-import com.moo.charactermanagerservice.dto.AddLootItemRequest;
 import com.moo.charactermanagerservice.dto.CreateEncounterRequest;
 import com.moo.charactermanagerservice.dto.EncounterSummaryView;
 import com.moo.charactermanagerservice.dto.EncounterView;
-import com.moo.charactermanagerservice.dto.ImportLootRequest;
-import com.moo.charactermanagerservice.dto.SetLootCoinsRequest;
 import com.moo.charactermanagerservice.dto.UpdateCreatureRequest;
 import com.moo.charactermanagerservice.dto.UpdateEncounterRequest;
-import com.moo.charactermanagerservice.dto.UpdateLootItemRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.services.CuratedEncounterService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +21,8 @@ import java.util.List;
  * of enemy creatures) out of session; loading one into a live session is handled by
  * the session encounter-load endpoint. Auth follows the existing pattern: the
  * principal is the {@link User}, and the service asserts campaign-DM ownership.
+ * Loot endpoints live on {@link CuratedLootController} — prepped spoils are
+ * standalone curated loot lists, no longer attached to encounters.
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -77,7 +75,7 @@ public class CuratedEncounterController {
                                                      Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(curatedEncounterService.addCreature(encounterId, request.name(),
-                request.dexModifier(), request.hpMax(), request.quantity(), user.getUuid()));
+                request.armorClass(), request.hpMax(), request.quantity(), user.getUuid()));
     }
 
     @PutMapping("/encounters/{encounterId}/creatures/{creatureId}")
@@ -87,7 +85,7 @@ public class CuratedEncounterController {
                                                         Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(curatedEncounterService.updateCreature(encounterId, creatureId,
-                request.name(), request.dexModifier(), request.hpMax(), request.quantity(), user.getUuid()));
+                request.name(), request.armorClass(), request.hpMax(), request.quantity(), user.getUuid()));
     }
 
     @DeleteMapping("/encounters/{encounterId}/creatures/{creatureId}")
@@ -96,49 +94,5 @@ public class CuratedEncounterController {
                                                         Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(curatedEncounterService.removeCreature(encounterId, creatureId, user.getUuid()));
-    }
-
-    @PostMapping("/encounters/{encounterId}/loot")
-    public ResponseEntity<EncounterView> addLootItem(@PathVariable Long encounterId,
-                                                     @RequestBody AddLootItemRequest request,
-                                                     Authentication authentication) {
-        User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(curatedEncounterService.addLootItem(encounterId, request.catalogItemKey(),
-                request.customName(), request.customNotes(), request.qty(), user.getUuid()));
-    }
-
-    @PutMapping("/encounters/{encounterId}/loot/{lootItemId}")
-    public ResponseEntity<EncounterView> updateLootItem(@PathVariable Long encounterId,
-                                                        @PathVariable Long lootItemId,
-                                                        @RequestBody UpdateLootItemRequest request,
-                                                        Authentication authentication) {
-        User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(curatedEncounterService.updateLootItem(encounterId, lootItemId,
-                request.qty(), request.customName(), request.customNotes(), user.getUuid()));
-    }
-
-    @DeleteMapping("/encounters/{encounterId}/loot/{lootItemId}")
-    public ResponseEntity<EncounterView> removeLootItem(@PathVariable Long encounterId,
-                                                        @PathVariable Long lootItemId,
-                                                        Authentication authentication) {
-        User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(curatedEncounterService.removeLootItem(encounterId, lootItemId, user.getUuid()));
-    }
-
-    @PutMapping("/encounters/{encounterId}/loot-coins")
-    public ResponseEntity<EncounterView> setLootCoins(@PathVariable Long encounterId,
-                                                      @RequestBody SetLootCoinsRequest request,
-                                                      Authentication authentication) {
-        User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(curatedEncounterService.setLootCoins(encounterId, request.coinGp(), user.getUuid()));
-    }
-
-    /** Bulk-add loot lines from pasted JSON (appends; coinGp adds to the pile). */
-    @PostMapping("/encounters/{encounterId}/loot/import")
-    public ResponseEntity<EncounterView> importLoot(@PathVariable Long encounterId,
-                                                    @RequestBody ImportLootRequest request,
-                                                    Authentication authentication) {
-        User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(curatedEncounterService.importLoot(encounterId, request, user.getUuid()));
     }
 }

@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /**
  * One creature line in an {@link Encounter}: free-hand enemy data (no SRD catalog
- * reference). {@code dexModifier} is the DM-calculated initiative tie-breaker,
+ * reference). {@code armorClass} is the creature's AC (optional — null = unknown),
  * {@code hpMax} is optional (null = untracked HP), and {@code quantity} expands
  * into that many numbered enemy combatants when the encounter is loaded into a
  * session (e.g. Goblin 1..Goblin 4).
@@ -28,7 +28,7 @@ public class EncounterCreature implements Serializable {
 
     private Long encounterId;
     private String name;
-    private Short dexModifier;
+    private Short armorClass; // null = unknown / untracked
     private Short hpMax; // null = untracked HP
     private int quantity = 1;
 
@@ -43,7 +43,7 @@ public class EncounterCreature implements Serializable {
     public void setId(Long id) { this.id = id; }
     public void setEncounterId(Long encounterId) { this.encounterId = encounterId; }
     public void setName(String name) { this.name = name; }
-    public void setDexModifier(Short dexModifier) { this.dexModifier = dexModifier; }
+    public void setArmorClass(Short armorClass) { this.armorClass = armorClass; }
     public void setHpMax(Short hpMax) { this.hpMax = hpMax; }
     public void setQuantity(int quantity) { this.quantity = quantity; }
 }
