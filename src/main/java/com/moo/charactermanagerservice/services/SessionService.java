@@ -467,46 +467,27 @@ public class SessionService {
 
     /**
      * Re-sort a session's combatants, persist their order_index, and return
-     * them in the new order. Order: initiative desc (unset last), then DEX
-     * modifier desc (NPC/unknown last), then id asc — id is BIGSERIAL, so that
-     * final fallback is insertion order and keeps full ties from reshuffling.
+     * them in the new order. Order: initiative desc (unset last), then id asc —
+     * id is BIGSERIAL, so ties resolve by insertion order and never reshuffle.
+     * (Enemies no longer carry a DEX modifier — they store AC instead, which
+     * plays no part in initiative — so there is no DEX tie-break layer.)
      */
     private List<SessionParticipant> recomputeOrder(Long sessionId) {
         List<SessionParticipant> participants =
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
         if (participants.isEmpty()) return participants;
 
-        Map<Long, PC> pcsById = loadPcs(participants);
-
         Comparator<SessionParticipant> byInitiative = Comparator.comparing(
                 SessionParticipant::getInitiative, Comparator.nullsLast(Comparator.reverseOrder()));
-        Comparator<SessionParticipant> byDexMod = Comparator.comparing(
-                p -> dexModOf(p, pcsById), Comparator.nullsLast(Comparator.reverseOrder()));
         Comparator<SessionParticipant> byId = Comparator.comparing(SessionParticipant::getId);
 
-        participants.sort(byInitiative.thenComparing(byDexMod).thenComparing(byId));
+        participants.sort(byInitiative.thenComparing(byId));
 
         for (short i = 0; i < participants.size(); i++) {
             participants.get(i).setOrderIndex(i);
         }
         participantRepository.saveAll(participants);
         return participants;
-    }
-
-    /**
-     * A combatant's Dexterity modifier, the initiative tie-breaker. For an
-     * enemy it is the DM-entered {@code dexModifier}; for a PC it is derived
-     * from the canonical ability score, so there is no stored copy to drift.
-     * Both sides of the comparison are modifiers, never raw scores.
-     * {@code Math.floorDiv} keeps odd scores below 10 correct (9 → -1, not 0).
-     */
-    private Integer dexModOf(SessionParticipant p, Map<Long, PC> pcsById) {
-        if (p.getPcId() == null) {
-            return p.getDexModifier() == null ? null : p.getDexModifier().intValue();
-        }
-        PC pc = pcsById.get(p.getPcId());
-        if (pc == null || pc.getAbilityDex() == null) return null;
-        return Math.floorDiv(pc.getAbilityDex() - 10, 2);
     }
 
     /** Load the canonical PCs for a set of participants, keyed by id (NPCs excluded). */
@@ -1158,13 +1139,14 @@ public class SessionService {
     }
 
     /**
-     * DM adds an enemy combatant, in the lobby or mid-encounter. The DM
-     * calculates and enters the DEX modifier (the initiative tie-breaker); the
-     * enemy starts with no initiative, so the re-sort parks it at the bottom of
-     * the order until the DM enters one — at which point the normal late-entry
-     * rule applies (sorted above the pointer means it acts next round).
+     * DM adds an enemy combatant, in the lobby or mid-encounter. The optional
+     * armor class is display/reference info (AC at a glance in the tracker);
+     * the enemy starts with no initiative, so the re-sort parks it at the
+     * bottom of the order until the DM enters one — at which point the normal
+     * late-entry rule applies (sorted above the pointer means it acts next
+     * round). Initiative ties resolve by insertion (id) order.
      */
-    public SessionStateView addEnemy(Long sessionId, String name, Short dexModifier, Short hpMax,
+    public SessionStateView addEnemy(Long sessionId, String name, Short armorClass, Short hpMax,
                                      UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -1174,14 +1156,11 @@ public class SessionService {
         if (name == null || name.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required");
         }
-        if (dexModifier == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dexModifier is required");
-        }
 
         SessionParticipant enemy = new SessionParticipant();
         enemy.setSessionId(sessionId);
         enemy.setDisplayName(name.trim());
-        enemy.setDexModifier(dexModifier);
+        enemy.setNpcArmorClass(armorClass);
         enemy.setNpcHpMax(hpMax);
         enemy.setNpcHpCurrent(hpMax);
         participantRepository.save(enemy);
@@ -1226,7 +1205,7 @@ public class SessionService {
                 enemy.setSessionId(sessionId);
                 // Suffix a running number only when there is more than one of this creature.
                 enemy.setDisplayName(count > 1 ? creature.getName() + " " + n : creature.getName());
-                enemy.setDexModifier(creature.getDexModifier());
+                enemy.setNpcArmorClass(creature.getArmorClass());
                 enemy.setNpcHpMax(creature.getHpMax());
                 enemy.setNpcHpCurrent(creature.getHpMax());
                 participantRepository.save(enemy);

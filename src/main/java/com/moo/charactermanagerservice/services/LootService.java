@@ -1,12 +1,13 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.AddLootItemRequest;
 import com.moo.charactermanagerservice.dto.ClaimResult;
 import com.moo.charactermanagerservice.dto.LootItemView;
 import com.moo.charactermanagerservice.dto.LootView;
 import com.moo.charactermanagerservice.models.CombatSession;
-import com.moo.charactermanagerservice.models.Encounter;
-import com.moo.charactermanagerservice.models.EncounterLootItem;
+import com.moo.charactermanagerservice.models.CuratedLoot;
+import com.moo.charactermanagerservice.models.CuratedLootItem;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionLoot;
@@ -15,8 +16,8 @@ import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.SrdItem;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
-import com.moo.charactermanagerservice.repositories.EncounterLootItemRepository;
-import com.moo.charactermanagerservice.repositories.EncounterRepository;
+import com.moo.charactermanagerservice.repositories.CuratedLootItemRepository;
+import com.moo.charactermanagerservice.repositories.CuratedLootRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
@@ -37,7 +38,7 @@ import java.util.stream.Collectors;
 
 /**
  * Post-combat loot: the transient pool a DM opens in a live session, seeded by
- * copying a curated encounter's prepped loot (or built from scratch), edited as
+ * copying a curated loot list's prepped lines (or built from scratch), edited as
  * an invisible draft, then dropped for players to claim first-come-first-served.
  * Mirrors {@link ShopService}'s shape — DM-owned session state plus a
  * write-through to the canonical pc row — with one addition: claims mutate
@@ -54,8 +55,8 @@ public class LootService {
     private final SessionLootRepository lootRepository;
     private final SessionLootItemRepository lootItemRepository;
     private final SessionParticipantRepository participantRepository;
-    private final EncounterRepository encounterRepository;
-    private final EncounterLootItemRepository encounterLootItemRepository;
+    private final CuratedLootRepository curatedLootRepository;
+    private final CuratedLootItemRepository curatedLootItemRepository;
     private final SrdItemRepository srdItemRepository;
     private final PCRepository pcRepository;
     private final PcActivityLogService activityLogService;
@@ -66,8 +67,8 @@ public class LootService {
                        SessionLootRepository lootRepository,
                        SessionLootItemRepository lootItemRepository,
                        SessionParticipantRepository participantRepository,
-                       EncounterRepository encounterRepository,
-                       EncounterLootItemRepository encounterLootItemRepository,
+                       CuratedLootRepository curatedLootRepository,
+                       CuratedLootItemRepository curatedLootItemRepository,
                        SrdItemRepository srdItemRepository,
                        PCRepository pcRepository,
                        PcActivityLogService activityLogService,
@@ -76,8 +77,8 @@ public class LootService {
         this.lootRepository = lootRepository;
         this.lootItemRepository = lootItemRepository;
         this.participantRepository = participantRepository;
-        this.encounterRepository = encounterRepository;
-        this.encounterLootItemRepository = encounterLootItemRepository;
+        this.curatedLootRepository = curatedLootRepository;
+        this.curatedLootItemRepository = curatedLootItemRepository;
         this.srdItemRepository = srdItemRepository;
         this.pcRepository = pcRepository;
         this.activityLogService = activityLogService;
@@ -86,12 +87,12 @@ public class LootService {
 
     /**
      * DM opens a loot pool as an invisible draft, replacing any existing pool
-     * (one per session). An {@code encounterId} seeds it by COPYING that curated
-     * encounter's loot lines and coin pile — the curated prep is never mutated,
-     * so an encounter can be dropped any number of times.
+     * (one per session). A {@code lootId} seeds it by COPYING that curated loot
+     * list's lines and coin pile — the curated prep is never mutated, so a list
+     * can be dropped any number of times.
      */
     @Transactional
-    public LootView openLoot(Long sessionId, Long encounterId, String name, UUID dmUserId) {
+    public LootView openLoot(Long sessionId, Long lootId, String name, UUID dmUserId) {
         CombatSession session = activeSessionForDm(sessionId, dmUserId);
 
         clearExistingLoot(sessionId);
@@ -100,25 +101,25 @@ public class LootService {
         pool.setSessionId(sessionId);
         pool.setName(name == null || name.isBlank() ? null : name.trim());
 
-        if (encounterId != null) {
-            Encounter encounter = encounterRepository.findById(encounterId)
+        if (lootId != null) {
+            CuratedLoot curated = curatedLootRepository.findById(lootId)
                     .orElseThrow(() -> new ResponseStatusException(
-                            HttpStatus.NOT_FOUND, "Encounter not found with id " + encounterId));
-            // The encounter must belong to this DM and to this session's campaign
+                            HttpStatus.NOT_FOUND, "Loot not found with id " + lootId));
+            // The list must belong to this DM and to this session's campaign
             // (same checks as SessionService.loadEncounter).
-            if (!dmUserId.equals(encounter.getDmUserId())
-                    || !Objects.equals(encounter.getCampaignId(), session.getCampaignId())) {
+            if (!dmUserId.equals(curated.getDmUserId())
+                    || !Objects.equals(curated.getCampaignId(), session.getCampaignId())) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
             }
-            if (pool.getName() == null) pool.setName(encounter.getName());
-            pool.setCoinCpTotal(encounter.getLootCoinCp());
-            pool.setCoinCpRemaining(encounter.getLootCoinCp());
+            if (pool.getName() == null) pool.setName(curated.getName());
+            pool.setCoinCpTotal(curated.getCoinCp());
+            pool.setCoinCpRemaining(curated.getCoinCp());
         }
         SessionLoot saved = lootRepository.save(pool);
 
-        if (encounterId != null) {
-            List<SessionLootItem> copies = encounterLootItemRepository
-                    .findByEncounterIdOrderByIdAsc(encounterId).stream()
+        if (lootId != null) {
+            List<SessionLootItem> copies = curatedLootItemRepository
+                    .findByLootIdOrderByIdAsc(lootId).stream()
                     .map(line -> copyLine(saved.getId(), line))
                     .toList();
             lootItemRepository.saveAll(copies);
@@ -155,12 +156,13 @@ public class LootService {
 
     /** DM adds a line to the pool (draft or already dropped — live edits are allowed). */
     @Transactional
-    public LootView addItem(Long sessionId, String catalogItemKey, String customName,
-                            String customNotes, Integer qty, UUID dmUserId) {
+    public LootView addItem(Long sessionId, AddLootItemRequest request, UUID dmUserId) {
         CombatSession session = activeSessionForDm(sessionId, dmUserId);
         SessionLoot pool = requireLoot(sessionId);
-        LootLines.validate(catalogItemKey, customName, qty);
-        String key = LootLines.normalizeKey(catalogItemKey);
+        LootLines.validate(request.catalogItemKey(), request.customName(), request.qty());
+        String key = LootLines.normalizeKey(request.catalogItemKey());
+        LootLines.validateAttributes(key != null, request.category(), request.valueGp(),
+                request.weight(), request.damage(), request.armorClass());
         if (key != null && srdItemRepository.findByItemKey(key).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + key);
         }
@@ -168,11 +170,15 @@ public class LootService {
         SessionLootItem item = new SessionLootItem();
         item.setSessionLootId(pool.getId());
         item.setCatalogItemKey(key);
-        item.setCustomName(key != null || customName == null ? null : customName.trim());
-        item.setCustomNotes(customNotes == null || customNotes.isBlank() ? null : customNotes.trim());
-        int amount = qty == null ? 1 : qty;
+        item.setCustomName(key != null || request.customName() == null
+                ? null : request.customName().trim());
+        item.setCustomNotes(request.customNotes() == null || request.customNotes().isBlank()
+                ? null : request.customNotes().trim());
+        int amount = request.qty() == null ? 1 : request.qty();
         item.setQty(amount);
         item.setQtyRemaining(amount);
+        LootLines.applyAttributes(item, request.category(), request.valueGp(),
+                request.weight(), request.damage(), request.armorClass());
         lootItemRepository.save(item);
 
         bump(session);
@@ -298,7 +304,12 @@ public class LootService {
             InventoryEntries.addCatalogItem(inventory, item, qty, null, json);
             itemName = item.getName();
         } else {
-            inventory.add(InventoryEntries.newCustomEntry(line.getCustomName(), qty, line.getCustomNotes()));
+            // The pool line carries the authored attributes (category, value,
+            // weight, damage, armor class) — stamped into the inventory entry so
+            // a claimed custom item is as richly stat'd as a DM-granted one.
+            inventory.add(InventoryEntries.newCustomEntry(line.getCustomName(), line.getCategory(),
+                    qty, line.getUnitCostCp(), line.getWeight(), line.getDamage(),
+                    line.getArmorClass(), line.getCustomNotes()));
             itemName = line.getCustomName();
         }
         pc.setInventory(json.write(inventory));
@@ -349,7 +360,7 @@ public class LootService {
 
     // --- internals -----------------------------------------------------------
 
-    private SessionLootItem copyLine(Long poolId, EncounterLootItem line) {
+    private SessionLootItem copyLine(Long poolId, CuratedLootItem line) {
         SessionLootItem copy = new SessionLootItem();
         copy.setSessionLootId(poolId);
         copy.setCatalogItemKey(line.getCatalogItemKey());
@@ -357,6 +368,7 @@ public class LootService {
         copy.setCustomNotes(line.getCustomNotes());
         copy.setQty(line.getQty());
         copy.setQtyRemaining(line.getQty());
+        LootLines.copyAttributes(line, copy);
         return copy;
     }
 
@@ -374,12 +386,15 @@ public class LootService {
                 .map(line -> {
                     if (line.getCatalogItemKey() == null) {
                         return new LootItemView(line.getId(), null, line.getCustomName(), true,
-                                line.getCustomNotes(), line.getQty(), line.getQtyRemaining());
+                                line.getCustomNotes(), line.getCategory(), line.getUnitCostCp(),
+                                line.getWeight(), line.getDamage(), line.getArmorClass(),
+                                line.getQty(), line.getQtyRemaining());
                     }
                     SrdItem c = catalog.get(line.getCatalogItemKey());
                     if (c == null) return null; // catalog item vanished — skip defensively
                     return new LootItemView(line.getId(), c.getItemKey(), c.getName(), false,
-                            null, line.getQty(), line.getQtyRemaining());
+                            null, null, null, null, null, null,
+                            line.getQty(), line.getQtyRemaining());
                 })
                 .filter(Objects::nonNull)
                 .toList();

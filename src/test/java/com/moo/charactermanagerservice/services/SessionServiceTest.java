@@ -289,11 +289,11 @@ class SessionServiceTest {
     // --- turn order: tie-breaking ---
 
     @Test
-    void order_breaksInitiativeTies_byDexModifier_thenInsertionOrder() {
+    void order_breaksInitiativeTies_byInsertionOrder() {
         session.setStatus(SessionStatus.LOBBY);
-        // All initiative 15. DEX 9 is a -1 modifier (floorDiv, not truncation), so
-        // it must sort below DEX 10's +0. The two NPCs (no modifier) fall back to
-        // insertion order (id asc).
+        // All initiative 15. There is no DEX tie-break layer any more (enemies
+        // carry AC, which plays no part in initiative) — full ties resolve by
+        // id asc (BIGSERIAL = insertion order), PCs and NPCs alike.
         SessionParticipant slowPc = pcCombatant(1L, 7L, (short) 15, 0);
         SessionParticipant avgPc = pcCombatant(2L, 8L, (short) 15, 1);
         SessionParticipant npcLate = combatant(4L, (short) 15, 3);
@@ -306,11 +306,11 @@ class SessionServiceTest {
 
         sessionService.startEncounter(1L, dmId);
 
-        assertThat(avgPc.getOrderIndex()).isEqualTo((short) 0);   // +0 beats -1
-        assertThat(slowPc.getOrderIndex()).isEqualTo((short) 1);
-        assertThat(npcEarly.getOrderIndex()).isEqualTo((short) 2); // null mod → after PCs, id asc
+        assertThat(slowPc.getOrderIndex()).isEqualTo((short) 0);   // id 1 first
+        assertThat(avgPc.getOrderIndex()).isEqualTo((short) 1);
+        assertThat(npcEarly.getOrderIndex()).isEqualTo((short) 2); // id asc continues
         assertThat(npcLate.getOrderIndex()).isEqualTo((short) 3);
-        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(2L);
+        assertThat(session.getCurrentTurnParticipantId()).isEqualTo(1L);
     }
 
     // --- endEncounter ---
@@ -626,12 +626,12 @@ class SessionServiceTest {
             return p;
         });
 
-        sessionService.addEnemy(1L, "Goblin Boss", (short) 2, (short) 21, dmId);
+        sessionService.addEnemy(1L, "Goblin Boss", (short) 17, (short) 21, dmId);
 
         SessionParticipant enemy = list.stream()
                 .filter(p -> Long.valueOf(99L).equals(p.getId())).findFirst().orElseThrow();
         assertThat(enemy.getPcId()).isNull();
-        assertThat(enemy.getDexModifier()).isEqualTo((short) 2);
+        assertThat(enemy.getNpcArmorClass()).isEqualTo((short) 17);
         assertThat(enemy.getNpcHpMax()).isEqualTo((short) 21);
         assertThat(enemy.getNpcHpCurrent()).isEqualTo((short) 21);
         assertThat(enemy.getInitiative()).isNull();
@@ -650,15 +650,35 @@ class SessionServiceTest {
     }
 
     @Test
-    void addEnemy_throws400_withoutNameOrDexModifier() {
+    void addEnemy_throws400_withoutName() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.addEnemy(1L, "  ", (short) 2, null, dmId))
+        assertThatThrownBy(() -> sessionService.addEnemy(1L, "  ", (short) 15, null, dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        assertThatThrownBy(() -> sessionService.addEnemy(1L, "Goblin", null, null, dmId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void addEnemy_allowsUnknownArmorClass() {
+        // AC is optional reference info — a null must not be rejected.
+        List<SessionParticipant> list = new ArrayList<>();
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(list);
+        when(participantRepository.save(any(SessionParticipant.class))).thenAnswer(inv -> {
+            SessionParticipant p = inv.getArgument(0);
+            if (p.getId() == null) {
+                p.setId(99L);
+                list.add(p);
+            }
+            return p;
+        });
+
+        sessionService.addEnemy(1L, "Mysterious Figure", null, null, dmId);
+
+        assertThat(list).singleElement().satisfies(e -> {
+            assertThat(e.getNpcArmorClass()).isNull();
+            assertThat(e.getDisplayName()).isEqualTo("Mysterious Figure");
+        });
     }
 
     // --- loadEncounter ---
@@ -670,8 +690,8 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(encounterRepository.findById(2L)).thenReturn(Optional.of(encounter(2L, 1L, dmId)));
         when(encounterCreatureRepository.findByEncounterIdOrderByIdAsc(2L)).thenReturn(List.of(
-                creature("Goblin", (short) 2, (short) 7, 4),
-                creature("Goblin Boss", (short) 1, (short) 21, 1)));
+                creature("Goblin", (short) 15, (short) 7, 4),
+                creature("Goblin Boss", (short) 17, (short) 21, 1)));
         when(participantRepository.save(any(SessionParticipant.class))).thenAnswer(inv -> {
             SessionParticipant p = inv.getArgument(0);
             if (p.getId() == null) {
@@ -694,7 +714,7 @@ class SessionServiceTest {
         assertThat(enemies).allSatisfy(e -> assertThat(e.getInitiative()).isNull());
         SessionParticipant boss = enemies.stream()
                 .filter(e -> "Goblin Boss".equals(e.getDisplayName())).findFirst().orElseThrow();
-        assertThat(boss.getDexModifier()).isEqualTo((short) 1);
+        assertThat(boss.getNpcArmorClass()).isEqualTo((short) 17);
         assertThat(boss.getNpcHpMax()).isEqualTo((short) 21);
         assertThat(boss.getNpcHpCurrent()).isEqualTo((short) 21);
         verify(sessionRepository).save(session); // version bumped once
@@ -743,13 +763,13 @@ class SessionServiceTest {
     }
 
     @Test
-    void enemyDexModifier_breaksInitiativeTie_againstPcModifier() {
+    void enemyPcInitiativeTie_resolvesByInsertionOrder_ignoringDexAndAc() {
         session.setStatus(SessionStatus.LOBBY);
-        // Same initiative: enemy +3 must beat PC dex 12 (+1) — modifiers compare
-        // against modifiers, never raw scores.
+        // Same initiative: neither the PC's DEX nor the enemy's AC plays any
+        // part — the earlier row (lower id) simply goes first.
         SessionParticipant pc = pcCombatant(1L, 7L, (short) 15, 0);
         SessionParticipant enemy = combatant(2L, (short) 15, 1);
-        enemy.setDexModifier((short) 3);
+        enemy.setNpcArmorClass((short) 18);
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
                 .thenReturn(new ArrayList<>(List.of(pc, enemy)));
@@ -757,8 +777,8 @@ class SessionServiceTest {
 
         sessionService.startEncounter(1L, dmId);
 
-        assertThat(enemy.getOrderIndex()).isEqualTo((short) 0);
-        assertThat(pc.getOrderIndex()).isEqualTo((short) 1);
+        assertThat(pc.getOrderIndex()).isEqualTo((short) 0);
+        assertThat(enemy.getOrderIndex()).isEqualTo((short) 1);
     }
 
     // --- visibility + sound settings ---
@@ -1948,10 +1968,10 @@ class SessionServiceTest {
         return e;
     }
 
-    private static EncounterCreature creature(String name, Short dexModifier, Short hpMax, int quantity) {
+    private static EncounterCreature creature(String name, Short armorClass, Short hpMax, int quantity) {
         EncounterCreature c = new EncounterCreature();
         c.setName(name);
-        c.setDexModifier(dexModifier);
+        c.setArmorClass(armorClass);
         c.setHpMax(hpMax);
         c.setQuantity(quantity);
         return c;
@@ -1982,7 +2002,7 @@ class SessionServiceTest {
         SessionParticipant mine = pcCombatant(1L, 7L, (short) 20, 0);
         mine.setOwnerUserId(playerId);
         SessionParticipant enemy = combatant(2L, (short) 15, 1);
-        enemy.setDexModifier((short) 2);
+        enemy.setNpcArmorClass((short) 15);
         SessionParticipant theirs = pcCombatant(3L, 8L, (short) 10, 2);
         theirs.setOwnerUserId(strangerId);
         return new ArrayList<>(List.of(mine, enemy, theirs));
