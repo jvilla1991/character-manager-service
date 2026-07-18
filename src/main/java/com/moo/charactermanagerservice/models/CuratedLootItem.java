@@ -9,33 +9,32 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
- * One claimable line in a {@link SessionLoot} pool. Same catalog-or-custom shape
- * (and custom-item {@link LootLineAttributes}) as {@link CuratedLootItem};
- * {@code qtyRemaining} is the only claim state (first-come-first-served — who
- * took what is recorded in the pc activity log). Claims decrement it under a
- * pessimistic row lock so two players can't take the last one.
+ * One line in a {@link CuratedLoot} list. Either a catalog reference
+ * ({@code catalogItemKey}) or a free-hand custom item ({@code customName} +
+ * optional notes and {@link LootLineAttributes}), never both (CHECK in V35).
+ * Copied — never moved — into a {@link SessionLoot} pool when the DM drops
+ * this list in a session, so the curated prep survives being dropped any
+ * number of times.
  */
 @Getter
 @JsonIgnoreProperties(ignoreUnknown = true)
 @Entity
-@Table(name = "session_loot_item")
-public class SessionLootItem implements Serializable, LootLineAttributes {
+@Table(name = "curated_loot_item")
+public class CuratedLootItem implements Serializable, LootLineAttributes {
 
-    public SessionLootItem() {}
+    public CuratedLootItem() {}
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Long sessionLootId;
+    private Long lootId;
     private String catalogItemKey; // null for custom items
     private String customName;     // null for catalog items
     private String customNotes;
     private int qty = 1;
-    private int qtyRemaining = 1;
 
-    // Custom-item attributes copied from the curated line (null for catalog
-    // lines and for legacy rows created before V35).
+    // Custom-item attributes (null for catalog lines — the catalog is authoritative).
     private String category;
     private Long unitCostCp;
     private BigDecimal weight;
@@ -51,12 +50,11 @@ public class SessionLootItem implements Serializable, LootLineAttributes {
     }
 
     public void setId(Long id) { this.id = id; }
-    public void setSessionLootId(Long sessionLootId) { this.sessionLootId = sessionLootId; }
+    public void setLootId(Long lootId) { this.lootId = lootId; }
     public void setCatalogItemKey(String catalogItemKey) { this.catalogItemKey = catalogItemKey; }
     public void setCustomName(String customName) { this.customName = customName; }
     public void setCustomNotes(String customNotes) { this.customNotes = customNotes; }
     public void setQty(int qty) { this.qty = qty; }
-    public void setQtyRemaining(int qtyRemaining) { this.qtyRemaining = qtyRemaining; }
     @Override public void setCategory(String category) { this.category = category; }
     @Override public void setUnitCostCp(Long unitCostCp) { this.unitCostCp = unitCostCp; }
     @Override public void setWeight(BigDecimal weight) { this.weight = weight; }

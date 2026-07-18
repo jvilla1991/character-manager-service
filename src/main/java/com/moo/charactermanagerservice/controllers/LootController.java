@@ -31,7 +31,7 @@ public class LootController {
 
     /**
      * DM opens a loot pool as an invisible draft (replacing any existing pool).
-     * An {@code encounterId} seeds it from that curated encounter's prepped loot.
+     * A {@code lootId} seeds it from that curated loot list's prepped lines.
      */
     @PostMapping("/session/{id}/loot")
     public ResponseEntity<LootView> openLoot(@PathVariable Long id,
@@ -39,7 +39,7 @@ public class LootController {
                                              Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(lootService.openLoot(
-                id, request.encounterId(), request.name(), user.getUuid()));
+                id, request.lootId(), request.name(), user.getUuid()));
     }
 
     /** DM drops the loot — players can now see and claim. */
@@ -63,8 +63,7 @@ public class LootController {
                                             @RequestBody AddLootItemRequest request,
                                             Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(lootService.addItem(id, request.catalogItemKey(),
-                request.customName(), request.customNotes(), request.qty(), user.getUuid()));
+        return ResponseEntity.ok(lootService.addItem(id, request, user.getUuid()));
     }
 
     /** DM edits a line (qty shifts the remaining count by the same delta). */

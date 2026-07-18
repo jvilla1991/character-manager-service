@@ -25,7 +25,6 @@ public record ParticipantView(
         String portraitInitials,
         Short initiative,
         boolean initRolled,
-        Short dexModifier,
         Short orderIndex,
         Short hpMax,
         Short hpCurrent,
@@ -48,11 +47,13 @@ public record ParticipantView(
         boolean rolled = Boolean.TRUE.equals(p.getInitRolled());
 
         if (isNpc) {
+            // An enemy's AC is the DM-entered npcArmorClass — surfaced through the
+            // same `ac` field a PC row uses, so the tracker renders one thing.
             return new ParticipantView(
                     p.getId(), null, true, ownedByMe, currentTurn,
                     p.getDisplayName(), null, null, null, null,
-                    p.getInitiative(), rolled, p.getDexModifier(), p.getOrderIndex(),
-                    p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), null,
+                    p.getInitiative(), rolled, p.getOrderIndex(),
+                    p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), p.getNpcArmorClass(),
                     p.getNpcConditions(), null, null,
                     p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
             );
@@ -62,7 +63,7 @@ public record ParticipantView(
                 p.getId(), pc.getId(), false, ownedByMe, currentTurn,
                 pc.getName(), pc.getClazz(), pc.getLevel(),
                 pc.getPortraitTint(), pc.getPortraitInitials(),
-                p.getInitiative(), rolled, null, p.getOrderIndex(),
+                p.getInitiative(), rolled, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
                 pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
@@ -79,7 +80,7 @@ public record ParticipantView(
         return new ParticipantView(
                 participantId, pcId, npc, ownedByMe, currentTurn,
                 name, clazz, level, portraitTint, portraitInitials,
-                initiative, initRolled, dexModifier, orderIndex,
+                initiative, initRolled, orderIndex,
                 null, null, null, ac,
                 conditions, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures

@@ -51,14 +51,34 @@ public class SessionNoteService {
                 .stream().map(SessionNoteView::from).toList();
     }
 
+    /**
+     * Edit a note's body. Guarded exactly like creation (campaign-DM ownership);
+     * 404 if the note does not exist or is not on the owned campaign. The
+     * entity's {@code @PreUpdate} stamps {@code updatedAt} so the UI can mark
+     * the note as edited.
+     */
+    public SessionNoteView updateNote(Long campaignId, Long noteId, String body, UUID dmUserId) {
+        campaignService.findByIdForDm(campaignId, dmUserId);   // asserts ownership
+        if (body == null || body.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Note body must not be blank");
+        }
+        SessionNote note = requireNoteOnCampaign(campaignId, noteId);
+        note.setBody(body.strip());
+        return SessionNoteView.from(sessionNoteRepository.save(note));
+    }
+
     /** Delete a note. 404 if the note does not exist or is not on the owned campaign. */
     public void deleteNote(Long campaignId, Long noteId, UUID dmUserId) {
         campaignService.findByIdForDm(campaignId, dmUserId);   // asserts ownership
+        sessionNoteRepository.delete(requireNoteOnCampaign(campaignId, noteId));
+    }
+
+    private SessionNote requireNoteOnCampaign(Long campaignId, Long noteId) {
         SessionNote note = sessionNoteRepository.findById(noteId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Note not found"));
         if (!campaignId.equals(note.getCampaignId())) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Note not found on this campaign");
         }
-        sessionNoteRepository.delete(note);
+        return note;
     }
 }

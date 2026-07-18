@@ -107,6 +107,59 @@ class SessionNoteServiceTest {
         assertThat(views).extracting(SessionNoteView::body).containsExactly("newer", "older");
     }
 
+    // --- updateNote ---
+
+    @Test
+    void updateNote_savesTrimmedBody_whenOwnerAndNoteOnCampaign() {
+        SessionNote existing = note(7L, "old text");
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(campaign);
+        when(sessionNoteRepository.findById(7L)).thenReturn(Optional.of(existing));
+        when(sessionNoteRepository.save(any(SessionNote.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SessionNoteView view = sessionNoteService.updateNote(1L, 7L, "  The cult regrouped  ", dmId);
+
+        assertThat(view.body()).isEqualTo("The cult regrouped"); // trimmed
+        verify(sessionNoteRepository).save(existing);
+    }
+
+    @Test
+    void updateNote_throws400_whenBodyBlank() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(campaign);
+
+        assertThatThrownBy(() -> sessionNoteService.updateNote(1L, 7L, "   ", dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+        verify(sessionNoteRepository, never()).save(any());
+    }
+
+    @Test
+    void updateNote_throws404_whenNoteMissingOrOnDifferentCampaign() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(campaign);
+        when(sessionNoteRepository.findById(7L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> sessionNoteService.updateNote(1L, 7L, "text", dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
+
+        SessionNote other = note(8L, "belongs elsewhere");
+        other.setCampaignId(99L);
+        when(sessionNoteRepository.findById(8L)).thenReturn(Optional.of(other));
+        assertThatThrownBy(() -> sessionNoteService.updateNote(1L, 8L, "text", dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(404));
+        verify(sessionNoteRepository, never()).save(any());
+    }
+
+    @Test
+    void updateNote_propagates403_whenNotOwner() {
+        when(campaignService.findByIdForDm(1L, dmId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> sessionNoteService.updateNote(1L, 7L, "text", dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+        verify(sessionNoteRepository, never()).save(any());
+    }
+
     // --- deleteNote ---
 
     @Test

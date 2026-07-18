@@ -6,14 +6,16 @@ import java.time.Instant;
 
 /**
  * Response shape for a DM session note. {@code sessionId} is null when the note
- * was added outside a live session.
+ * was added outside a live session; {@code updatedAt} is null until the note is
+ * edited (so the UI can mark edits).
  */
 public record SessionNoteView(
         Long id,
         Long campaignId,
         Long sessionId,
         String body,
-        Instant createdAt
+        Instant createdAt,
+        Instant updatedAt
 ) {
     public static SessionNoteView from(SessionNote note) {
         return new SessionNoteView(
@@ -21,6 +23,7 @@ public record SessionNoteView(
                 note.getCampaignId(),
                 note.getSessionId(),
                 note.getBody(),
-                note.getCreatedAt());
+                note.getCreatedAt(),
+                note.getUpdatedAt());
     }
 }
