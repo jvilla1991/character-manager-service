@@ -39,9 +39,18 @@ public class SessionNote implements Serializable {
     @Column(name = "created_at")
     private Instant createdAt;
 
+    // Null until the note is edited (V35); surfaced so the UI can mark edits.
+    @Column(name = "updated_at")
+    private Instant updatedAt;
+
     @PrePersist
     void onCreate() {
         this.createdAt = Instant.now();
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        this.updatedAt = Instant.now();
     }
 
     // --- Setters ---
