@@ -8,5 +8,7 @@ public enum PcActivityType {
     LOOT,
     XP_AWARD,
     LONG_REST,
+    SHORT_REST,
+    INSPIRATION,
     DM_EDIT
 }

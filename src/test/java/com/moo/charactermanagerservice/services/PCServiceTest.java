@@ -268,6 +268,113 @@ class PCServiceTest {
         assertThat(result.getExhaustion()).isEqualTo((short) 5);
     }
 
+    // --- V38 server-owned columns (hit dice + inspiration meter) ---
+
+    @Test
+    void updatePC_neverChangesHitDiceOrInspiration_evenWhenTheBodyCarriesValues() {
+        pc.setHitDiceUsed((short) 3);
+        pc.setInspirationPips((short) 2);
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setHitDiceUsed((short) 0);      // a stale/tampered echo
+        incoming.setInspirationPips((short) 4);
+        incoming.setHeroicInspiration(false);
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getHitDiceUsed()).isEqualTo((short) 3);
+        assertThat(result.getInspirationPips()).isEqualTo((short) 2);
+        assertThat(result.getHeroicInspiration()).isTrue();
+    }
+
+    // --- inspiration meter (award pip / use heroic) ---
+
+    @Test
+    void awardInspirationPip_incrementsMeter_andLogs() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 1);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.awardInspirationPip(1L, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 2);
+        assertThat(result.getHeroicInspiration()).isNotEqualTo(Boolean.TRUE);
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "DM awarded an inspiration pip (2/5)", dmId);
+    }
+
+    @Test
+    void awardInspirationPip_fifthPip_grantsHeroic_andResetsMeter() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 4);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.awardInspirationPip(1L, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 0);
+        assertThat(result.getHeroicInspiration()).isTrue();
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "Gained Heroic Inspiration (meter filled)", dmId);
+    }
+
+    @Test
+    void awardInspirationPip_throws403_whenNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.awardInspirationPip(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void useHeroicInspiration_clearsTheBadge_forTheOwner() {
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.useHeroicInspiration(1L, ownerId);
+
+        assertThat(result.getHeroicInspiration()).isFalse();
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "Used Heroic Inspiration", ownerId);
+    }
+
+    @Test
+    void useHeroicInspiration_throws409_whenThereIsNoneToUse() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // heroic false
+
+        assertThatThrownBy(() -> pcService.useHeroicInspiration(1L, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void useHeroicInspiration_allowsTheCampaignDm() {
+        pc.setCampaignId(7L);
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.useHeroicInspiration(1L, dmId);
+
+        assertThat(result.getHeroicInspiration()).isFalse();
+    }
+
     // --- per-character notes ---
 
     @Test
