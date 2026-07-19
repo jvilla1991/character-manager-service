@@ -107,6 +107,12 @@ public class PC implements Serializable {
     private Short speed;
     private Short profBonus;
 
+    // 2024 PHB Exhaustion level, 0-6 (V37): each level is -2 to all d20 Tests
+    // and -5 ft Speed; level 6 kills the character. NULL = never tracked (0).
+    // Preserved when an update body carries null (like survival), so a payload
+    // built without the field can't wipe a real level.
+    private Short exhaustion;
+
     // --- JSON-serialized arrays / objects stored as TEXT ---
     @Column(columnDefinition = "TEXT")
     private String spells;
@@ -198,6 +204,7 @@ public class PC implements Serializable {
     public void setInitiative(Short initiative) { this.initiative = initiative; }
     public void setSpeed(Short speed) { this.speed = speed; }
     public void setProfBonus(Short profBonus) { this.profBonus = profBonus; }
+    public void setExhaustion(Short exhaustion) { this.exhaustion = exhaustion; }
 
     public void setSpells(String spells) { this.spells = spells; }
     public void setSpellSlots(String spellSlots) { this.spellSlots = spellSlots; }

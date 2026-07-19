@@ -76,6 +76,10 @@ public class PCService {
      * must not wipe those changes. Clients adjust survival by sending it — they
      * can never clear it to NULL, which nothing legitimately does.
      *
+     * <p>The exhaustion level (2024 PHB, V37) follows the same rule: clients set
+     * it by sending a value (0 included); a body carrying NULL — e.g. one built
+     * from a projection that lacks the field — preserves the stored level.
+     *
      * <p>The pending level grant is fully server-owned: only the DM's grant
      * endpoint sets it and only an applied level-up clears it, so a generic
      * update body (even one echoing a stale value) never changes it.
@@ -83,6 +87,9 @@ public class PCService {
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
+        }
+        if (incoming.getExhaustion() == null) {
+            incoming.setExhaustion(existing.getExhaustion());
         }
         incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
     }

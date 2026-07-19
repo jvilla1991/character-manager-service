@@ -217,6 +217,57 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
     }
 
+    // --- exhaustion preservation (an update carrying null must not wipe it) ---
+
+    @Test
+    void updatePC_preservesExhaustion_whenTheBodyOmitsIt() {
+        pc.setExhaustion((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setName("Renamed"); // exhaustion null — a payload built without the field
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 3);
+    }
+
+    @Test
+    void updatePC_acceptsAnExplicitExhaustion_includingZero() {
+        pc.setExhaustion((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setExhaustion((short) 0); // a long rest walked it back down
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void updatePCAsDm_preservesExhaustion_whenTheBodyOmitsIt() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setExhaustion((short) 5);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 5);
+    }
+
     // --- per-character notes ---
 
     @Test
