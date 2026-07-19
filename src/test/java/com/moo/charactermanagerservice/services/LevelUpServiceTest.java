@@ -588,6 +588,57 @@ class LevelUpServiceTest {
     }
 
     @Test
+    void applyLevelUp_rejectsSpellAboveSlotLevel() {
+        // Bard 4 -> 5: highest slot at level 5 is spell level 3 — a level-4 spell is unlearnable.
+        PC bard = pc("Bard", 4, 14, 30, 30);
+        assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null,
+                List.of(spell(4, "Polymorph"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("highest spell level");
+    }
+
+    @Test
+    void applyLevelUp_acceptsSpellAtExactlyTheNewSlotLevel() {
+        // Bard 4 -> 5 gains its first level-3 slot — a level-3 spell is now learnable.
+        PC bard = pc("Bard", 4, 14, 30, 30);
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(3, "Fear")));
+
+        assertThat(bard.getSpells()).contains("Fear");
+    }
+
+    @Test
+    void applyLevelUp_rejectsSpellAbovePactSlotLevel_forWarlock() {
+        // Warlock 4 -> 5: pact slots move to spell level 3 — a level-5 spell is out of reach.
+        PC warlock = pc("Warlock", 4, 14, 30, 30);
+        assertThatThrownBy(() -> service.applyLevelUp(warlock, null, null, null,
+                List.of(spell(5, "Hold Monster"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_acceptsSpellAtPactSlotLevel_forWarlock() {
+        // Warlock 4 -> 5: pact slot level is 3 — a level-3 spell is learnable.
+        PC warlock = pc("Warlock", 4, 14, 30, 30);
+
+        service.applyLevelUp(warlock, null, null, null, List.of(spell(3, "Fly")));
+
+        assertThat(warlock.getSpells()).contains("Fly");
+    }
+
+    @Test
+    void applyLevelUp_cantripsUnaffectedBySlotLevelCap() {
+        // Cantrips are level 0 and never blocked by the slot-level cap (count-gated only).
+        PC bard = pc("Bard", 9, 14, 60, 60); // 9 -> 10: cantrip delta 1
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(0, "Mending")));
+
+        assertThat(bard.getSpells()).contains("Mending");
+    }
+
+    @Test
     void applyLevelUp_rejectsSpellsForNonCaster() {
         PC fighter = pc("Fighter", 1, 14, 12, 12); // -> 2, no spell allowance
         assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, null, List.of(spell(1, "Shield"))))
