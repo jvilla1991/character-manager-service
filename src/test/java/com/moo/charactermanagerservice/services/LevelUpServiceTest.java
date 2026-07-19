@@ -434,6 +434,53 @@ class LevelUpServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
+    @Test
+    void preview_featOptions_fightingStylesOnlyForFightingStyleClasses() {
+        assertThat(service.preview(pc("Fighter", 3, 14, 28, 28)).featOptions()).contains("Archery");   // -> 4
+        assertThat(service.preview(pc("Paladin", 3, 14, 28, 28)).featOptions()).contains("Defense");   // -> 4
+        assertThat(service.preview(pc("Ranger", 3, 14, 28, 28)).featOptions()).contains("Dueling");    // -> 4
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).featOptions())
+                .contains("War Caster").doesNotContain("Archery");                                     // -> 4
+    }
+
+    @Test
+    void preview_featOptions_epicBoonsOnlyAtLevel19() {
+        assertThat(service.preview(pc("Wizard", 18, 14, 80, 80)).featOptions())
+                .contains("Boon of Fate", "Boon of Spell Recall");                       // -> 19
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).featOptions())
+                .doesNotContain("Boon of Fate");                                         // -> 4
+    }
+
+    @Test
+    void applyLevelUp_feat_acceptsFightingStyleForFightingStyleClass() {
+        PC ranger = pc("Ranger", 3, 14, 28, 28); // -> 4, an ASI level
+        service.applyLevelUp(ranger, null, null, "Two-Weapon Fighting");
+        assertThat(ranger.getFeatures()).contains("Two-Weapon Fighting").contains("Feat (Level 4)");
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsFightingStyleForOtherClasses() {
+        PC wizard = pc("Wizard", 3, 14, 18, 18); // -> 4, an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(wizard, null, null, "Archery"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_feat_acceptsEpicBoonAtLevel19() {
+        PC wizard = pc("Wizard", 18, 14, 80, 80); // -> 19, an ASI level
+        service.applyLevelUp(wizard, null, null, "Boon of Fate");
+        assertThat(wizard.getFeatures()).contains("Boon of Fate").contains("Feat (Level 19)");
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsEpicBoonBeforeLevel19() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28); // -> 4, an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, "Boon of Fate"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
     // --- Auto-granted class features ---
 
     @Test

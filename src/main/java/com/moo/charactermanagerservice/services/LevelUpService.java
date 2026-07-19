@@ -89,7 +89,7 @@ public class LevelUpService {
                 subclassDue(pc, newLevel),
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
-                asiDue ? FeatCatalog.generalFeats() : List.of(),
+                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
                 ClassFeatures.featuresAt(pc.getClazz(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
@@ -306,7 +306,7 @@ public class LevelUpService {
     /** Validate the chosen feat against the catalog and record it among the PC's features. */
     private void applyFeatChoice(PC pc, int newLevel, String feat) {
         String name = feat.trim();
-        if (!FeatCatalog.isValidFeat(name)) {
+        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "'" + name + "' is not a selectable feat");
         }
