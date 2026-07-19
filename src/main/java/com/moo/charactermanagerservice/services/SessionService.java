@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
+import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
@@ -22,6 +23,7 @@ import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
+import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
@@ -49,9 +51,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
 
 /**
@@ -85,6 +89,14 @@ public class SessionService {
     private final PcActivityLogService activityLogService;
     private final SessionRollRepository sessionRollRepository;
     private final PcJsonColumns json;
+
+    /**
+     * RNG for the server-side hit-die roll ({@link #spendHitDie}). Package-
+     * visible seam so tests can pin a deterministic generator — mirrors
+     * {@code HpCalculator}'s constructor seam without widening this service's
+     * Spring constructor.
+     */
+    RandomGenerator rng = new Random();
 
     @Autowired
     public SessionService(CombatSessionRepository sessionRepository,
@@ -308,6 +320,7 @@ public class SessionService {
         session.setStatus(SessionStatus.ACTIVE);
         session.setCurrentTurnParticipantId(ordered.get(0).getId());
         session.setRound((short) 1); // a fresh encounter always opens on round 1
+        session.setShortRestOpen(false); // combat interrupts any announced rest
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -855,6 +868,14 @@ public class SessionService {
         for (Long pcId : pcIds) {
             pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> {
                 pc.setSpellSlots(json.writeObject(restoreAllSlots(json.parseObject(pc.getSpellSlots()))));
+                // 2024 PHB: a long rest restores spent hit dice equal to half
+                // the character's level (minimum 1).
+                int used = pc.getHitDiceUsed() == null ? 0 : pc.getHitDiceUsed();
+                if (used > 0) {
+                    int level = pc.getLevel() == null ? 1 : pc.getLevel();
+                    int restored = Math.max(1, level / 2);
+                    pc.setHitDiceUsed((short) Math.max(0, used - restored));
+                }
                 if (survival) {
                     pc.setSurvival(json.writeObject(
                             SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", -fatigueRelief)));
@@ -864,6 +885,131 @@ public class SessionService {
                         "Completed a long rest", dmUserId);
             });
         }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * DM announces (or calls off) a short rest: toggles the session's
+     * {@code shortRestOpen} window. While open, players may spend hit dice via
+     * {@link #spendHitDie}; the window clears automatically on encounter start
+     * and session end. Version-bumped so every sheet shows the window live.
+     */
+    public SessionStateView toggleShortRest(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        session.setShortRestOpen(!Boolean.TRUE.equals(session.getShortRestOpen()));
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * A player spends one of their own seated PC's hit dice during a DM-opened
+     * short rest: the server rolls 1d[hitDie] + CON mod (healing floored at 1,
+     * capped at max HP), increments {@code hitDiceUsed} (max = level, 409 when
+     * exhausted), logs to the PC activity log and the session roll log, and
+     * bumps the version. Server-rolled so a client can't inflate the heal.
+     */
+    @Transactional
+    public HitDieSpendResult spendHitDie(Long sessionId, Long pcId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (!Boolean.TRUE.equals(session.getShortRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "No short rest is in progress — ask your DM to call one");
+        }
+        if (pcId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
+        }
+
+        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Character is not seated in this session"));
+        if (!userId.equals(seated.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        // Same row lock as cast/consume — HP and the dice count are read-modify-write.
+        PC pc = pcRepository.findByIdForUpdate(pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
+
+        int level = pc.getLevel() == null ? 1 : pc.getLevel();
+        int used = pc.getHitDiceUsed() == null ? 0 : pc.getHitDiceUsed();
+        if (used >= level) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No hit dice remaining");
+        }
+
+        int hitDie = ClassProgression.hitDie(pc.getClazz());
+        int conMod = ClassProgression.abilityModifier(
+                pc.getAbilityCon() == null ? 10 : pc.getAbilityCon());
+        int roll = rng.nextInt(hitDie) + 1;
+        int rolledHeal = Math.max(1, roll + conMod); // a bad CON can't heal 0
+
+        int cur = pc.getHpCurrent() == null ? 0 : pc.getHpCurrent();
+        int newCur = cur + rolledHeal;
+        if (pc.getHpMax() != null) {
+            newCur = Math.min(newCur, pc.getHpMax());
+        }
+        int healed = newCur - cur; // the die is spent even when mostly/fully capped
+
+        pc.setHpCurrent((short) newCur);
+        pc.setHitDiceUsed((short) (used + 1));
+        pcRepository.save(pc);
+
+        activityLogService.log(pc.getId(), PcActivityType.SHORT_REST,
+                "Spent a Hit Die (d" + hitDie + ": " + roll
+                        + (conMod >= 0 ? " + " + conMod : " - " + Math.abs(conMod))
+                        + " CON) — healed " + healed + " HP", userId);
+
+        // Surface the server's roll in the session Roll Log so the DM sees it.
+        SessionRoll rollRow = new SessionRoll();
+        rollRow.setSessionId(sessionId);
+        rollRow.setParticipantId(seated.getId());
+        rollRow.setOwnerUserId(userId);
+        rollRow.setDisplayName(pc.getName());
+        rollRow.setBreakdown(json.write(List.of(
+                Map.of("sides", hitDie, "rolls", List.of(roll)))));
+        rollRow.setGrandTotal(roll);
+        sessionRollRepository.save(rollRow);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return new HitDieSpendResult(roll, healed, pc.getHpCurrent(), pc.getHitDiceUsed());
+    }
+
+    /**
+     * DM awards one inspiration pip to a seated PC (mirrors the XP-award
+     * authorization: DM only, PC combatants only). The fill logic lives in
+     * {@link PCService#applyInspirationPip} — shared with the out-of-session
+     * member-sheet award — and the version bump makes the meter move live on
+     * every viewer's sheet.
+     */
+    @Transactional
+    public SessionStateView awardInspiration(Long sessionId, Long participantId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+
+        SessionParticipant participant = requireParticipant(sessionId, participantId);
+        if (participant.getPcId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Cannot award inspiration to a non-PC combatant");
+        }
+
+        PC pc = pcService.findPCById(participant.getPcId());
+        pcService.applyInspirationPip(pc, dmUserId);
+        pcRepository.save(pc);
+
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -1284,6 +1430,7 @@ public class SessionService {
         });
 
         session.setStatus(SessionStatus.ENDED);
+        session.setShortRestOpen(false);
         session.bumpVersion();
         CombatSession saved = sessionRepository.save(session);
         sessionRollRepository.deleteBySessionId(session.getId());
@@ -1461,10 +1608,14 @@ public class SessionService {
             boolean ownedByMe = requesterId.equals(p.getOwnerUserId());
             boolean currentTurn = p.getId().equals(activeIdForViews);
             ParticipantView view = ParticipantView.from(p, pc, ownedByMe, currentTurn);
-            // "See enemies, hide health": a player's enemy rows lose their HP
-            // fields server-side — the values never enter the payload. The DM
-            // always sees full health.
-            return (!isDm && enemyHpHidden && view.npc()) ? view.withoutHp() : view;
+            // A player's enemy rows never carry AC — a monster's armor class is
+            // the DM's information in every visibility mode. On top of that,
+            // "see enemies, hide health" also strips the HP fields. The DM
+            // always sees everything.
+            if (!isDm && view.npc()) {
+                view = enemyHpHidden ? view.withoutHp().withoutAc() : view.withoutAc();
+            }
+            return view;
         }).toList();
 
         // Targeted-shop signal: a shop is open, and it's visible to the DM or to a
@@ -1541,6 +1692,7 @@ public class SessionService {
                 isDm,
                 enemiesHidden,
                 enemyHpHidden,
+                Boolean.TRUE.equals(session.getShortRestOpen()),
                 session.getTurnSound(),
                 shopOpen,
                 shopForMe,
