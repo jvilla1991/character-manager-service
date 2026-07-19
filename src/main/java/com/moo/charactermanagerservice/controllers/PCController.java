@@ -115,6 +115,29 @@ public class PCController {
         return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid(), request));
     }
 
+    /**
+     * Level-up preview of a campaign member, for the DM who runs its campaign —
+     * campaign-DM authorized like the as-dm endpoints.
+     */
+    @GetMapping("/{id}/level-up/preview/as-dm")
+    public ResponseEntity<LevelUpPreview> previewLevelUpAsDm(@PathVariable Long id,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.previewLevelUpAsDm(id, user.getUuid()));
+    }
+
+    /**
+     * The DM levels up a campaign member directly — campaign-DM authorized like
+     * the as-dm endpoints, and not gated on XP or a pending grant (the DM's
+     * action is the authorization).
+     */
+    @PostMapping("/{id}/level-up/as-dm")
+    public ResponseEntity<PC> levelUpAsDm(@PathVariable Long id, Authentication authentication,
+                                          @RequestBody(required = false) LevelUpRequest request) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.levelUpPCAsDm(id, user.getUuid(), request));
+    }
+
     @DeleteMapping("/delete/{id}")
     public ResponseEntity<Void> deletePC(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();

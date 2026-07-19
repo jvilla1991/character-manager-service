@@ -168,6 +168,16 @@ public class PCService {
     }
 
     /**
+     * Same preview, but for the DM of the campaign this PC belongs to — authorized by
+     * campaign-DM ownership like {@link #findPCByIdForDm}, so a DM can drive the level-up
+     * flow on a member's sheet.
+     */
+    public LevelUpPreview previewLevelUpAsDm(Long id, UUID dmUserId) {
+        PC pc = findPCByIdForDm(id, dmUserId);
+        return levelUpService.preview(pc);
+    }
+
+    /**
      * Advance this PC one level and persist. Ownership is enforced and the rules are applied
      * server-side ({@link LevelUpService}); the client supplies only choices (e.g. a subclass
      * selection), never computed stats. {@code @Transactional} keeps the load-modify-save atomic
@@ -189,6 +199,30 @@ public class PCService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Not enough XP to level up — reach the next threshold or ask your DM to grant a level");
         }
+        return applyLevelUpAndSave(pc, request, userId, "Leveled up to ");
+    }
+
+    /**
+     * The DM levels up a campaign member directly — authorized by campaign-DM
+     * ownership like {@link #updatePCAsDm}. There is no XP/grant gate: the DM
+     * performing the level-up is itself the authorization (the same authority
+     * that could grant one and have the player spend it). Any pending grant is
+     * consumed so the player can't level a second time off the same award.
+     */
+    @Transactional
+    public PC levelUpPCAsDm(Long id, UUID dmUserId, LevelUpRequest request) {
+        PC pc = findPCById(id);
+        assertCampaignDm(pc, dmUserId);
+        return applyLevelUpAndSave(pc, request, dmUserId, "DM leveled up to ");
+    }
+
+    /**
+     * Shared tail of the owner and DM level-up paths: unpack the request, apply
+     * the rules engine, consume any pending grant, persist, and log the new
+     * level (the description prefix distinguishes who performed it).
+     */
+    private PC applyLevelUpAndSave(PC pc, LevelUpRequest request, UUID actorUserId,
+                                   String logDescriptionPrefix) {
         String subclass = request == null ? null : request.subclass();
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
         String feat = request == null ? null : request.feat();
@@ -198,7 +232,7 @@ public class PCService {
         pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
-                "Leveled up to " + saved.getLevel(), userId);
+                logDescriptionPrefix + saved.getLevel(), actorUserId);
         return saved;
     }
 

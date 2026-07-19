@@ -552,6 +552,102 @@ class PCServiceTest {
         assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
     }
 
+    // --- levelUpPCAsDm (DM levels the character directly) ---
+
+    @Test
+    void levelUpPCAsDm_appliesRules_withoutXpOrGrant() {
+        // Level 1, xp 0, no grant — the DM path has no XP gate.
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        PC result = pcService.levelUpPCAsDm(1L, dmId, null);
+
+        assertThat(result).isSameAs(pc);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPCAsDm_passesChoicesToRulesEngine() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
+        pcService.levelUpPCAsDm(1L, dmId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
+
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPCAsDm_consumesAPendingGrant_andLogsTheDm() {
+        pc.setCampaignId(7L);
+        pc.setLevel((short) 3);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPCAsDm(1L, dmId, null);
+
+        assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
+        verify(activityLogService).log(1L, PcActivityType.LEVEL_UP, "DM leveled up to 3", dmId);
+    }
+
+    @Test
+    void levelUpPCAsDm_throws403_whenCallerIsNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.levelUpPCAsDm(1L, strangerId, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void levelUpPCAsDm_throws403_whenPcIsInNoCampaign() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // campaignId null
+
+        assertThatThrownBy(() -> pcService.levelUpPCAsDm(1L, dmId, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- previewLevelUpAsDm ---
+
+    @Test
+    void previewLevelUpAsDm_returnsPreview_whenCampaignDm() {
+        pc.setCampaignId(7L);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0, 0, 0);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(levelUpService.preview(pc)).thenReturn(preview);
+
+        LevelUpPreview result = pcService.previewLevelUpAsDm(1L, dmId);
+
+        assertThat(result).isSameAs(preview);
+    }
+
+    @Test
+    void previewLevelUpAsDm_throws403_whenCallerIsNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.previewLevelUpAsDm(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(levelUpService, never()).preview(any());
+    }
+
     @Test
     void setLevelGrant_byCampaignDm_setsTheFlag_andLogs() {
         pc.setCampaignId(7L);
