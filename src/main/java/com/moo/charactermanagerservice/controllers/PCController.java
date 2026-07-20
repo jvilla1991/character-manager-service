@@ -115,6 +115,52 @@ public class PCController {
         return ResponseEntity.ok(pcService.levelUpPC(id, user.getUuid(), request));
     }
 
+    /**
+     * Level-up preview of a campaign member, for the DM who runs its campaign —
+     * campaign-DM authorized like the as-dm endpoints.
+     */
+    @GetMapping("/{id}/level-up/preview/as-dm")
+    public ResponseEntity<LevelUpPreview> previewLevelUpAsDm(@PathVariable Long id,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.previewLevelUpAsDm(id, user.getUuid()));
+    }
+
+    /**
+     * The DM levels up a campaign member directly — campaign-DM authorized like
+     * the as-dm endpoints, and not gated on XP or a pending grant (the DM's
+     * action is the authorization).
+     */
+    @PostMapping("/{id}/level-up/as-dm")
+    public ResponseEntity<PC> levelUpAsDm(@PathVariable Long id, Authentication authentication,
+                                          @RequestBody(required = false) LevelUpRequest request) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.levelUpPCAsDm(id, user.getUuid(), request));
+    }
+
+    /**
+     * DM awards one inspiration pip to a campaign member from the member sheet
+     * (out-of-session) — campaign-DM authorized like the as-dm endpoints. The
+     * fifth pip empties the meter and grants Heroic Inspiration.
+     */
+    @PostMapping("/{id}/inspiration/pip")
+    public ResponseEntity<PC> awardInspirationPip(@PathVariable Long id,
+                                                  Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.awardInspirationPip(id, user.getUuid()));
+    }
+
+    /**
+     * Spend Heroic Inspiration — the owning player (or the campaign's DM)
+     * clears the badge after the reroll is used. 409 when there is none.
+     */
+    @PostMapping("/{id}/inspiration/use")
+    public ResponseEntity<PC> useHeroicInspiration(@PathVariable Long id,
+                                                   Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.useHeroicInspiration(id, user.getUuid()));
+    }
+
     @DeleteMapping("/delete/{id}")
     public ResponseEntity<Void> deletePC(@PathVariable Long id, Authentication authentication) {
         User user = (User) authentication.getPrincipal();

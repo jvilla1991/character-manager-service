@@ -217,6 +217,164 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
     }
 
+    // --- exhaustion preservation (an update carrying null must not wipe it) ---
+
+    @Test
+    void updatePC_preservesExhaustion_whenTheBodyOmitsIt() {
+        pc.setExhaustion((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setName("Renamed"); // exhaustion null — a payload built without the field
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 3);
+    }
+
+    @Test
+    void updatePC_acceptsAnExplicitExhaustion_includingZero() {
+        pc.setExhaustion((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setExhaustion((short) 0); // a long rest walked it back down
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void updatePCAsDm_preservesExhaustion_whenTheBodyOmitsIt() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setExhaustion((short) 5);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 5);
+    }
+
+    // --- V38 server-owned columns (hit dice + inspiration meter) ---
+
+    @Test
+    void updatePC_neverChangesHitDiceOrInspiration_evenWhenTheBodyCarriesValues() {
+        pc.setHitDiceUsed((short) 3);
+        pc.setInspirationPips((short) 2);
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setHitDiceUsed((short) 0);      // a stale/tampered echo
+        incoming.setInspirationPips((short) 4);
+        incoming.setHeroicInspiration(false);
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getHitDiceUsed()).isEqualTo((short) 3);
+        assertThat(result.getInspirationPips()).isEqualTo((short) 2);
+        assertThat(result.getHeroicInspiration()).isTrue();
+    }
+
+    // --- inspiration meter (award pip / use heroic) ---
+
+    @Test
+    void awardInspirationPip_incrementsMeter_andLogs() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 1);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.awardInspirationPip(1L, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 2);
+        assertThat(result.getHeroicInspiration()).isNotEqualTo(Boolean.TRUE);
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "DM awarded an inspiration pip (2/5)", dmId);
+    }
+
+    @Test
+    void awardInspirationPip_fifthPip_grantsHeroic_andResetsMeter() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 4);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.awardInspirationPip(1L, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 0);
+        assertThat(result.getHeroicInspiration()).isTrue();
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "Gained Heroic Inspiration (meter filled)", dmId);
+    }
+
+    @Test
+    void awardInspirationPip_throws403_whenNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.awardInspirationPip(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void useHeroicInspiration_clearsTheBadge_forTheOwner() {
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.useHeroicInspiration(1L, ownerId);
+
+        assertThat(result.getHeroicInspiration()).isFalse();
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "Used Heroic Inspiration", ownerId);
+    }
+
+    @Test
+    void useHeroicInspiration_throws409_whenThereIsNoneToUse() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // heroic false
+
+        assertThatThrownBy(() -> pcService.useHeroicInspiration(1L, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void useHeroicInspiration_allowsTheCampaignDm() {
+        pc.setCampaignId(7L);
+        pc.setHeroicInspiration(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.useHeroicInspiration(1L, dmId);
+
+        assertThat(result.getHeroicInspiration()).isFalse();
+    }
+
     // --- per-character notes ---
 
     @Test
@@ -550,6 +708,102 @@ class PCServiceTest {
 
         verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
         assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
+    }
+
+    // --- levelUpPCAsDm (DM levels the character directly) ---
+
+    @Test
+    void levelUpPCAsDm_appliesRules_withoutXpOrGrant() {
+        // Level 1, xp 0, no grant — the DM path has no XP gate.
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        PC result = pcService.levelUpPCAsDm(1L, dmId, null);
+
+        assertThat(result).isSameAs(pc);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPCAsDm_passesChoicesToRulesEngine() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
+        pcService.levelUpPCAsDm(1L, dmId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
+
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE);
+    }
+
+    @Test
+    void levelUpPCAsDm_consumesAPendingGrant_andLogsTheDm() {
+        pc.setCampaignId(7L);
+        pc.setLevel((short) 3);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPCAsDm(1L, dmId, null);
+
+        assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
+        verify(activityLogService).log(1L, PcActivityType.LEVEL_UP, "DM leveled up to 3", dmId);
+    }
+
+    @Test
+    void levelUpPCAsDm_throws403_whenCallerIsNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.levelUpPCAsDm(1L, strangerId, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void levelUpPCAsDm_throws403_whenPcIsInNoCampaign() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // campaignId null
+
+        assertThatThrownBy(() -> pcService.levelUpPCAsDm(1L, dmId, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- previewLevelUpAsDm ---
+
+    @Test
+    void previewLevelUpAsDm_returnsPreview_whenCampaignDm() {
+        pc.setCampaignId(7L);
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 8, 2, 7, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0, 0, 0);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(levelUpService.preview(pc)).thenReturn(preview);
+
+        LevelUpPreview result = pcService.previewLevelUpAsDm(1L, dmId);
+
+        assertThat(result).isSameAs(preview);
+    }
+
+    @Test
+    void previewLevelUpAsDm_throws403_whenCallerIsNotTheCampaignDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        assertThatThrownBy(() -> pcService.previewLevelUpAsDm(1L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
+                        .isEqualTo(403));
+        verify(levelUpService, never()).preview(any());
     }
 
     @Test

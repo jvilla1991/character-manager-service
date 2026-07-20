@@ -34,6 +34,7 @@ public record CampaignMemberView(
         Short speed,
         String skills,
         String conditions,
+        Short exhaustion,
         String coins
 ) {
     public static CampaignMemberView from(PC pc) {
@@ -45,7 +46,7 @@ public record CampaignMemberView(
                 pc.getAbilityInt(), pc.getAbilityWis(), pc.getAbilityCha(),
                 pc.getProfBonus(), pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(),
                 pc.getAc(), pc.getInitiative(), pc.getSpeed(),
-                pc.getSkills(), pc.getConditions(), pc.getCoins()
+                pc.getSkills(), pc.getConditions(), pc.getExhaustion(), pc.getCoins()
         );
     }
 }

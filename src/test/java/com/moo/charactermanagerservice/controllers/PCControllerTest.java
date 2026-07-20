@@ -309,6 +309,53 @@ class PCControllerTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(409));
     }
 
+    // --- GET /{id}/level-up/preview/as-dm ---
+
+    @Test
+    void previewLevelUpAsDm_returns200_withPreview() {
+        LevelUpPreview preview = new LevelUpPreview(4, 5, 10, 3, 9, 39, 2, 3, Map.of(), Map.of(), false, List.of(), false, List.of(), List.of(), 0, 0, 0, 0);
+        when(pcService.previewLevelUpAsDm(1L, ownerId)).thenReturn(preview);
+
+        ResponseEntity<LevelUpPreview> response = pcController.previewLevelUpAsDm(1L, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(preview);
+    }
+
+    @Test
+    void previewLevelUpAsDm_propagates403_whenNotTheDm() {
+        when(pcService.previewLevelUpAsDm(1L, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> pcController.previewLevelUpAsDm(1L, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- POST /{id}/level-up/as-dm ---
+
+    @Test
+    void levelUpAsDm_returns200_andPassesChoicesFromBody() {
+        LevelUpRequest body = new LevelUpRequest("Life Domain", Map.of("STR", 2), null, null);
+        when(pcService.levelUpPCAsDm(1L, ownerId, body)).thenReturn(pc);
+
+        ResponseEntity<PC> response = pcController.levelUpAsDm(1L, auth, body);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(pc);
+        verify(pcService).levelUpPCAsDm(1L, ownerId, body);
+    }
+
+    @Test
+    void levelUpAsDm_propagates403_whenNotTheDm() {
+        when(pcService.levelUpPCAsDm(1L, ownerId, null))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> pcController.levelUpAsDm(1L, auth, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
     // --- DELETE /delete/{id} ---
 
     @Test

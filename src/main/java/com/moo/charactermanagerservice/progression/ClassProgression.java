@@ -234,14 +234,14 @@ public final class ClassProgression {
             Map.entry("rogue", 3)
     );
 
-    /** Valid subclass names per class (2024 PHB). */
+    /** Valid subclass names per class (2024 PHB, plus Twilight Domain from Tasha's). */
     private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.ofEntries(
             Map.entry("barbarian", List.of(
                     "Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot")),
             Map.entry("bard", List.of(
                     "College of Dance", "College of Glamour", "College of Lore", "College of Valor")),
             Map.entry("cleric", List.of(
-                    "Life Domain", "Light Domain", "Trickery Domain", "War Domain")),
+                    "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain")),
             Map.entry("druid", List.of(
                     "Circle of the Land", "Circle of the Moon", "Circle of the Sea", "Circle of the Stars")),
             Map.entry("fighter", List.of(

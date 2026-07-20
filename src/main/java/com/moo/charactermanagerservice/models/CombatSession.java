@@ -57,6 +57,11 @@ public class CombatSession implements Serializable {
     // change (each device can mute locally). Null = no sound.
     private String turnSound;
 
+    // DM-announced short-rest window (V38): while true, players may spend hit
+    // dice via POST /session/{id}/hit-dice/spend. Cleared on encounter start
+    // and on session end.
+    private Boolean shortRestOpen = false;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -92,5 +97,6 @@ public class CombatSession implements Serializable {
     public void setEnemiesHidden(Boolean enemiesHidden) { this.enemiesHidden = enemiesHidden; }
     public void setEnemyHpHidden(Boolean enemyHpHidden) { this.enemyHpHidden = enemyHpHidden; }
     public void setTurnSound(String turnSound) { this.turnSound = turnSound; }
+    public void setShortRestOpen(Boolean shortRestOpen) { this.shortRestOpen = shortRestOpen; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

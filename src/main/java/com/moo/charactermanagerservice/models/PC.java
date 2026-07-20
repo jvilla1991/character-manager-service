@@ -107,6 +107,23 @@ public class PC implements Serializable {
     private Short speed;
     private Short profBonus;
 
+    // 2024 PHB Exhaustion level, 0-6 (V37): each level is -2 to all d20 Tests
+    // and -5 ft Speed; level 6 kills the character. NULL = never tracked (0).
+    // Preserved when an update body carries null (like survival), so a payload
+    // built without the field can't wipe a real level.
+    private Short exhaustion;
+
+    // Spent hit dice (V38, max = level). Mutated only by the session short-rest
+    // spend and long-rest restore endpoints — fully server-owned, so generic
+    // update bodies never change it (preserveServerOwnedColumns).
+    private Short hitDiceUsed = 0;
+
+    // Heroic Inspiration meter (V38): the DM awards pips one at a time; the
+    // fifth pip resets the meter and grants Heroic Inspiration. Both fully
+    // server-owned (only the inspiration endpoints mutate them).
+    private Short inspirationPips = 0;
+    private Boolean heroicInspiration = false;
+
     // --- JSON-serialized arrays / objects stored as TEXT ---
     @Column(columnDefinition = "TEXT")
     private String spells;
@@ -198,6 +215,10 @@ public class PC implements Serializable {
     public void setInitiative(Short initiative) { this.initiative = initiative; }
     public void setSpeed(Short speed) { this.speed = speed; }
     public void setProfBonus(Short profBonus) { this.profBonus = profBonus; }
+    public void setExhaustion(Short exhaustion) { this.exhaustion = exhaustion; }
+    public void setHitDiceUsed(Short hitDiceUsed) { this.hitDiceUsed = hitDiceUsed; }
+    public void setInspirationPips(Short inspirationPips) { this.inspirationPips = inspirationPips; }
+    public void setHeroicInspiration(Boolean heroicInspiration) { this.heroicInspiration = heroicInspiration; }
 
     public void setSpells(String spells) { this.spells = spells; }
     public void setSpellSlots(String spellSlots) { this.spellSlots = spellSlots; }

@@ -58,6 +58,10 @@ import java.util.Map;
  * names the clock walks on each night → morning rollover — or null when the
  * DM never defined one (free-text weekdays, repetition counts weeks).
  *
+ * <p>{@code shortRestOpen} is the DM-announced short-rest window: while true a
+ * player may spend hit dice ({@code POST /session/{id}/hit-dice/spend}).
+ * Cleared on encounter start and session end.
+ *
  * <p>{@code rolls} is the Roll Log panel's feed — newest-first, capped at 50.
  * The DM sees every roll made this session; a player sees only their own
  * ({@code SessionRollView.mine} is also set so the DM's all-rolls view can
@@ -75,6 +79,7 @@ public record SessionStateView(
         boolean dm,
         boolean enemiesHidden,
         boolean enemyHpHidden,
+        boolean shortRestOpen,
         String turnSound,
         boolean shopOpen,
         boolean shopForMe,

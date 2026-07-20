@@ -89,7 +89,7 @@ public class LevelUpService {
                 subclassDue(pc, newLevel),
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
-                asiDue ? FeatCatalog.generalFeats() : List.of(),
+                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
                 ClassFeatures.featuresAt(pc.getClazz(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
@@ -306,7 +306,7 @@ public class LevelUpService {
     /** Validate the chosen feat against the catalog and record it among the PC's features. */
     private void applyFeatChoice(PC pc, int newLevel, String feat) {
         String name = feat.trim();
-        if (!FeatCatalog.isValidFeat(name)) {
+        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "'" + name + "' is not a selectable feat");
         }
@@ -332,16 +332,23 @@ public class LevelUpService {
     /**
      * Append the player's newly-learned cantrips/spells to the PC's {@code spells} list.
      *
-     * <p>Server-authoritative on <em>count</em> only: the number of new cantrips (spell level 0)
-     * may not exceed the cantrips-known delta, and the number of new leveled spells may not exceed
-     * the prepared/known-spells delta, for this level. Duplicates (by name, case-insensitive) are
-     * rejected. Individual spell <em>names</em> are NOT validated — the spell list lives in the
-     * frontend (the backend must not depend on the external D&D API), so the client-supplied spell
-     * objects are accepted as-is. Same trust posture as feats and subclasses.
+     * <p>Server-authoritative on <em>count</em> and <em>spell level</em>: the number of new
+     * cantrips (spell level 0) may not exceed the cantrips-known delta, the number of new leveled
+     * spells may not exceed the prepared/known-spells delta, and no leveled spell may be of a
+     * higher level than the character has spell slots for at the NEW level (2024 5e: you can only
+     * learn spells you have slots to cast — the max key of {@link ClassProgression#spellSlotsFor},
+     * which also covers warlock pact slots). Duplicates (by name, case-insensitive) are rejected.
+     * Individual spell <em>names</em> are NOT validated — the spell list lives in the frontend
+     * (the backend must not depend on the external D&D API), so the client-supplied spell objects
+     * are accepted as-is. Same trust posture as feats and subclasses.
      */
     private void applySpellChoices(PC pc, int currentLevel, int newLevel,
                                    List<Map<String, Object>> chosen) {
         if (chosen == null || chosen.isEmpty()) return;
+
+        // The highest spell level the character has slots for at the new level (0 = none).
+        int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel).keySet().stream()
+                .max(Integer::compareTo).orElse(0);
 
         int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
                 - ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel);
@@ -372,6 +379,12 @@ public class LevelUpService {
             String name = spellName(spell);
             if (name.isBlank()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
+            }
+            int spellLevel = spellLevelOf(spell);
+            if (spellLevel > maxSpellLevel) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "'" + name + "' is a level-" + spellLevel + " spell — the highest spell level "
+                                + "castable at level " + newLevel + " is " + maxSpellLevel);
             }
             if (!known.add(name.toLowerCase())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + name + "' is already known");
