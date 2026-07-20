@@ -8,6 +8,7 @@ import com.moo.charactermanagerservice.dto.LongRestRequest;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
+import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
@@ -17,6 +18,7 @@ import com.moo.charactermanagerservice.dto.SetSoundRequest;
 import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.SetVisibilityRequest;
+import com.moo.charactermanagerservice.dto.SpendHitDieRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.dto.XpAwardRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
@@ -263,6 +265,43 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.longRest(
                 id, Boolean.TRUE.equals(request.undisturbed()), user.getUuid()));
+    }
+
+    /**
+     * DM announces (or calls off) a short rest — toggles the session's
+     * short-rest window, during which players may spend hit dice.
+     */
+    @PostMapping("/session/{id}/short-rest")
+    public ResponseEntity<SessionStateView> shortRest(@PathVariable Long id,
+                                                      Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.toggleShortRest(id, user.getUuid()));
+    }
+
+    /**
+     * A player spends one of their own seated PC's hit dice while the DM's
+     * short-rest window is open. The server rolls 1d[hitDie] + CON mod and
+     * returns the roll, the healing applied, and the new totals.
+     */
+    @PostMapping("/session/{id}/hit-dice/spend")
+    public ResponseEntity<HitDieSpendResult> spendHitDie(@PathVariable Long id,
+                                                         @RequestBody SpendHitDieRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.spendHitDie(id, request.pcId(), user.getUuid()));
+    }
+
+    /**
+     * DM awards one inspiration pip to a seated PC — the fifth pip converts
+     * into Heroic Inspiration (meter resets, badge lights up on every viewer).
+     */
+    @PostMapping("/session/{id}/participants/{participantId}/inspiration")
+    public ResponseEntity<SessionStateView> awardInspiration(@PathVariable Long id,
+                                                             @PathVariable Long participantId,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.awardInspiration(id, participantId, user.getUuid()));
     }
 
     /**
