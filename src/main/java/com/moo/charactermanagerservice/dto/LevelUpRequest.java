@@ -14,10 +14,11 @@ import java.util.Map;
  * (exactly one of {@code abilityIncreases} / {@code feat} is supplied there).
  *
  * <p>Spells: {@code newSpells} — cantrips/spells the caster learns this level, each a spell object
- * ({@code lvl}, {@code name}, …) built by the SPA from its spell list. The server validates only
- * the <em>count</em> against the level-up delta (and rejects duplicates); it does not validate
- * individual spell names, because the spell list lives in the frontend (the backend must not
- * depend on the external D&D API). Same trust posture as feats/subclasses.
+ * ({@code lvl}, {@code name}, …) built by the SPA from its spell list. The server validates the
+ * <em>count</em> against the level-up delta, the <em>spell level</em> against the slot table at
+ * the new level (no learning spells you have no slots for), and rejects duplicates; it does not
+ * validate individual spell names, because the spell list lives in the frontend (the backend must
+ * not depend on the external D&D API). Same trust posture as feats/subclasses.
  *
  * <p>HP: {@code hpMode} — whether this level's hit points use the fixed average or a roll. It is
  * optional; {@code null} (or an omitted field) means {@link HpMode#AVERAGE}, so existing clients are

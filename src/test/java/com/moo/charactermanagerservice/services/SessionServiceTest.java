@@ -1,7 +1,9 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
@@ -1435,6 +1437,251 @@ class SessionServiceTest {
         assertThatThrownBy(() -> sessionService.longRest(1L, true, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void longRest_restoresHitDice_halfLevelMinimumOne() {
+        PC fighter = pc(7L, "Gorath", 0);
+        fighter.setLevel((short) 5);
+        fighter.setHitDiceUsed((short) 5);
+        seatForLongRest(fighter);
+
+        sessionService.longRest(1L, true, dmId);
+
+        assertThat(fighter.getHitDiceUsed()).isEqualTo((short) 3); // 5 - max(1, 5/2) = 5 - 2
+    }
+
+    @Test
+    void longRest_restoresAtLeastOneHitDie_atLevelOne() {
+        PC novice = pc(7L, "Pip", 0);
+        novice.setLevel((short) 1);
+        novice.setHitDiceUsed((short) 1);
+        seatForLongRest(novice);
+
+        sessionService.longRest(1L, true, dmId);
+
+        assertThat(novice.getHitDiceUsed()).isEqualTo((short) 0); // max(1, 1/2) = 1
+    }
+
+    // --- short rest window + hit-die spend ---
+
+    @Test
+    void toggleShortRest_opensThenCloses_andBumpsVersion() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>());
+
+        assertThat(sessionService.toggleShortRest(1L, dmId).shortRestOpen()).isTrue();
+        assertThat(sessionService.toggleShortRest(1L, dmId).shortRestOpen()).isFalse();
+        assertThat(session.getVersion()).isEqualTo(2L);
+    }
+
+    @Test
+    void toggleShortRest_throws403_forNonDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.toggleShortRest(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void startEncounter_closesTheShortRestWindow() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setShortRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(combatants(2));
+
+        sessionService.startEncounter(1L, dmId);
+
+        assertThat(session.getShortRestOpen()).isFalse();
+    }
+
+    /** Seat pc 7 (owned by the player) with the short-rest window open. */
+    private PC seatForShortRest(int level, String clazz, int con, int hpCurrent, Integer hpMax,
+                                int hitDiceUsed) {
+        session.setShortRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setLevel((short) level);
+        pc.setClazz(clazz);
+        pc.setAbilityCon((short) con);
+        pc.setHpCurrent((short) hpCurrent);
+        if (hpMax != null) pc.setHpMax(hpMax.shortValue());
+        pc.setHitDiceUsed((short) hitDiceUsed);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        return pc;
+    }
+
+    /** Pin the service RNG so the "1d[X]" roll is deterministic. */
+    private void pinRoll(int zeroBasedValue) {
+        sessionService.rng = new java.util.random.RandomGenerator() {
+            @Override public long nextLong() { return 0L; }
+            @Override public int nextInt(int bound) { return zeroBasedValue; }
+        };
+    }
+
+    @Test
+    void spendHitDie_rollsHealsIncrements_andLogsEverywhere() {
+        PC pc = seatForShortRest(5, "Fighter", 14, 10, 44, 1); // d10, CON +2
+        pinRoll(6); // roll = 7
+
+        HitDieSpendResult result = sessionService.spendHitDie(1L, 7L, playerId);
+
+        assertThat(result.roll()).isEqualTo(7);
+        assertThat(result.healed()).isEqualTo(9); // 7 + 2
+        assertThat(result.hpCurrent()).isEqualTo((short) 19);
+        assertThat(result.hitDiceUsed()).isEqualTo((short) 2);
+        assertThat(pc.getHpCurrent()).isEqualTo((short) 19);
+        verify(pcRepository).save(pc);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.SHORT_REST), contains("healed 9 HP"),
+                eq(playerId));
+        verify(sessionRollRepository).save(any(SessionRoll.class)); // DM sees the roll
+        verify(sessionRepository).save(session); // version bumped
+    }
+
+    @Test
+    void spendHitDie_capsAtMaxHp_butStillSpendsTheDie() {
+        PC pc = seatForShortRest(5, "Fighter", 14, 42, 44, 0);
+        pinRoll(9); // roll = 10, +2 CON = 12 — but only 2 HP of headroom
+
+        HitDieSpendResult result = sessionService.spendHitDie(1L, 7L, playerId);
+
+        assertThat(result.healed()).isEqualTo(2);
+        assertThat(result.hpCurrent()).isEqualTo((short) 44);
+        assertThat(pc.getHitDiceUsed()).isEqualTo((short) 1);
+    }
+
+    @Test
+    void spendHitDie_floorsHealingAtOne_withANegativeConMod() {
+        seatForShortRest(3, "Wizard", 6, 5, 20, 0); // d6, CON -2
+        pinRoll(0); // roll = 1, 1 - 2 = -1 → floored to 1
+
+        HitDieSpendResult result = sessionService.spendHitDie(1L, 7L, playerId);
+
+        assertThat(result.roll()).isEqualTo(1);
+        assertThat(result.healed()).isEqualTo(1);
+        assertThat(result.hpCurrent()).isEqualTo((short) 6);
+    }
+
+    @Test
+    void spendHitDie_throws409_whenNoShortRestIsOpen() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // window closed
+
+        assertThatThrownBy(() -> sessionService.spendHitDie(1L, 7L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void spendHitDie_throws409_whenAllHitDiceAreSpent() {
+        seatForShortRest(3, "Fighter", 14, 10, 30, 3); // used == level
+
+        assertThatThrownBy(() -> sessionService.spendHitDie(1L, 7L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void spendHitDie_throws403_whenNotTheOwner() {
+        // The ownership check fires before the row lock, so no PC stub here.
+        session.setShortRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(50L, 7L);
+        seat.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(seat));
+
+        assertThatThrownBy(() -> sessionService.spendHitDie(1L, 7L, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- inspiration award (in-session) ---
+
+    @Test
+    void awardInspiration_delegatesToTheSharedFillLogic_andBumpsVersion() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(5L, 7L);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(seat));
+        PC pc = pc(7L, "Gorath", 0);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(seat)));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc));
+
+        sessionService.awardInspiration(1L, 5L, dmId);
+
+        verify(pcService).applyInspirationPip(pc, dmId);
+        verify(pcRepository).save(pc);
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void awardInspiration_throws400_forNonPcCombatant() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, null)));
+
+        assertThatThrownBy(() -> sessionService.awardInspiration(1L, 5L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void awardInspiration_throws403_whenNotDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.awardInspiration(1L, 5L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    // --- enemy AC never reaches a player ---
+
+    @Test
+    void playerView_neverCarriesEnemyAc_inAnyVisibilityMode() {
+        session.setEnemiesHidden(false); // enemies fully visible
+        arm(session, 1L, hiddenEnemySetup()); // enemy row has AC 15
+        stubPcs();
+
+        SessionStateView playerState = sessionService.getState(1L, playerId, null);
+        SessionStateView dmState = sessionService.getState(1L, dmId, null);
+
+        assertThat(playerState.participants())
+                .filteredOn(ParticipantView::npc)
+                .allSatisfy(p -> assertThat(p.ac()).isNull());
+        assertThat(dmState.participants())
+                .filteredOn(ParticipantView::npc)
+                .allSatisfy(p -> assertThat(p.ac()).isEqualTo((short) 15));
+    }
+
+    @Test
+    void playerView_hideHealthMode_stripsHpAndAcTogether() {
+        session.setEnemiesHidden(false);
+        session.setEnemyHpHidden(true);
+        List<SessionParticipant> setup = hiddenEnemySetup();
+        setup.get(1).setNpcHpMax((short) 30);
+        setup.get(1).setNpcHpCurrent((short) 22);
+        arm(session, 1L, setup);
+        stubPcs();
+
+        SessionStateView playerState = sessionService.getState(1L, playerId, null);
+
+        assertThat(playerState.participants())
+                .filteredOn(ParticipantView::npc)
+                .allSatisfy(p -> {
+                    assertThat(p.ac()).isNull();
+                    assertThat(p.hpCurrent()).isNull();
+                    assertThat(p.hpMax()).isNull();
+                });
     }
 
     // --- castSpell ---

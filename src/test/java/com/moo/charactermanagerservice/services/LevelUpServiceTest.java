@@ -434,6 +434,53 @@ class LevelUpServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
+    @Test
+    void preview_featOptions_fightingStylesOnlyForFightingStyleClasses() {
+        assertThat(service.preview(pc("Fighter", 3, 14, 28, 28)).featOptions()).contains("Archery");   // -> 4
+        assertThat(service.preview(pc("Paladin", 3, 14, 28, 28)).featOptions()).contains("Defense");   // -> 4
+        assertThat(service.preview(pc("Ranger", 3, 14, 28, 28)).featOptions()).contains("Dueling");    // -> 4
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).featOptions())
+                .contains("War Caster").doesNotContain("Archery");                                     // -> 4
+    }
+
+    @Test
+    void preview_featOptions_epicBoonsOnlyAtLevel19() {
+        assertThat(service.preview(pc("Wizard", 18, 14, 80, 80)).featOptions())
+                .contains("Boon of Fate", "Boon of Spell Recall");                       // -> 19
+        assertThat(service.preview(pc("Wizard", 3, 14, 18, 18)).featOptions())
+                .doesNotContain("Boon of Fate");                                         // -> 4
+    }
+
+    @Test
+    void applyLevelUp_feat_acceptsFightingStyleForFightingStyleClass() {
+        PC ranger = pc("Ranger", 3, 14, 28, 28); // -> 4, an ASI level
+        service.applyLevelUp(ranger, null, null, "Two-Weapon Fighting");
+        assertThat(ranger.getFeatures()).contains("Two-Weapon Fighting").contains("Feat (Level 4)");
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsFightingStyleForOtherClasses() {
+        PC wizard = pc("Wizard", 3, 14, 18, 18); // -> 4, an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(wizard, null, null, "Archery"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_feat_acceptsEpicBoonAtLevel19() {
+        PC wizard = pc("Wizard", 18, 14, 80, 80); // -> 19, an ASI level
+        service.applyLevelUp(wizard, null, null, "Boon of Fate");
+        assertThat(wizard.getFeatures()).contains("Boon of Fate").contains("Feat (Level 19)");
+    }
+
+    @Test
+    void applyLevelUp_feat_rejectsEpicBoonBeforeLevel19() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28); // -> 4, an ASI level
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, "Boon of Fate"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
     // --- Auto-granted class features ---
 
     @Test
@@ -585,6 +632,57 @@ class LevelUpServiceTest {
         assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null, List.of(spell(1, "Hold Person"))))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_rejectsSpellAboveSlotLevel() {
+        // Bard 4 -> 5: highest slot at level 5 is spell level 3 — a level-4 spell is unlearnable.
+        PC bard = pc("Bard", 4, 14, 30, 30);
+        assertThatThrownBy(() -> service.applyLevelUp(bard, null, null, null,
+                List.of(spell(4, "Polymorph"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("highest spell level");
+    }
+
+    @Test
+    void applyLevelUp_acceptsSpellAtExactlyTheNewSlotLevel() {
+        // Bard 4 -> 5 gains its first level-3 slot — a level-3 spell is now learnable.
+        PC bard = pc("Bard", 4, 14, 30, 30);
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(3, "Fear")));
+
+        assertThat(bard.getSpells()).contains("Fear");
+    }
+
+    @Test
+    void applyLevelUp_rejectsSpellAbovePactSlotLevel_forWarlock() {
+        // Warlock 4 -> 5: pact slots move to spell level 3 — a level-5 spell is out of reach.
+        PC warlock = pc("Warlock", 4, 14, 30, 30);
+        assertThatThrownBy(() -> service.applyLevelUp(warlock, null, null, null,
+                List.of(spell(5, "Hold Monster"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_acceptsSpellAtPactSlotLevel_forWarlock() {
+        // Warlock 4 -> 5: pact slot level is 3 — a level-3 spell is learnable.
+        PC warlock = pc("Warlock", 4, 14, 30, 30);
+
+        service.applyLevelUp(warlock, null, null, null, List.of(spell(3, "Fly")));
+
+        assertThat(warlock.getSpells()).contains("Fly");
+    }
+
+    @Test
+    void applyLevelUp_cantripsUnaffectedBySlotLevelCap() {
+        // Cantrips are level 0 and never blocked by the slot-level cap (count-gated only).
+        PC bard = pc("Bard", 9, 14, 60, 60); // 9 -> 10: cantrip delta 1
+
+        service.applyLevelUp(bard, null, null, null, List.of(spell(0, "Mending")));
+
+        assertThat(bard.getSpells()).contains("Mending");
     }
 
     @Test

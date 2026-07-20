@@ -34,7 +34,10 @@ public record ParticipantView(
         String survival,
         String spellSlots,
         Short deathSaveSuccesses,
-        Short deathSaveFailures
+        Short deathSaveFailures,
+        Short hitDiceUsed,
+        Short inspirationPips,
+        Boolean heroicInspiration
 ) {
     /**
      * Build the view for a participant. {@code pc} is the canonical character for
@@ -55,7 +58,8 @@ public record ParticipantView(
                     p.getInitiative(), rolled, p.getOrderIndex(),
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), p.getNpcArmorClass(),
                     p.getNpcConditions(), null, null,
-                    p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
+                    p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
+                    null, null, null
             );
         }
 
@@ -66,7 +70,8 @@ public record ParticipantView(
                 p.getInitiative(), rolled, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
                 pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
-                p.getDeathSaveSuccesses(), p.getDeathSaveFailures()
+                p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
+                pc.getHitDiceUsed(), pc.getInspirationPips(), pc.getHeroicInspiration()
         );
     }
 
@@ -83,7 +88,26 @@ public record ParticipantView(
                 initiative, initRolled, orderIndex,
                 null, null, null, ac,
                 conditions, survival, spellSlots,
-                deathSaveSuccesses, deathSaveFailures
+                deathSaveSuccesses, deathSaveFailures,
+                hitDiceUsed, inspirationPips, heroicInspiration
+        );
+    }
+
+    /**
+     * A copy with the armor class withheld. Applied to EVERY enemy row a
+     * player receives, in all visibility modes — a monster's AC is the DM's
+     * information, discovered at the table, never shipped to a player's
+     * client. The DM's own snapshot is never stripped.
+     */
+    public ParticipantView withoutAc() {
+        return new ParticipantView(
+                participantId, pcId, npc, ownedByMe, currentTurn,
+                name, clazz, level, portraitTint, portraitInitials,
+                initiative, initRolled, orderIndex,
+                hpMax, hpCurrent, hpTemp, null,
+                conditions, survival, spellSlots,
+                deathSaveSuccesses, deathSaveFailures,
+                hitDiceUsed, inspirationPips, heroicInspiration
         );
     }
 }

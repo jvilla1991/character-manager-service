@@ -76,15 +76,31 @@ public class PCService {
      * must not wipe those changes. Clients adjust survival by sending it — they
      * can never clear it to NULL, which nothing legitimately does.
      *
+     * <p>The exhaustion level (2024 PHB, V37) follows the same rule: clients set
+     * it by sending a value (0 included); a body carrying NULL — e.g. one built
+     * from a projection that lacks the field — preserves the stored level.
+     *
      * <p>The pending level grant is fully server-owned: only the DM's grant
      * endpoint sets it and only an applied level-up clears it, so a generic
      * update body (even one echoing a stale value) never changes it.
+     *
+     * <p>Hit dice and the inspiration meter (V38) are fully server-owned too:
+     * only the session short-rest/long-rest endpoints move {@code hitDiceUsed},
+     * and only the inspiration endpoints move {@code inspirationPips} /
+     * {@code heroicInspiration} — a generic update body always keeps the
+     * stored values, like the pending level grant.
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
         }
+        if (incoming.getExhaustion() == null) {
+            incoming.setExhaustion(existing.getExhaustion());
+        }
         incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
+        incoming.setHitDiceUsed(existing.getHitDiceUsed());
+        incoming.setInspirationPips(existing.getInspirationPips());
+        incoming.setHeroicInspiration(existing.getHeroicInspiration());
     }
 
     /**
@@ -168,6 +184,16 @@ public class PCService {
     }
 
     /**
+     * Same preview, but for the DM of the campaign this PC belongs to — authorized by
+     * campaign-DM ownership like {@link #findPCByIdForDm}, so a DM can drive the level-up
+     * flow on a member's sheet.
+     */
+    public LevelUpPreview previewLevelUpAsDm(Long id, UUID dmUserId) {
+        PC pc = findPCByIdForDm(id, dmUserId);
+        return levelUpService.preview(pc);
+    }
+
+    /**
      * Advance this PC one level and persist. Ownership is enforced and the rules are applied
      * server-side ({@link LevelUpService}); the client supplies only choices (e.g. a subclass
      * selection), never computed stats. {@code @Transactional} keeps the load-modify-save atomic
@@ -189,6 +215,30 @@ public class PCService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Not enough XP to level up — reach the next threshold or ask your DM to grant a level");
         }
+        return applyLevelUpAndSave(pc, request, userId, "Leveled up to ");
+    }
+
+    /**
+     * The DM levels up a campaign member directly — authorized by campaign-DM
+     * ownership like {@link #updatePCAsDm}. There is no XP/grant gate: the DM
+     * performing the level-up is itself the authorization (the same authority
+     * that could grant one and have the player spend it). Any pending grant is
+     * consumed so the player can't level a second time off the same award.
+     */
+    @Transactional
+    public PC levelUpPCAsDm(Long id, UUID dmUserId, LevelUpRequest request) {
+        PC pc = findPCById(id);
+        assertCampaignDm(pc, dmUserId);
+        return applyLevelUpAndSave(pc, request, dmUserId, "DM leveled up to ");
+    }
+
+    /**
+     * Shared tail of the owner and DM level-up paths: unpack the request, apply
+     * the rules engine, consume any pending grant, persist, and log the new
+     * level (the description prefix distinguishes who performed it).
+     */
+    private PC applyLevelUpAndSave(PC pc, LevelUpRequest request, UUID actorUserId,
+                                   String logDescriptionPrefix) {
         String subclass = request == null ? null : request.subclass();
         Map<String, Integer> abilityIncreases = request == null ? null : request.abilityIncreases();
         String feat = request == null ? null : request.feat();
@@ -198,7 +248,7 @@ public class PCService {
         pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
-                "Leveled up to " + saved.getLevel(), userId);
+                logDescriptionPrefix + saved.getLevel(), actorUserId);
         return saved;
     }
 
@@ -219,6 +269,67 @@ public class PCService {
             activityLogService.log(saved.getId(), PcActivityType.DM_EDIT,
                     granted ? "DM granted a level-up" : "DM revoked the granted level-up", dmUserId);
         }
+        return saved;
+    }
+
+    // --- Heroic Inspiration meter (V38) --------------------------------------
+
+    /** Pips needed to fill the meter and convert into Heroic Inspiration. */
+    public static final int INSPIRATION_METER_SIZE = 5;
+
+    /**
+     * DM awards one inspiration pip to a campaign member from the member sheet
+     * (out-of-session) — campaign-DM authorized like {@link #updatePCAsDm}.
+     * The fifth pip empties the meter and grants Heroic Inspiration.
+     */
+    @Transactional
+    public PC awardInspirationPip(Long id, UUID dmUserId) {
+        PC pc = findPCById(id);
+        assertCampaignDm(pc, dmUserId);
+        applyInspirationPip(pc, dmUserId);
+        return pcRepository.save(pc);
+    }
+
+    /**
+     * Shared meter-fill logic (used here and by the in-session award): +1 pip;
+     * at {@value #INSPIRATION_METER_SIZE} the meter resets to 0 and Heroic
+     * Inspiration is granted. Mutates {@code pc} and writes the activity log;
+     * the caller persists.
+     */
+    void applyInspirationPip(PC pc, UUID actorUserId) {
+        int pips = (pc.getInspirationPips() == null ? 0 : pc.getInspirationPips()) + 1;
+        if (pips >= INSPIRATION_METER_SIZE) {
+            pc.setInspirationPips((short) 0);
+            pc.setHeroicInspiration(true);
+            activityLogService.log(pc.getId(), PcActivityType.INSPIRATION,
+                    "Gained Heroic Inspiration (meter filled)", actorUserId);
+        } else {
+            pc.setInspirationPips((short) pips);
+            activityLogService.log(pc.getId(), PcActivityType.INSPIRATION,
+                    "DM awarded an inspiration pip (" + pips + "/" + INSPIRATION_METER_SIZE + ")",
+                    actorUserId);
+        }
+    }
+
+    /**
+     * Spend Heroic Inspiration — the owning player (or the campaign's DM on
+     * their behalf) clears the badge after using the reroll. 409 when there is
+     * none to spend, so a stale double-click can't silently "use" nothing.
+     */
+    @Transactional
+    public PC useHeroicInspiration(Long id, UUID userId) {
+        PC pc = findPCById(id);
+        if (!userId.equals(pc.getUserId())) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        if (!Boolean.TRUE.equals(pc.getHeroicInspiration())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "No Heroic Inspiration to use");
+        }
+        pc.setHeroicInspiration(false);
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(), PcActivityType.INSPIRATION,
+                "Used Heroic Inspiration", userId);
         return saved;
     }
 
