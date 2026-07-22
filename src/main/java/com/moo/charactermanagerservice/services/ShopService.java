@@ -59,7 +59,7 @@ public class ShopService {
 
     /** Catalog slices a shop may sell. Phase 1 seeds WEAPON; the rest arrive with their slices. */
     private static final Set<String> SUPPORTED_CATEGORIES =
-            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR");
+            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR", "TRANSPORT");
 
     private final CombatSessionRepository sessionRepository;
     private final SessionShopRepository shopRepository;
@@ -254,20 +254,13 @@ public class ShopService {
         Map<String, Integer> newCoins = CoinPurse.deduct(coins, totalCostCp);
 
         List<Map<String, Object>> inventory = json.parse(pc.getInventory());
-        // Container cap: rations only fit inside ration boxes (5 servings per
-        // box). Normalize legacy supply lines first so the old model's implied
-        // free box counts, then refuse a purchase past capacity. Containers
-        // themselves are always buyable — that's how capacity is raised.
+        // Rations only FIT inside ration boxes (5 servings per box), but buying
+        // past capacity is allowed: the overflow rides loose and fills inventory
+        // slots (0.2 bulk each — the frontend's suppliesSlots math charges for
+        // it) until another box shelters it. Normalize legacy supply lines so
+        // the old model's implied free box still counts toward capacity.
         if ("rations".equals(itemKey)) {
             SurvivalSupplies.normalize(inventory);
-            int capacity = SurvivalSupplies.capacityFor(inventory, "rations");
-            int held = SurvivalSupplies.countOf(inventory, "rations");
-            if (held + qty > capacity) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Not enough ration boxes: each holds "
-                                + SurvivalSupplies.SERVINGS_PER_CONTAINER + " rations (carrying "
-                                + held + " of " + capacity + "). Buy a ration box to raise capacity.");
-            }
         }
         InventoryEntries.addCatalogItem(inventory, item, qty, unitCostCp, json);
 

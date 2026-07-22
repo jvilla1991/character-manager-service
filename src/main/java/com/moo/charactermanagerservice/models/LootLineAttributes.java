@@ -12,7 +12,7 @@ import java.math.BigDecimal;
  */
 public interface LootLineAttributes {
 
-    String getCategory();          // weapon | armor | material-component | gear
+    String getCategory();          // weapon | armor | material-component | gear | transport
     Long getUnitCostCp();          // value in copper (authored in gold)
     BigDecimal getWeight();        // pounds
     String getDamage();            // weapons, e.g. "1d8 slashing"

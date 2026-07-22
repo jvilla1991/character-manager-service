@@ -32,7 +32,7 @@ public class SrdItem implements Serializable {
     private String category;
     private Long costCp;
     private BigDecimal weight;
-    private BigDecimal bulk;   // Darker Dungeons object bulk (0.2/1/2/3/6/9); null = derive from weight
+    private BigDecimal bulk;   // Darker Dungeons object bulk (0.2/1/2/3/6/9; packs & vehicles carry larger totals); null = derive from weight
     private String source;
 
     @Column(columnDefinition = "TEXT")

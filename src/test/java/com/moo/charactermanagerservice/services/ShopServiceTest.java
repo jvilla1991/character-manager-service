@@ -329,22 +329,23 @@ class ShopServiceTest {
     // --- purchase: ration container cap ---
 
     @Test
-    void purchase_rations_refusedBeyondRationBoxCapacity() {
+    void purchase_rations_allowedBeyondRationBoxCapacity_overflowRidesLoose() {
         shop.setCategory("GEAR");
         stubActiveShopWithAttendee();
         when(srdItemRepository.findByItemKey("rations")).thenReturn(Optional.of(rations()));
         PC pc = pcOwnedBy(playerId, "{\"gp\":10}",
                 "[{\"catalogKey\":\"ration-box\",\"qty\":1},{\"catalogKey\":\"rations\",\"qty\":4}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        // 1 box = capacity 5; carrying 4, buying 2 would overflow
-        assertThatThrownBy(() -> shopService.purchase(1L, 7L, "rations", 2, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> {
-                    assertThat(status(e)).isEqualTo(400);
-                    assertThat(((ResponseStatusException) e).getReason()).contains("ration box");
-                });
-        verify(pcRepository, never()).save(any());
+        // 1 box = capacity 5; carrying 4, buying 2 overflows by 1 — the sale
+        // still goes through, and the loose ration costs inventory slots on the
+        // frontend (suppliesSlots) instead of being refused here.
+        PurchaseResult result = shopService.purchase(1L, 7L, "rations", 2, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(20L); // 2 × 1 sp
+        assertThat(result.inventory())
+                .anySatisfy(l -> assertThat(l).containsEntry("catalogKey", "rations").containsEntry("qty", 6));
     }
 
     @Test
