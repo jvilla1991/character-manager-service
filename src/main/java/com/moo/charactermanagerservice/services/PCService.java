@@ -278,35 +278,45 @@ public class PCService {
     public static final int INSPIRATION_METER_SIZE = 5;
 
     /**
-     * DM awards one inspiration pip to a campaign member from the member sheet
+     * DM sets a campaign member's inspiration meter from the member sheet
      * (out-of-session) — campaign-DM authorized like {@link #updatePCAsDm}.
-     * The fifth pip empties the meter and grants Heroic Inspiration.
+     * Filling the meter grants Heroic Inspiration instead of storing 5 pips.
      */
     @Transactional
-    public PC awardInspirationPip(Long id, UUID dmUserId) {
+    public PC setInspirationPips(Long id, Integer pips, UUID dmUserId) {
         PC pc = findPCById(id);
         assertCampaignDm(pc, dmUserId);
-        applyInspirationPip(pc, dmUserId);
+        applyInspirationValue(pc, pips, dmUserId);
         return pcRepository.save(pc);
     }
 
     /**
-     * Shared meter-fill logic (used here and by the in-session award): +1 pip;
-     * at {@value #INSPIRATION_METER_SIZE} the meter resets to 0 and Heroic
-     * Inspiration is granted. Mutates {@code pc} and writes the activity log;
-     * the caller persists.
+     * Shared meter logic (used here and by the in-session set): store an
+     * explicit pip count, so clicking a pip on the sheet can raise OR lower the
+     * meter in one action. A request for the full meter
+     * ({@value #INSPIRATION_METER_SIZE}) empties it and grants Heroic
+     * Inspiration — the meter never rests full. Out-of-range values are clamped
+     * rather than rejected, so a stale click can never 400. Mutates {@code pc}
+     * and writes the activity log; the caller persists.
      */
-    void applyInspirationPip(PC pc, UUID actorUserId) {
-        int pips = (pc.getInspirationPips() == null ? 0 : pc.getInspirationPips()) + 1;
-        if (pips >= INSPIRATION_METER_SIZE) {
+    void applyInspirationValue(PC pc, Integer requested, UUID actorUserId) {
+        int value = requested == null ? 0 : requested;
+        value = Math.max(0, Math.min(INSPIRATION_METER_SIZE, value));
+
+        int current = pc.getInspirationPips() == null ? 0 : pc.getInspirationPips();
+        if (value >= INSPIRATION_METER_SIZE) {
             pc.setInspirationPips((short) 0);
             pc.setHeroicInspiration(true);
             activityLogService.log(pc.getId(), PcActivityType.INSPIRATION,
                     "Gained Heroic Inspiration (meter filled)", actorUserId);
-        } else {
-            pc.setInspirationPips((short) pips);
+            return;
+        }
+
+        pc.setInspirationPips((short) value);
+        // A click that lands on the current value (no-op) writes no log line.
+        if (value != current) {
             activityLogService.log(pc.getId(), PcActivityType.INSPIRATION,
-                    "DM awarded an inspiration pip (" + pips + "/" + INSPIRATION_METER_SIZE + ")",
+                    "DM set inspiration to " + value + "/" + INSPIRATION_METER_SIZE,
                     actorUserId);
         }
     }
