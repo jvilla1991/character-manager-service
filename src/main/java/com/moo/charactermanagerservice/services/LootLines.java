@@ -18,7 +18,7 @@ import java.util.Set;
 final class LootLines {
 
     /** The lowercase inventory category labels a custom line may carry. */
-    static final Set<String> CATEGORIES = Set.of("weapon", "armor", "material-component", "gear");
+    static final Set<String> CATEGORIES = Set.of("weapon", "armor", "material-component", "gear", "transport");
 
     private LootLines() {}
 
@@ -56,7 +56,7 @@ final class LootLines {
         }
         if (present(category) && !CATEGORIES.contains(category.trim())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "category must be one of weapon, armor, material-component, gear");
+                    "category must be one of weapon, armor, material-component, gear, transport");
         }
         if (valueGp != null && valueGp < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "valueGp must be zero or more");

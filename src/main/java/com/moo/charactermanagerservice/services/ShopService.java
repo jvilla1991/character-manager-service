@@ -59,7 +59,7 @@ public class ShopService {
 
     /** Catalog slices a shop may sell. Phase 1 seeds WEAPON; the rest arrive with their slices. */
     private static final Set<String> SUPPORTED_CATEGORIES =
-            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR");
+            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR", "TRANSPORT");
 
     private final CombatSessionRepository sessionRepository;
     private final SessionShopRepository shopRepository;

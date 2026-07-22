@@ -6,7 +6,7 @@ package com.moo.charactermanagerservice.dto;
  * curated-loot editor and the live session pool. The attribute fields apply to
  * custom lines only (a catalog line with any of them is rejected — the catalog
  * is authoritative there): {@code category} is the lowercase inventory label
- * (weapon|armor|material-component|gear), {@code valueGp} the value in gold
+ * (weapon|armor|material-component|gear|transport), {@code valueGp} the value in gold
  * (stored as copper), {@code weight} in pounds, {@code damage} for weapons and
  * {@code armorClass} for armor.
  */
