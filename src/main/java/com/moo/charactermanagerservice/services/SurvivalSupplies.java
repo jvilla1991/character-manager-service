@@ -11,9 +11,10 @@ import java.util.Map;
  * charge lines — {@code rations} (purchasable, 1 sp each) and {@code water}
  * (never sold; refilled free) — whose qty the passage of time decrements (see
  * {@code SessionService#advanceTime}). Charges are weightless inside their
- * containers and are capped at containers × 5 everywhere. Values mirror the
- * V25/V30 catalog seeds and the frontend {@code utils/survival.ts} so demo mode
- * behaves identically.
+ * containers; rations bought beyond containers × 5 are allowed and ride loose —
+ * the frontend's suppliesSlots math charges 0.2 inventory slots for each.
+ * Values mirror the V25/V30 catalog seeds and the frontend
+ * {@code utils/survival.ts} so demo mode behaves identically.
  */
 final class SurvivalSupplies {
 

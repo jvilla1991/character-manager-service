@@ -24,7 +24,7 @@ public class CatalogController {
     @Autowired
     private ShopService shopService;
 
-    /** All catalog items in a category (WEAPON / ARMOR / MATERIAL_COMPONENT / GEAR); 400 otherwise. */
+    /** All catalog items in a category (WEAPON / ARMOR / MATERIAL_COMPONENT / GEAR / TRANSPORT); 400 otherwise. */
     @GetMapping("/catalog")
     public ResponseEntity<List<CatalogItemView>> catalog(@RequestParam String category) {
         return ResponseEntity.ok(shopService.catalog(category));

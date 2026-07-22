@@ -39,7 +39,7 @@ public class CuratedShopService {
 
     /** Categories the import-template helper accepts (the seeded catalog slices). */
     private static final Set<String> IMPORTABLE_CATEGORIES =
-            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR");
+            Set.of("WEAPON", "ARMOR", "MATERIAL_COMPONENT", "GEAR", "TRANSPORT");
 
     private final ShopRepository shopRepository;
     private final ShopItemRepository shopItemRepository;
