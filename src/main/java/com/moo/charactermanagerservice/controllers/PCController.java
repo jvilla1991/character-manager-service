@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelGrantRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.SetInspirationRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
@@ -139,15 +140,17 @@ public class PCController {
     }
 
     /**
-     * DM awards one inspiration pip to a campaign member from the member sheet
+     * DM sets a campaign member's inspiration meter from the member sheet
      * (out-of-session) — campaign-DM authorized like the as-dm endpoints. The
-     * fifth pip empties the meter and grants Heroic Inspiration.
+     * sheet's pips are clickable, so this both raises and lowers the meter;
+     * asking for a full meter grants Heroic Inspiration and empties it.
      */
-    @PostMapping("/{id}/inspiration/pip")
-    public ResponseEntity<PC> awardInspirationPip(@PathVariable Long id,
-                                                  Authentication authentication) {
+    @PutMapping("/{id}/inspiration")
+    public ResponseEntity<PC> setInspirationPips(@PathVariable Long id,
+                                                 @RequestBody SetInspirationRequest request,
+                                                 Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(pcService.awardInspirationPip(id, user.getUuid()));
+        return ResponseEntity.ok(pcService.setInspirationPips(id, request.pips(), user.getUuid()));
     }
 
     /**

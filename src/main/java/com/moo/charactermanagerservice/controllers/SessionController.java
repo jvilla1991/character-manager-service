@@ -14,6 +14,7 @@ import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
+import com.moo.charactermanagerservice.dto.SetInspirationRequest;
 import com.moo.charactermanagerservice.dto.SetSoundRequest;
 import com.moo.charactermanagerservice.dto.SetLocationRequest;
 import com.moo.charactermanagerservice.dto.SetTimeRequest;
@@ -292,16 +293,18 @@ public class SessionController {
     }
 
     /**
-     * DM awards one inspiration pip to a seated PC — the fifth pip converts
-     * into Heroic Inspiration (meter resets, badge lights up on every viewer).
+     * DM sets a seated PC's inspiration meter by clicking a pip in the tracker —
+     * raising or lowering it. Filling the meter converts into Heroic Inspiration
+     * (meter empties, badge lights up on every viewer).
      */
-    @PostMapping("/session/{id}/participants/{participantId}/inspiration")
-    public ResponseEntity<SessionStateView> awardInspiration(@PathVariable Long id,
-                                                             @PathVariable Long participantId,
-                                                             Authentication authentication) {
+    @PutMapping("/session/{id}/participants/{participantId}/inspiration")
+    public ResponseEntity<SessionStateView> setInspiration(@PathVariable Long id,
+                                                           @PathVariable Long participantId,
+                                                           @RequestBody SetInspirationRequest request,
+                                                           Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
-                sessionService.awardInspiration(id, participantId, user.getUuid()));
+                sessionService.setInspiration(id, participantId, request.pips(), user.getUuid()));
     }
 
     /**

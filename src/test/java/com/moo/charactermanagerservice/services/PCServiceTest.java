@@ -291,33 +291,66 @@ class PCServiceTest {
         assertThat(result.getHeroicInspiration()).isTrue();
     }
 
-    // --- inspiration meter (award pip / use heroic) ---
+    // --- inspiration meter (set pips / use heroic) ---
 
     @Test
-    void awardInspirationPip_incrementsMeter_andLogs() {
+    void setInspirationPips_raisesMeter_andLogs() {
         pc.setCampaignId(7L);
         pc.setInspirationPips((short) 1);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        PC result = pcService.awardInspirationPip(1L, dmId);
+        PC result = pcService.setInspirationPips(1L, 2, dmId);
 
         assertThat(result.getInspirationPips()).isEqualTo((short) 2);
         assertThat(result.getHeroicInspiration()).isNotEqualTo(Boolean.TRUE);
         verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
-                "DM awarded an inspiration pip (2/5)", dmId);
+                "DM set inspiration to 2/5", dmId);
     }
 
+    /** Clicking a filled pip lowers the meter — the DM can take pips back. */
     @Test
-    void awardInspirationPip_fifthPip_grantsHeroic_andResetsMeter() {
+    void setInspirationPips_lowersMeter() {
         pc.setCampaignId(7L);
         pc.setInspirationPips((short) 4);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        PC result = pcService.awardInspirationPip(1L, dmId);
+        PC result = pcService.setInspirationPips(1L, 1, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 1);
+        assertThat(result.getHeroicInspiration()).isNotEqualTo(Boolean.TRUE);
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "DM set inspiration to 1/5", dmId);
+    }
+
+    /** Zero is a legal target — clicking the only lit pip clears the meter. */
+    @Test
+    void setInspirationPips_clearsMeterToZero() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 1);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.setInspirationPips(1L, 0, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 0);
+        verify(activityLogService).log(1L, PcActivityType.INSPIRATION,
+                "DM set inspiration to 0/5", dmId);
+    }
+
+    @Test
+    void setInspirationPips_fullMeter_grantsHeroic_andResetsMeter() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 2);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.setInspirationPips(1L, 5, dmId);
 
         assertThat(result.getInspirationPips()).isEqualTo((short) 0);
         assertThat(result.getHeroicInspiration()).isTrue();
@@ -325,13 +358,43 @@ class PCServiceTest {
                 "Gained Heroic Inspiration (meter filled)", dmId);
     }
 
+    /** A stale click must never 400 — out-of-range values clamp into the meter. */
     @Test
-    void awardInspirationPip_throws403_whenNotTheCampaignDm() {
+    void setInspirationPips_clampsOutOfRangeValues() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.setInspirationPips(1L, -4, dmId).getInspirationPips())
+                .isEqualTo((short) 0);
+        assertThat(pcService.setInspirationPips(1L, 99, dmId).getHeroicInspiration()).isTrue();
+    }
+
+    /** Re-clicking the pip already at the meter's value changes nothing and logs nothing. */
+    @Test
+    void setInspirationPips_noOp_writesNoLogLine() {
+        pc.setCampaignId(7L);
+        pc.setInspirationPips((short) 3);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.setInspirationPips(1L, 3, dmId);
+
+        assertThat(result.getInspirationPips()).isEqualTo((short) 3);
+        verify(activityLogService, never())
+                .log(eq(1L), eq(PcActivityType.INSPIRATION), any(), any());
+    }
+
+    @Test
+    void setInspirationPips_throws403_whenNotTheCampaignDm() {
         pc.setCampaignId(7L);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
 
-        assertThatThrownBy(() -> pcService.awardInspirationPip(1L, strangerId))
+        assertThatThrownBy(() -> pcService.setInspirationPips(1L, 3, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));

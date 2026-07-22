@@ -986,14 +986,16 @@ public class SessionService {
     }
 
     /**
-     * DM awards one inspiration pip to a seated PC (mirrors the XP-award
-     * authorization: DM only, PC combatants only). The fill logic lives in
-     * {@link PCService#applyInspirationPip} — shared with the out-of-session
-     * member-sheet award — and the version bump makes the meter move live on
+     * DM sets a seated PC's inspiration meter by clicking a pip in the tracker,
+     * raising or lowering it (mirrors the XP-award authorization: DM only, PC
+     * combatants only). The meter logic lives in
+     * {@link PCService#applyInspirationValue} — shared with the out-of-session
+     * member-sheet path — and the version bump makes the meter move live on
      * every viewer's sheet.
      */
     @Transactional
-    public SessionStateView awardInspiration(Long sessionId, Long participantId, UUID dmUserId) {
+    public SessionStateView setInspiration(Long sessionId, Long participantId, Integer pips,
+                                           UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
         if (session.getStatus() == SessionStatus.ENDED) {
@@ -1003,11 +1005,11 @@ public class SessionService {
         SessionParticipant participant = requireParticipant(sessionId, participantId);
         if (participant.getPcId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Cannot award inspiration to a non-PC combatant");
+                    "Cannot set inspiration on a non-PC combatant");
         }
 
         PC pc = pcService.findPCById(participant.getPcId());
-        pcService.applyInspirationPip(pc, dmUserId);
+        pcService.applyInspirationValue(pc, pips, dmUserId);
         pcRepository.save(pc);
 
         session.bumpVersion();
