@@ -1604,10 +1604,10 @@ class SessionServiceTest {
         verify(pcRepository, never()).save(any());
     }
 
-    // --- inspiration award (in-session) ---
+    // --- inspiration meter (in-session) ---
 
     @Test
-    void awardInspiration_delegatesToTheSharedFillLogic_andBumpsVersion() {
+    void setInspiration_delegatesToTheSharedMeterLogic_andBumpsVersion() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         SessionParticipant seat = participant(5L, 7L);
         when(participantRepository.findById(5L)).thenReturn(Optional.of(seat));
@@ -1617,29 +1617,46 @@ class SessionServiceTest {
                 .thenReturn(new ArrayList<>(List.of(seat)));
         when(pcRepository.findAllById(any())).thenReturn(List.of(pc));
 
-        sessionService.awardInspiration(1L, 5L, dmId);
+        sessionService.setInspiration(1L, 5L, 3, dmId);
 
-        verify(pcService).applyInspirationPip(pc, dmId);
+        verify(pcService).applyInspirationValue(pc, 3, dmId);
         verify(pcRepository).save(pc);
         assertThat(session.getVersion()).isEqualTo(1L);
     }
 
+    /** Lowering the meter travels the same path — the DM can take pips back mid-session. */
     @Test
-    void awardInspiration_throws400_forNonPcCombatant() {
+    void setInspiration_passesALowerValueThrough() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionParticipant seat = participant(5L, 7L);
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(seat));
+        PC pc = pc(7L, "Gorath", 0);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(seat)));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc));
+
+        sessionService.setInspiration(1L, 5L, 0, dmId);
+
+        verify(pcService).applyInspirationValue(pc, 0, dmId);
+    }
+
+    @Test
+    void setInspiration_throws400_forNonPcCombatant() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, null)));
 
-        assertThatThrownBy(() -> sessionService.awardInspiration(1L, 5L, dmId))
+        assertThatThrownBy(() -> sessionService.setInspiration(1L, 5L, 2, dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
         verify(pcRepository, never()).save(any());
     }
 
     @Test
-    void awardInspiration_throws403_whenNotDm() {
+    void setInspiration_throws403_whenNotDm() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.awardInspiration(1L, 5L, playerId))
+        assertThatThrownBy(() -> sessionService.setInspiration(1L, 5L, 2, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
