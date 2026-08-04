@@ -11,8 +11,11 @@ import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.RestVoteStatus;
 import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionRestVote;
+import com.moo.charactermanagerservice.models.SessionRestVoteBallot;
 import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.models.Encounter;
@@ -25,6 +28,8 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
+import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
 import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -72,6 +77,8 @@ class SessionServiceTest {
     @Mock private EncounterCreatureRepository encounterCreatureRepository;
     @Mock private PcActivityLogService activityLogService;
     @Mock private SessionRollRepository sessionRollRepository;
+    @Mock private SessionRestVoteRepository restVoteRepository;
+    @Mock private SessionRestVoteBallotRepository restVoteBallotRepository;
 
     private SessionService sessionService;
 
@@ -86,7 +93,8 @@ class SessionServiceTest {
         sessionService = new SessionService(sessionRepository, participantRepository, shopRepository,
                 shopAttendeeRepository, lootRepository, lootItemRepository, pcRepository, pcService,
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
-                activityLogService, sessionRollRepository, new ObjectMapper());
+                activityLogService, sessionRollRepository, restVoteRepository,
+                restVoteBallotRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -2179,6 +2187,336 @@ class SessionServiceTest {
         assertThat(state).isNull(); // expired → treated as "no active session"
         assertThat(session.getStatus()).isEqualTo(SessionStatus.ENDED);
         verify(sessionRollRepository).deleteBySessionId(1L);
+    }
+
+    // --- rest vote (player-initiated short rest) ---
+
+    /** Two seated PCs (mine + theirs, ids 5/6 → pcs 7/8) and one ad-hoc NPC (9). */
+    private List<SessionParticipant> restVoteParty() {
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        SessionParticipant theirs = participant(6L, 8L);
+        theirs.setOwnerUserId(strangerId);
+        SessionParticipant npc = participant(9L, null);
+        npc.setDisplayName("Goblin");
+        return new ArrayList<>(List.of(mine, theirs, npc));
+    }
+
+    /** Wire a LOBBY session with the standard party and vote-row persistence:
+     *  save assigns id 10; saved ballots are served back by the ballot query. */
+    private List<SessionRestVoteBallot> armRestVote() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> saved = new ArrayList<>();
+        lenient().when(restVoteRepository.save(any(SessionRestVote.class))).thenAnswer(inv -> {
+            SessionRestVote v = inv.getArgument(0);
+            if (v.getId() == null) {
+                v.setId(10L);
+            }
+            lenient().when(restVoteRepository.findTopBySessionIdOrderByIdDesc(1L))
+                    .thenReturn(Optional.of(v));
+            return v;
+        });
+        lenient().when(restVoteBallotRepository.saveAll(any())).thenAnswer(inv -> {
+            saved.addAll(inv.getArgument(0));
+            return inv.getArgument(0);
+        });
+        lenient().when(restVoteBallotRepository.findByVoteIdOrderByIdAsc(10L))
+                .thenAnswer(inv -> new ArrayList<>(saved));
+        return saved;
+    }
+
+    /** An ACTIVE vote row (id 10) already stored, lock-loadable, with the given ballots. */
+    private SessionRestVote activeVote(List<SessionRestVoteBallot> ballots, Instant expiresAt) {
+        SessionRestVote vote = new SessionRestVote();
+        vote.setId(10L);
+        vote.setSessionId(1L);
+        vote.setInitiatorParticipantId(5L);
+        vote.setInitiatorName("Gorath");
+        vote.setExpiresAt(expiresAt);
+        when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
+                .thenReturn(Optional.of(vote));
+        lenient().when(restVoteRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(vote));
+        lenient().when(restVoteBallotRepository.findByVoteIdOrderByIdAsc(10L))
+                .thenAnswer(inv -> new ArrayList<>(ballots));
+        lenient().when(restVoteRepository.findTopBySessionIdOrderByIdDesc(1L))
+                .thenReturn(Optional.of(vote));
+        return vote;
+    }
+
+    private static SessionRestVoteBallot ballot(Long participantId, String name, Boolean vote) {
+        SessionRestVoteBallot b = new SessionRestVoteBallot();
+        b.setId(participantId + 100);
+        b.setVoteId(10L);
+        b.setParticipantId(participantId);
+        b.setDisplayName(name);
+        b.setVote(vote);
+        return b;
+    }
+
+    @Test
+    void initiateRestVote_ballotsForSeatedPcsOnly_initiatorPreYes() {
+        List<SessionRestVoteBallot> saved = armRestVote();
+
+        SessionStateView state = sessionService.initiateRestVote(1L, playerId);
+
+        assertThat(saved).hasSize(2); // the NPC holds no ballot
+        SessionRestVoteBallot mine = saved.stream()
+                .filter(b -> b.getParticipantId().equals(5L)).findFirst().orElseThrow();
+        SessionRestVoteBallot theirs = saved.stream()
+                .filter(b -> b.getParticipantId().equals(6L)).findFirst().orElseThrow();
+        assertThat(mine.getVote()).isTrue(); // calling the rest is a yes
+        assertThat(mine.getDisplayName()).isEqualTo("Gorath");
+        assertThat(theirs.getVote()).isNull(); // the yellow "?"
+        assertThat(state.restVote()).isNotNull();
+        assertThat(state.restVote().status()).isEqualTo("ACTIVE");
+        assertThat(state.restVote().initiatorName()).isEqualTo("Gorath");
+        assertThat(state.restVote().votes()).hasSize(2);
+        assertThat(state.shortRestOpen()).isFalse(); // not unanimous yet
+        assertThat(session.getVersion()).isEqualTo(1L);
+        verify(restVoteRepository).deleteBySessionId(1L); // prior terminal vote replaced
+    }
+
+    @Test
+    void initiateRestVote_soloParty_isUnanimityOfOne_andOpensTheWindow() {
+        armRestVote();
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(mine)));
+
+        SessionStateView state = sessionService.initiateRestVote(1L, playerId);
+
+        assertThat(state.restVote().status()).isEqualTo("PASSED");
+        assertThat(state.shortRestOpen()).isTrue();
+    }
+
+    @Test
+    void initiateRestVote_throws409_whenAVoteIsAlreadyActive() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
+                .thenReturn(Optional.of(new SessionRestVote()));
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void initiateRestVote_throws409_whileTheWindowIsAlreadyOpen() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setShortRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void initiateRestVote_throws409_duringAnEncounter() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // ACTIVE
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void initiateRestVote_throws403_forACallerWithoutASeatedPc() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, dmId)) // DM holds no seat
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(restVoteRepository, never()).save(any());
+    }
+
+    @Test
+    void castRestVote_no_failsTheVoteInstantly() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        SessionRestVote vote = activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.castRestVote(1L, false, strangerId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.FAILED);
+        assertThat(state.shortRestOpen()).isFalse();
+        assertThat(session.getVersion()).isEqualTo(1L);
+        verify(restVoteRepository).save(vote);
+    }
+
+    @Test
+    void castRestVote_lastYes_passes_andOpensTheWindow() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        SessionRestVote vote = activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.castRestVote(1L, true, strangerId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.PASSED);
+        assertThat(state.shortRestOpen()).isTrue();
+    }
+
+    @Test
+    void castRestVote_throws403_forACallerWithoutABallot() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        activeVote(new ArrayList<>(List.of(ballot(5L, "Gorath", true))), // only participant 5 holds one
+                Instant.now().plus(Duration.ofSeconds(60)));
+
+        assertThatThrownBy(() -> sessionService.castRestVote(1L, true, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void castRestVote_throws409_whenNoVoteIsActive() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.castRestVote(1L, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void getState_lazilyFailsAnExpiredVote_andBumpsVersion_soIdlePollersWake() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null))); // a straggler
+        SessionRestVote vote = activeVote(ballots, Instant.now().minus(Duration.ofSeconds(5)));
+
+        // sinceVersion matches the pre-resolution version: without the lazy
+        // check this poll would 204 and the client would never learn the outcome.
+        SessionStateView state = sessionService.getState(1L, dmId, session.getVersion());
+
+        assertThat(state).isNotNull();
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.FAILED); // silence is not consent
+        assertThat(state.shortRestOpen()).isFalse();
+        assertThat(session.getVersion()).isEqualTo(1L);
+        verify(restVoteRepository).save(vote);
+    }
+
+    @Test
+    void getState_settlesAVoteWhoseLastHoldoutLeft_asPassed() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        // The undecided ballot cascade-deleted with the leaver — all remaining are yes.
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(ballot(5L, "Gorath", true)));
+        SessionRestVote vote = activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.getState(1L, dmId, null);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.PASSED);
+        assertThat(state.shortRestOpen()).isTrue();
+    }
+
+    @Test
+    void overrideRestVote_yes_passesRegardlessOfMissingBallots() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        SessionRestVote vote = activeVote(new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null))),
+                Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.overrideRestVote(1L, true, dmId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.PASSED);
+        assertThat(state.shortRestOpen()).isTrue();
+    }
+
+    @Test
+    void overrideRestVote_no_failsTheVote() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        SessionRestVote vote = activeVote(new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null))),
+                Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.overrideRestVote(1L, false, dmId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.FAILED);
+        assertThat(state.shortRestOpen()).isFalse();
+    }
+
+    @Test
+    void overrideRestVote_throws403_forNonDm() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.overrideRestVote(1L, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void toggleShortRest_throws409_whileAVoteIsBeingTallied() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
+                .thenReturn(Optional.of(new SessionRestVote()));
+
+        assertThatThrownBy(() -> sessionService.toggleShortRest(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        assertThat(Boolean.TRUE.equals(session.getShortRestOpen())).isFalse();
+    }
+
+    @Test
+    void startEncounter_cancelsAnActiveRestVote() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(combatants(2));
+        SessionRestVote vote = new SessionRestVote();
+        vote.setId(10L);
+        when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
+                .thenReturn(Optional.of(vote));
+
+        sessionService.startEncounter(1L, dmId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.CANCELLED);
+        verify(restVoteRepository).save(vote);
+    }
+
+    @Test
+    void endSession_purgesRestVoteRows() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(CombatSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>());
+
+        sessionService.endSession(1L, dmId);
+
+        verify(restVoteRepository).deleteBySessionId(1L);
     }
 
     private static SessionRoll rollRow(Long id, Long participantId, UUID ownerUserId, String displayName,
