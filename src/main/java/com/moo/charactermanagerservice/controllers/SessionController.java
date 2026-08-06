@@ -12,6 +12,7 @@ import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.RestVoteCastRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
 import com.moo.charactermanagerservice.dto.SetInspirationRequest;
@@ -277,6 +278,36 @@ public class SessionController {
                                                       Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.toggleShortRest(id, user.getUuid()));
+    }
+
+    /**
+     * A seated player calls a short rest: opens a 60-second unanimous vote
+     * among every seated PC (the caller's ballot is pre-set to yes). Passing
+     * opens the same short-rest window as the DM's toggle.
+     */
+    @PostMapping("/session/{id}/rest-vote")
+    public ResponseEntity<SessionStateView> initiateRestVote(@PathVariable Long id,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.initiateRestVote(id, user.getUuid()));
+    }
+
+    /** A player answers the active rest vote (true = yes, false = no). */
+    @PostMapping("/session/{id}/rest-vote/cast")
+    public ResponseEntity<SessionStateView> castRestVote(@PathVariable Long id,
+                                                         @RequestBody RestVoteCastRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.castRestVote(id, request.vote(), user.getUuid()));
+    }
+
+    /** DM override on the active vote: true ends it passed now, false ends it failed. */
+    @PostMapping("/session/{id}/rest-vote/override")
+    public ResponseEntity<SessionStateView> overrideRestVote(@PathVariable Long id,
+                                                             @RequestBody RestVoteCastRequest request,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.overrideRestVote(id, request.vote(), user.getUuid()));
     }
 
     /**

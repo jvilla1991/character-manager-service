@@ -67,6 +67,12 @@ import java.util.Map;
  * ({@code SessionRollView.mine} is also set so the DM's all-rolls view can
  * style "your roll" differently). The log is ephemeral: purged wholesale when
  * the session ends (explicit delete, not a DB cascade-on-status-change).
+ *
+ * <p>{@code restVote} is the player-initiated short-rest vote (or null when
+ * this session has never held one). Broadcast to every viewer; the latest
+ * vote rides along even after it resolves so clients can announce the
+ * outcome — it is replaced when the next vote opens and purged with the
+ * session. See {@link RestVoteView}.
  */
 public record SessionStateView(
         Long sessionId,
@@ -91,5 +97,6 @@ public record SessionStateView(
         Map<String, Object> location,
         List<String> weekDays,
         List<ParticipantView> participants,
-        List<SessionRollView> rolls
+        List<SessionRollView> rolls,
+        RestVoteView restVote
 ) {}
