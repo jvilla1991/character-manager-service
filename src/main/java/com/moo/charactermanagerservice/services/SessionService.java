@@ -7,6 +7,7 @@ import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
+import com.moo.charactermanagerservice.dto.RestVoteView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetLocationRequest;
@@ -18,8 +19,11 @@ import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.RestVoteStatus;
 import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionRestVote;
+import com.moo.charactermanagerservice.models.SessionRestVoteBallot;
 import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
@@ -31,6 +35,8 @@ import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
+import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
 import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -74,6 +80,14 @@ public class SessionService {
     /** A session idle longer than this is auto-ended on next access (no scheduler). */
     private static final Duration SESSION_TTL = Duration.ofHours(4);
 
+    /**
+     * How long a player-initiated short-rest vote stays open. Expiry is lazy,
+     * like {@link #SESSION_TTL}: there is no scheduler — the poll path
+     * ({@link #getState}) resolves an overdue vote on next access, which the 2s
+     * client poll bounds to ~2s of latency.
+     */
+    private static final Duration REST_VOTE_WINDOW = Duration.ofSeconds(60);
+
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
     private final SessionShopRepository shopRepository;
@@ -88,6 +102,8 @@ public class SessionService {
     private final EncounterCreatureRepository encounterCreatureRepository;
     private final PcActivityLogService activityLogService;
     private final SessionRollRepository sessionRollRepository;
+    private final SessionRestVoteRepository restVoteRepository;
+    private final SessionRestVoteBallotRepository restVoteBallotRepository;
     private final PcJsonColumns json;
 
     /**
@@ -113,6 +129,8 @@ public class SessionService {
                           EncounterCreatureRepository encounterCreatureRepository,
                           PcActivityLogService activityLogService,
                           SessionRollRepository sessionRollRepository,
+                          SessionRestVoteRepository restVoteRepository,
+                          SessionRestVoteBallotRepository restVoteBallotRepository,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -128,6 +146,8 @@ public class SessionService {
         this.encounterCreatureRepository = encounterCreatureRepository;
         this.activityLogService = activityLogService;
         this.sessionRollRepository = sessionRollRepository;
+        this.restVoteRepository = restVoteRepository;
+        this.restVoteBallotRepository = restVoteBallotRepository;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -165,7 +185,14 @@ public class SessionService {
      * snapshot, so this returns null and the controller replies 204 — the 2s
      * poll then costs a couple of DB reads and an empty response instead of the
      * full payload.
+     *
+     * <p>Transactional (unusually for a read) because the lazy rest-vote check
+     * may take the vote row lock and write a resolution — see
+     * {@link #resolveStaleRestVote}. That check runs BEFORE the sinceVersion
+     * short-circuit on purpose: resolving bumps the version, which is exactly
+     * what wakes the idle 204 pollers up to the outcome.
      */
+    @Transactional
     public SessionStateView getState(Long sessionId, UUID userId, Long sinceVersion) {
         CombatSession session = findSession(sessionId);
         List<SessionParticipant> participants =
@@ -177,6 +204,7 @@ public class SessionService {
         if (!isDm && !isMemberOwner) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
+        resolveStaleRestVote(session);
         if (sinceVersion != null && sinceVersion.equals(session.getVersion())) {
             return null;
         }
@@ -321,6 +349,12 @@ public class SessionService {
         session.setCurrentTurnParticipantId(ordered.get(0).getId());
         session.setRound((short) 1); // a fresh encounter always opens on round 1
         session.setShortRestOpen(false); // combat interrupts any announced rest
+        // ... and any rest vote still being tallied.
+        restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE)
+                .ifPresent(vote -> {
+                    vote.setStatus(RestVoteStatus.CANCELLED);
+                    restVoteRepository.save(vote);
+                });
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -902,6 +936,11 @@ public class SessionService {
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
+        if (restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE).isPresent()) {
+            // Mid-vote, the DM's verbs are the override buttons — not the toggle.
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A rest vote is in progress — allow or deny it instead");
+        }
 
         session.setShortRestOpen(!Boolean.TRUE.equals(session.getShortRestOpen()));
         session.bumpVersion();
@@ -983,6 +1022,226 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return new HitDieSpendResult(roll, healed, pc.getHpCurrent(), pc.getHitDiceUsed());
+    }
+
+    /**
+     * A seated player calls a short rest, opening a {@link #REST_VOTE_WINDOW}
+     * vote among every seated PC participant (ad-hoc NPCs and the DM hold no
+     * ballot). The initiator's ballot is pre-set to yes. Unanimous yes — checked
+     * eagerly here for a solo party — passes the vote and opens the session's
+     * {@code shortRestOpen} window; any no fails it instantly. The previous
+     * (terminal) vote's rows are replaced so the snapshot carries only the
+     * latest vote.
+     */
+    @Transactional
+    public SessionStateView initiateRestVote(Long sessionId, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (session.getStatus() != SessionStatus.LOBBY) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Cannot call a short rest during an encounter");
+        }
+        if (Boolean.TRUE.equals(session.getShortRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A short rest is already in progress");
+        }
+        if (restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE).isPresent()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A rest vote is already in progress");
+        }
+
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        SessionParticipant initiator = participants.stream()
+                .filter(p -> p.getPcId() != null && userId.equals(p.getOwnerUserId()))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Only a seated player may call a short rest"));
+
+        // Replace the previous vote (terminal by the ACTIVE check above) so the
+        // poll snapshot carries exactly one vote per session.
+        restVoteRepository.deleteBySessionId(sessionId);
+
+        Map<Long, PC> pcsById = loadPcs(participants);
+        SessionRestVote vote = new SessionRestVote();
+        vote.setSessionId(sessionId);
+        vote.setInitiatorParticipantId(initiator.getId());
+        vote.setInitiatorName(ballotDisplayName(initiator, pcsById));
+        vote.setExpiresAt(Instant.now().plus(REST_VOTE_WINDOW));
+        restVoteRepository.save(vote);
+
+        List<SessionRestVoteBallot> ballots = new ArrayList<>();
+        for (SessionParticipant p : participants) {
+            if (p.getPcId() == null) {
+                continue; // NPCs don't rest — and don't vote
+            }
+            SessionRestVoteBallot ballot = new SessionRestVoteBallot();
+            ballot.setVoteId(vote.getId());
+            ballot.setParticipantId(p.getId());
+            ballot.setDisplayName(ballotDisplayName(p, pcsById));
+            if (p.getId().equals(initiator.getId())) {
+                ballot.setVote(Boolean.TRUE); // calling the rest is a yes
+            }
+            ballots.add(ballot);
+        }
+        restVoteBallotRepository.saveAll(ballots);
+
+        if (resolveIfSettled(vote, session)) {
+            restVoteRepository.save(vote); // solo party: unanimity of one
+        }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, participants, userId);
+    }
+
+    /**
+     * A player answers the active rest vote with their ballot. Re-casting
+     * before resolution overwrites (yes → no is allowed while others are still
+     * thinking). Resolution is eager: any no fails the vote on the spot, and
+     * the last missing yes passes it — the 60s window only matters for
+     * stragglers ({@link #resolveStaleRestVote}).
+     */
+    @Transactional
+    public SessionStateView castRestVote(Long sessionId, Boolean vote, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (vote == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "vote is required");
+        }
+
+        SessionRestVote active = lockActiveRestVote(sessionId);
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        Set<Long> myParticipantIds = participants.stream()
+                .filter(p -> p.getPcId() != null && userId.equals(p.getOwnerUserId()))
+                .map(SessionParticipant::getId)
+                .collect(Collectors.toSet());
+        SessionRestVoteBallot mine = restVoteBallotRepository
+                .findByVoteIdOrderByIdAsc(active.getId()).stream()
+                .filter(b -> myParticipantIds.contains(b.getParticipantId()))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "You do not hold a ballot in this vote"));
+
+        mine.setVote(vote);
+        restVoteBallotRepository.save(mine);
+
+        if (resolveIfSettled(active, session)) {
+            restVoteRepository.save(active);
+        }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, participants, userId);
+    }
+
+    /**
+     * The DM's decisive word on the active vote: yes ends it PASSED right now
+     * (rest window opens regardless of missing ballots), no ends it FAILED.
+     * The DM holds no ballot — this override is their entire participation.
+     */
+    @Transactional
+    public SessionStateView overrideRestVote(Long sessionId, Boolean vote, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (vote == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "vote is required");
+        }
+
+        SessionRestVote active = lockActiveRestVote(sessionId);
+        if (Boolean.TRUE.equals(vote)) {
+            applyRestVotePass(active, session);
+        } else {
+            active.setStatus(RestVoteStatus.FAILED);
+        }
+        restVoteRepository.save(active);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /** The session's ACTIVE vote under the row lock, or 409 — serializes casts,
+     *  the DM override, and lazy expiry so exactly one caller resolves it. */
+    private SessionRestVote lockActiveRestVote(Long sessionId) {
+        SessionRestVote active = restVoteRepository
+                .findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE)
+                .flatMap(v -> restVoteRepository.findByIdForUpdate(v.getId()))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
+                        "No rest vote is in progress"));
+        if (active.getStatus() != RestVoteStatus.ACTIVE) {
+            // Lost the race to a concurrent resolver between probe and lock.
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "No rest vote is in progress");
+        }
+        return active;
+    }
+
+    /**
+     * Settle an ACTIVE vote if its outcome is determined: any no → FAILED; all
+     * yes → PASSED (checked before expiry, so the last yes still lands in the
+     * lazy-resolution grace gap); past {@link SessionRestVote#getExpiresAt}
+     * with unanswered ballots → FAILED, because unanimity means silence is not
+     * consent. Returns whether the vote resolved (caller persists it).
+     */
+    private boolean resolveIfSettled(SessionRestVote vote, CombatSession session) {
+        List<SessionRestVoteBallot> ballots =
+                restVoteBallotRepository.findByVoteIdOrderByIdAsc(vote.getId());
+        boolean anyNo = ballots.stream().anyMatch(b -> Boolean.FALSE.equals(b.getVote()));
+        if (anyNo) {
+            vote.setStatus(RestVoteStatus.FAILED);
+            return true;
+        }
+        boolean allYes = !ballots.isEmpty()
+                && ballots.stream().allMatch(b -> Boolean.TRUE.equals(b.getVote()));
+        if (allYes) {
+            applyRestVotePass(vote, session);
+            return true;
+        }
+        if (vote.getExpiresAt() != null && Instant.now().isAfter(vote.getExpiresAt())) {
+            vote.setStatus(RestVoteStatus.FAILED);
+            return true;
+        }
+        return false;
+    }
+
+    /** A passed vote opens the same window the DM's manual toggle does. The
+     *  campaign clock is deliberately untouched — time stays DM-controlled. */
+    private void applyRestVotePass(SessionRestVote vote, CombatSession session) {
+        vote.setStatus(RestVoteStatus.PASSED);
+        session.setShortRestOpen(true);
+    }
+
+    /**
+     * Lazy resolution for a vote nobody explicitly closed: the 60s window ran
+     * out with stragglers, or a leaver's ballot cascade-delete settled the
+     * remainder. Runs on every poll while a vote is ACTIVE ({@link #getState});
+     * the version bump on resolution is what wakes idle 204 pollers. Mirrors
+     * the {@link #SESSION_TTL} lazy-expiry pattern — no scheduler.
+     */
+    private void resolveStaleRestVote(CombatSession session) {
+        restVoteRepository.findBySessionIdAndStatus(session.getId(), RestVoteStatus.ACTIVE)
+                .flatMap(v -> restVoteRepository.findByIdForUpdate(v.getId()))
+                .filter(v -> v.getStatus() == RestVoteStatus.ACTIVE)
+                .ifPresent(vote -> {
+                    if (resolveIfSettled(vote, session)) {
+                        restVoteRepository.save(vote);
+                        session.bumpVersion();
+                        sessionRepository.save(session);
+                    }
+                });
+    }
+
+    /** Ballot display name: the PC's canonical (rename-safe) name, falling back
+     *  to the participant row's snapshot. */
+    private String ballotDisplayName(SessionParticipant p, Map<Long, PC> pcsById) {
+        PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
+        return pc != null ? pc.getName() : p.getDisplayName();
     }
 
     /**
@@ -1436,6 +1695,8 @@ public class SessionService {
         session.bumpVersion();
         CombatSession saved = sessionRepository.save(session);
         sessionRollRepository.deleteBySessionId(session.getId());
+        // Rest-vote rows are ephemeral like the roll log; ballots cascade in the DB.
+        restVoteRepository.deleteBySessionId(session.getId());
         return saved;
     }
 
@@ -1683,6 +1944,22 @@ public class SessionService {
                 .map(r -> toRollView(r, requesterId))
                 .toList();
 
+        // The latest rest vote (terminal included, so clients can announce the
+        // outcome) — broadcast; a viewer finds their own ballot by participant id.
+        RestVoteView restVote = restVoteRepository
+                .findTopBySessionIdOrderByIdDesc(session.getId())
+                .map(v -> new RestVoteView(
+                        v.getId(),
+                        v.getStatus().name(),
+                        v.getInitiatorParticipantId(),
+                        v.getInitiatorName(),
+                        v.getExpiresAt() == null ? null : v.getExpiresAt().toString(),
+                        restVoteBallotRepository.findByVoteIdOrderByIdAsc(v.getId()).stream()
+                                .map(b -> new RestVoteView.BallotView(
+                                        b.getParticipantId(), b.getDisplayName(), b.getVote()))
+                                .toList()))
+                .orElse(null);
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -1706,7 +1983,8 @@ public class SessionService {
                 location,
                 weekDays,
                 views,
-                rolls
+                rolls,
+                restVote
         );
     }
 
