@@ -74,6 +74,7 @@ public class LevelUpService {
         int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hpGained = hpCalculator.average(hitDie, conMod);
         boolean asiDue = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
+        boolean subclassDue = subclassDue(pc, newLevel);
 
         return new LevelUpPreview(
                 currentLevel,
@@ -86,7 +87,7 @@ public class LevelUpService {
                 ClassProgression.proficiencyBonusForLevel(newLevel),
                 spellSlotCalculator.currentMax(pc.getSpellSlots()),
                 ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
-                subclassDue(pc, newLevel),
+                subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
                 asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
@@ -96,7 +97,8 @@ public class LevelUpService {
                 ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel),
                 FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel),
-                FeatCatalog.fightingStyleOptions(pc.getClazz(), pc.getSubclass(), newLevel)
+                FeatCatalog.fightingStyleOptions(pc.getClazz(), pc.getSubclass(), newLevel),
+                subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null
         );
     }
 
@@ -262,7 +264,8 @@ public class LevelUpService {
      */
     private void applySpecializationChoice(PC pc, String specialization) {
         if (specialization == null) return;
-        HeroClassRules.validateLevelUpSpecialization(pc.getSubclass(), pc.getSpecialization(), specialization);
+        HeroClassRules.validateLevelUpSpecialization(pc.getClazz(), pc.getSubclass(),
+                pc.getSpecialization(), specialization);
         pc.setSpecialization(specialization);
     }
 

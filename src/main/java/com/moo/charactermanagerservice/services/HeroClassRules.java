@@ -2,29 +2,58 @@ package com.moo.charactermanagerservice.services;
 
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.ClassProgression.ClassSpecializations;
 import com.moo.charactermanagerservice.progression.ClassProgression.HeroSubclass;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
- * Request validation for "hero classes" (World of Warcraft tabletop module) — e.g. the Death
- * Knight (clazz {@code paladin} + subclass {@value ClassProgression#EBON_BLADE}) and the Demon
- * Hunter (clazz {@code ranger} + subclass {@value ClassProgression#DEMON_HUNTER}), each with a
- * {@code specialization} drawn from its own list. The rules themselves (which subclasses are hero
- * subclasses, their base class, allowed specializations and respec policy) are data in
- * {@link ClassProgression}; this class turns violations into 400s for the PC write paths (create,
- * owner update, DM update) and the level-up specialization choice.
+ * Request validation for World of Warcraft tabletop-module class options, in two shapes:
+ * <ul>
+ *   <li>"hero classes" — e.g. the Death Knight (clazz {@code paladin} + subclass
+ *       {@value ClassProgression#EBON_BLADE}) and the Demon Hunter (clazz {@code ranger} + subclass
+ *       {@value ClassProgression#DEMON_HUNTER}) — whose {@code specialization} is drawn from the
+ *       hero subclass's own list;</li>
+ *   <li>WoW class variants with no subclass lock — e.g. the WoW Druid (clazz {@code druid}, any
+ *       normal circle) — whose {@code specialization} is drawn from the class's list. A druid with
+ *       no specialization is a base-game druid.</li>
+ * </ul>
+ * The rules themselves (lists, base classes, respec policy) are data in {@link ClassProgression};
+ * this class turns violations into 400s for the PC write paths (create, owner update, DM update)
+ * and the level-up specialization choice.
  */
 final class HeroClassRules {
 
     private HeroClassRules() {}
 
+    /** The specialization list + respec policy that applies to one PC, whichever shape it is. */
+    private record SpecializationRule(String label, List<String> specializations, boolean respecOnLevelUp) {}
+
     /**
-     * Validate a PC body's hero-class fields: a hero subclass must belong to the PC's class, and
-     * any specialization must be valid for the subclass. Other (non-hero) subclass values are left
-     * alone, as before.
+     * A hero subclass's list wins; otherwise the class's WoW specialization list, if any. Empty for
+     * a PC that cannot have a specialization at all.
+     */
+    private static Optional<SpecializationRule> ruleFor(String clazz, String subclass) {
+        Optional<HeroSubclass> hero = ClassProgression.heroSubclass(subclass);
+        if (hero.isPresent()) {
+            HeroSubclass h = hero.get();
+            return Optional.of(new SpecializationRule(h.name(), h.specializations(), h.respecOnLevelUp()));
+        }
+        return ClassProgression.classSpecializations(clazz).map(HeroClassRules::ruleOf);
+    }
+
+    private static SpecializationRule ruleOf(ClassSpecializations s) {
+        return new SpecializationRule(s.baseClass(), s.specializations(), s.respecOnLevelUp());
+    }
+
+    /**
+     * Validate a PC body's WoW fields: a hero subclass must belong to the PC's class, and any
+     * specialization must be valid for the hero subclass (or, without one, for the class). Other
+     * (non-hero) subclass values are left alone, as before.
      */
     static void validate(PC pc) {
         String subclass = pc.getSubclass();
@@ -33,44 +62,48 @@ final class HeroClassRules {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "'" + subclass.trim() + "' is not available to " + pc.getClazz());
         }
-        validateSpecialization(subclass, pc.getSpecialization());
+        validateSpecialization(pc.getClazz(), subclass, pc.getSpecialization());
     }
 
     /**
-     * A specialization may be null; a non-null one is only allowed on a hero subclass and must be
-     * exactly (case-sensitively) one of that subclass's specializations.
+     * A specialization may be null; a non-null one must be exactly (case-sensitively) one of the
+     * hero subclass's specializations, or — with no hero subclass — one of the class's WoW
+     * specializations. Anything else (including a specialization on a class with no WoW variant)
+     * is a 400.
      */
-    static void validateSpecialization(String subclass, String specialization) {
+    static void validateSpecialization(String clazz, String subclass, String specialization) {
         if (specialization == null) return;
-        HeroSubclass hero = ClassProgression.heroSubclass(subclass).orElseThrow(() ->
+        SpecializationRule rule = ruleFor(clazz, subclass).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "A specialization can only be set on a hero subclass character"));
-        if (!hero.specializations().contains(specialization)) {
+                        "A specialization can only be set on a hero subclass character or a class with"
+                                + " World of Warcraft specializations"));
+        if (!rule.specializations().contains(specialization)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "'" + specialization + "' is not a valid " + hero.name() + " specialization (expected one of "
-                            + String.join(", ", hero.specializations()) + ")");
+                    "'" + specialization + "' is not a valid " + rule.label() + " specialization (expected one of "
+                            + String.join(", ", rule.specializations()) + ")");
         }
     }
 
     /**
-     * A specialization chosen on level-up: validated as above, and — when the hero subclass does
-     * not allow respec on level-up — only accepted while none is set yet (or when it repeats the
-     * current one). {@code null} means "keep the current one" and is always fine.
+     * A specialization chosen on level-up: validated as above, and — when the rule does not allow
+     * respec on level-up (e.g. the Demon Hunter) — only accepted while none is set yet (or when it
+     * repeats the current one). {@code null} means "keep the current one" and is always fine.
      */
-    static void validateLevelUpSpecialization(String subclass, String current, String requested) {
+    static void validateLevelUpSpecialization(String clazz, String subclass, String current, String requested) {
         if (requested == null) return;
-        validateSpecialization(subclass, requested);
-        HeroSubclass hero = ClassProgression.heroSubclass(subclass).orElseThrow();
-        if (!hero.respecOnLevelUp() && current != null && !current.equals(requested)) {
+        validateSpecialization(clazz, subclass, requested);
+        SpecializationRule rule = ruleFor(clazz, subclass).orElseThrow();
+        if (!rule.respecOnLevelUp() && current != null && !current.equals(requested)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "A " + hero.name() + " specialization cannot be changed on level-up");
+                    "A " + rule.label() + " specialization cannot be changed on level-up");
         }
     }
 
     /**
      * Owner update: for a hero subclass without respec on level-up, an already-chosen
      * specialization is locked for the player — only the DM update path may change it. Runs after
-     * the stored value has been carried over onto a body that omitted the field.
+     * the stored value has been carried over onto a body that omitted the field. WoW class
+     * specializations (e.g. the druid's) all allow respec, so the owner may change them.
      */
     static void assertOwnerMayChangeSpecialization(PC existing, PC incoming) {
         HeroSubclass hero = ClassProgression.heroSubclass(incoming.getSubclass()).orElse(null);
