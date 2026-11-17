@@ -46,6 +46,13 @@ import java.util.Map;
  * live, without exposing teammates' XP to each other. Null for the DM or for a
  * player with no seated PC in this session.
  *
+ * <p>{@code myLevelGrant} is caller-scoped for the same reason: true while the
+ * requester's own seated PC holds a DM-granted pending level-up, false when it
+ * does not, and null for the DM or for a player with no seated PC in this
+ * session. A grant, a revoke and the level-up that consumes it each bump the
+ * session version, so the flag reaches the player on their next poll — the cue
+ * for the "level up now" prompt. A teammate's grant is never exposed.
+ *
  * <p>{@code gameTime} is the campaign's in-world clock
  * ({@code {year, month, day, timeOfDay}}), or null when the DM has never set or
  * advanced it. Broadcast to every viewer; only the DM may change it.
@@ -93,6 +100,7 @@ public record SessionStateView(
         String lootStatus,
         String lootName,
         Integer myXp,
+        Boolean myLevelGrant,
         Map<String, Object> gameTime,
         Map<String, Object> location,
         List<String> weekDays,
