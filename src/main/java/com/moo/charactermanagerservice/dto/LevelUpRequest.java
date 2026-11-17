@@ -24,17 +24,28 @@ import java.util.Map;
  * optional; {@code null} (or an omitted field) means {@link HpMode#AVERAGE}, so existing clients are
  * unaffected. In {@link HpMode#ROLL} the server rolls the die — the client never sends a roll
  * result, only the choice of mode.
+ *
+ * <p>Rune: {@code rune} — optional Death Knight re-Runeforging ({@code "Blood"}, {@code "Frost"}
+ * or {@code "Unholy"}); a Death Knight may swap runes whenever they gain a level. {@code null}
+ * keeps the current rune. Only valid for an "Oath of the Ebon Blade" character.
  */
 public record LevelUpRequest(
         String subclass,
         Map<String, Integer> abilityIncreases,
         String feat,
         List<Map<String, Object>> newSpells,
-        HpMode hpMode
+        HpMode hpMode,
+        String rune
 ) {
     /** Back-compat constructor for callers that don't choose an HP mode: defaults to AVERAGE. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells) {
-        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE);
+        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE, null);
+    }
+
+    /** Back-compat constructor for callers that don't change the rune. */
+    public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
+                          String feat, List<Map<String, Object>> newSpells, HpMode hpMode) {
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, null);
     }
 }
