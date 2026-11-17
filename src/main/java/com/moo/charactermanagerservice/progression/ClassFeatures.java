@@ -15,8 +15,8 @@ import java.util.Set;
  *
  * <p>Scope: the generic class features each class gains at levels 2–20, plus — via
  * {@link #featuresAt(String, String, int)} — the features of subclasses modeled here (currently
- * only the Oath of the Ebon Blade hero subclass, which also replaces some generic Paladin
- * features). Level-1 features are excluded (granted at character creation), as are Ability Score
+ * the Oath of the Ebon Blade and Demon Hunter hero subclasses, which also replace some generic
+ * Paladin/Ranger features). Level-1 features are excluded (granted at character creation), as are Ability Score
  * Improvements (handled by the ASI/feat choice). Descriptions are concise summaries — see the
  * 2024 Player's Handbook (or the relevant module) for full text.
  */
@@ -236,7 +236,7 @@ public final class ClassFeatures {
 
     // ── Subclass features ──────────────────────────────────────────────────────
     // Only subclasses whose level-up features are modeled server-side appear here (today: the
-    // Death Knight hero subclass). Each level entry may REPLACE generic class features by name
+    // Death Knight and Demon Hunter hero subclasses). Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -250,9 +250,14 @@ public final class ClassFeatures {
         return new SubclassGains(Set.of(replaced), List.of(gains));
     }
 
+    private static SubclassGains replaces(Set<String> replaced, FeatureGain... gains) {
+        return new SubclassGains(replaced, List.of(gains));
+    }
+
     /** class (lower-case) -> subclass (lower-case) -> level -> gains. */
     private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = Map.of(
-            "paladin", Map.of(ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade())
+            "paladin", Map.of(ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade()),
+            "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter())
     );
 
     /**
@@ -279,6 +284,31 @@ public final class ClassFeatures {
                 f("Runic Mastery", "Your command of runes deepens, strengthening the benefits of your forged rune.")));
         f.put(20, adds(
                 f("Aspect of the Horsemen", "You can take on the aspect of the legendary Horsemen of the Ebon Blade, unleashing a burst of deathly power for a short time.")));
+        return f;
+    }
+
+    /**
+     * Demon Hunter (World of Warcraft tabletop module), a Ranger hero subclass. Level 1's
+     * Spellcasting change (an Arcane Focus may stand in for a Druidic Focus) is a creation-time
+     * feature and so is not in this table.
+     */
+    private static Map<Integer, SubclassGains> demonHunter() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(2, replaces(Set.of("Deft Explorer", "Fighting Style"),
+                f("Deft Explorer", "You gain Expertise in a skill and learn additional languages. Eredun and Nathrezim, the tongues of demonkind, are the recommended picks for a Demon Hunter."),
+                f("Fighting Style", "You adopt a particular style of fighting as your specialty. As a Demon Hunter you may take the Void Warrior option instead of a Fighting Style feat.")));
+        f.put(3, adds(
+                f("Demon Hunter Spells", "You always have certain spells prepared once you reach the listed Ranger levels: every spell in the All column, plus those in the column for your chosen specialization."),
+                f("Soul Fragments", "When you finish a Long Rest you gain Soul Fragments equal to your Wisdom modifier (minimum 1), one more at Ranger level 13 and two more at 17; any left over vanish at your next Long Rest. Spend one for Double Jump (cast Feather Fall or Jump without a spell slot) or Soul Cleave (once per turn, trade an attack for a 10-foot emanation where each creature makes a Dexterity save against your ranger spell save DC, taking 1d12 + your Wisdom modifier psychic damage on a failure while you heal that amount). When an enemy within 30 feet dies, you can use your Reaction to regain one fragment."),
+                f("Spectral Sight", "You gain Blindsight out to 10 feet.")));
+        f.put(7, adds(
+                f("Torment", "A creature marked by your Hunter's Mark has Disadvantage on attack rolls against anyone other than you. Once per turn when you hit a marked creature, choose Aura of Pain (it subtracts 1d4 from its next saving throw before the end of your next turn) or Chaos Strike (the hit deals an extra 1d8 Fire damage).")));
+        f.put(11, adds(
+                f("Illidari Knowledge", "Disrupt: spend 2 Soul Fragments to cast Counterspell as a Reaction, using your spellcasting ability. Warglaive Mastery: as a Bonus Action, spend 1 Soul Fragment to cast Throw Glaive without a spell slot.")));
+        f.put(15, adds(
+                f("Soul Shatter", "Your Soul Cleave now deals 2d12 + your Wisdom modifier psychic damage. When you roll Initiative and have no Soul Fragments, you regain one.")));
+        f.put(18, replaces("Feral Senses",
+                f("Improved Spectral Sight", "Replaces Feral Senses. You gain Truesight out to 30 feet.")));
         return f;
     }
 

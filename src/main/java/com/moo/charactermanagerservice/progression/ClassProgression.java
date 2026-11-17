@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.progression;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -252,6 +253,7 @@ public final class ClassProgression {
             // HERO_SUBCLASSES — and is intentionally absent from this level-up list.
             Map.entry("paladin", List.of(
                     "Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance")),
+            // Demon Hunter is likewise a creation-only hero subclass, absent from this list.
             Map.entry("ranger", List.of(
                     "Beast Master", "Fey Wanderer", "Gloom Stalker", "Hunter")),
             Map.entry("rogue", List.of(
@@ -283,28 +285,47 @@ public final class ClassProgression {
 
     // ── Hero subclasses (World of Warcraft tabletop module) ─────────────────────
     // A "hero class" is chosen at CHARACTER CREATION and stored as a base class + a locked
-    // subclass — e.g. a Death Knight is clazz "paladin" + subclass "Oath of the Ebon Blade".
-    // Hero subclasses are valid only at creation: they are kept out of SUBCLASS_CATALOG so a
-    // normal member of the base class is never offered one at its level-3 subclass choice, and
-    // because the subclass is already set from level 1, LevelUpService never asks for another.
+    // subclass — e.g. a Death Knight is clazz "paladin" + subclass "Oath of the Ebon Blade", a
+    // Demon Hunter is clazz "ranger" + subclass "Demon Hunter". Hero subclasses are valid only at
+    // creation: they are kept out of SUBCLASS_CATALOG so a normal member of the base class is never
+    // offered one at its level-3 subclass choice, and because the subclass is already set from
+    // level 1, LevelUpService never asks for another. Each hero subclass carries a specialization
+    // (persisted as pc.specialization) drawn from its own list.
+
+    /**
+     * One hero subclass as data.
+     *
+     * @param name             exact subclass name (matched case-insensitively)
+     * @param baseClass        the class it belongs to (lower-case)
+     * @param specializations  allowed specialization values (exact, case-sensitive)
+     * @param respecOnLevelUp  whether a level-up may change an already-chosen specialization
+     */
+    public record HeroSubclass(String name, String baseClass, List<String> specializations,
+                               boolean respecOnLevelUp) {}
 
     /** The Death Knight hero subclass (base class: paladin). */
     public static final String EBON_BLADE = "Oath of the Ebon Blade";
 
-    /** Hero subclass name -> the base class it belongs to (lower-case). */
-    private static final Map<String, String> HERO_SUBCLASSES = Map.of(
-            EBON_BLADE, "paladin"
+    /** The Demon Hunter hero subclass (base class: ranger). */
+    public static final String DEMON_HUNTER = "Demon Hunter";
+
+    private static final List<HeroSubclass> HERO_SUBCLASSES = List.of(
+            // Runeforging: a Death Knight may swap runes whenever they gain a level.
+            new HeroSubclass(EBON_BLADE, "paladin", List.of("Blood", "Frost", "Unholy"), true),
+            // No respec rule in the module; a DM can still change it via the DM update path.
+            new HeroSubclass(DEMON_HUNTER, "ranger", List.of("Devourer", "Havoc", "Vengeance"), false)
     );
 
-    /**
-     * Death Knight specializations chosen via Runeforging (persisted as {@code pc.rune}).
-     * Exact, case-sensitive values.
-     */
-    public static final List<String> RUNES = List.of("Blood", "Frost", "Unholy");
+    /** The hero subclass with this name (case-insensitive, trimmed), if it is one. */
+    public static Optional<HeroSubclass> heroSubclass(String subclass) {
+        if (subclass == null) return Optional.empty();
+        String s = subclass.trim();
+        return HERO_SUBCLASSES.stream().filter(h -> h.name().equalsIgnoreCase(s)).findFirst();
+    }
 
     /** True when the subclass name is a creation-only hero subclass (case-insensitive). */
     public static boolean isHeroSubclass(String subclass) {
-        return heroSubclassBaseClass(subclass) != null;
+        return heroSubclass(subclass).isPresent();
     }
 
     /**
@@ -312,27 +333,14 @@ public final class ClassProgression {
      * subclasses (callers check {@link #isHeroSubclass} first).
      */
     public static boolean heroSubclassAllowedFor(String subclass, String clazz) {
-        String base = heroSubclassBaseClass(subclass);
-        return base != null && clazz != null && base.equals(clazz.trim().toLowerCase());
+        return clazz != null && heroSubclass(subclass)
+                .map(h -> h.baseClass().equals(clazz.trim().toLowerCase()))
+                .orElse(false);
     }
 
-    private static String heroSubclassBaseClass(String subclass) {
-        if (subclass == null) return null;
-        String s = subclass.trim();
-        return HERO_SUBCLASSES.entrySet().stream()
-                .filter(e -> e.getKey().equalsIgnoreCase(s))
-                .map(Map.Entry::getValue)
-                .findFirst().orElse(null);
-    }
-
-    /** True when the subclass is the Ebon Blade (the only subclass that carries a rune). */
-    public static boolean isEbonBlade(String subclass) {
-        return subclass != null && EBON_BLADE.equalsIgnoreCase(subclass.trim());
-    }
-
-    /** True when {@code rune} is exactly one of {@link #RUNES}. */
-    public static boolean isValidRune(String rune) {
-        return rune != null && RUNES.contains(rune);
+    /** True when the subclass is the Demon Hunter hero subclass (case-insensitive). */
+    public static boolean isDemonHunter(String subclass) {
+        return subclass != null && DEMON_HUNTER.equalsIgnoreCase(subclass.trim());
     }
 
     // ── Ability Score Improvement levels (Phase 4) ──────────────────────────────

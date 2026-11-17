@@ -57,8 +57,9 @@ public class PCService {
     }
 
     public PC addPC(PC pc) {
-        // Hero subclasses (e.g. the Death Knight's Oath of the Ebon Blade) are chosen here, at
-        // creation, and only for their base class; a rune needs the Ebon Blade.
+        // Hero subclasses (e.g. the Death Knight's Oath of the Ebon Blade, the Demon Hunter) are
+        // chosen here, at creation, and only for their base class; a specialization needs a hero
+        // subclass and must be one of that subclass's values.
         HeroClassRules.validate(pc);
         pc.setLevel((short) 1);
         return pcRepository.saveAndFlush(pc);
@@ -84,6 +85,7 @@ public class PCService {
         assertOwnership(existing, userId);
         preserveServerOwnedColumns(pc, existing);
         HeroClassRules.validate(pc);
+        HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         return pcRepository.save(pc);
     }
 
@@ -107,13 +109,14 @@ public class PCService {
      * {@code heroicInspiration} — a generic update body always keeps the
      * stored values, like the pending level grant.
      *
-     * <p>The Death Knight rune (V45) follows the survival/exhaustion rule while the character
-     * is still an Ebon Blade: a body carrying a NULL rune (e.g. one built without the field)
-     * keeps the stored rune. Runes are changed by sending a value (or via level-up).
+     * <p>The hero-class specialization (V46, formerly the V45 rune) follows the
+     * survival/exhaustion rule while the character is still a hero subclass: a body carrying a
+     * NULL specialization (e.g. one built without the field) keeps the stored one. It is changed
+     * by sending a value (or via level-up, where the subclass allows it).
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
-        if (incoming.getRune() == null && ClassProgression.isEbonBlade(incoming.getSubclass())) {
-            incoming.setRune(existing.getRune());
+        if (incoming.getSpecialization() == null && ClassProgression.isHeroSubclass(incoming.getSubclass())) {
+            incoming.setSpecialization(existing.getSpecialization());
         }
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
@@ -273,8 +276,10 @@ public class PCService {
         String feat = request == null ? null : request.feat();
         List<Map<String, Object>> newSpells = request == null ? null : request.newSpells();
         HpMode hpMode = request == null || request.hpMode() == null ? HpMode.AVERAGE : request.hpMode();
-        String rune = request == null ? null : request.rune();
-        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode, rune);
+        String specialization = request == null ? null : request.specialization();
+        String fightingStyle = request == null ? null : request.fightingStyle();
+        levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode,
+                specialization, fightingStyle);
         pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
