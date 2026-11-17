@@ -63,6 +63,10 @@ public class PC implements Serializable {
     private String species;
     private String background;
     private String subclass;
+    // Death Knight specialization chosen via Runeforging (V45): "Blood", "Frost" or
+    // "Unholy". Only meaningful (and only allowed non-null) when subclass is the
+    // "Oath of the Ebon Blade" hero subclass — validated in PCService/LevelUpService.
+    private String rune;
     private String alignment;
     private String portraitTint;
     private String portraitInitials;
@@ -197,6 +201,7 @@ public class PC implements Serializable {
     public void setSpecies(String species) { this.species = species; }
     public void setBackground(String background) { this.background = background; }
     public void setSubclass(String subclass) { this.subclass = subclass; }
+    public void setRune(String rune) { this.rune = rune; }
     public void setAlignment(String alignment) { this.alignment = alignment; }
     public void setPortraitTint(String portraitTint) { this.portraitTint = portraitTint; }
     public void setPortraitInitials(String portraitInitials) { this.portraitInitials = portraitInitials; }
