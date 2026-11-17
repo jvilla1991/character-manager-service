@@ -2,19 +2,23 @@ package com.moo.charactermanagerservice.progression;
 
 import com.moo.charactermanagerservice.dto.FeatureGain;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Class features granted automatically on level-up (D&D 5e 2024), keyed by class then by the
  * level at which they are gained. Server-authoritative and server-owned (names and descriptions
  * both live here, unlike feats whose descriptions are presentation).
  *
- * <p>Scope: the generic (non-subclass) class features each class gains at levels 2–20. Level-1
- * features are excluded (granted at character creation), as are Ability Score Improvements
- * (handled by the ASI/feat choice) and subclass features (the subclass catalog is the seam for
- * those). Descriptions are concise summaries — see the 2024 Player's Handbook for full text.
+ * <p>Scope: the generic class features each class gains at levels 2–20, plus — via
+ * {@link #featuresAt(String, String, int)} — the features of subclasses modeled here (currently
+ * only the Oath of the Ebon Blade hero subclass, which also replaces some generic Paladin
+ * features). Level-1 features are excluded (granted at character creation), as are Ability Score
+ * Improvements (handled by the ASI/feat choice). Descriptions are concise summaries — see the
+ * 2024 Player's Handbook (or the relevant module) for full text.
  */
 public final class ClassFeatures {
 
@@ -228,5 +232,74 @@ public final class ClassFeatures {
         Map<Integer, List<FeatureGain>> byLevel = FEATURES.get(clazz.trim().toLowerCase());
         if (byLevel == null) return List.of();
         return byLevel.getOrDefault(level, List.of());
+    }
+
+    // ── Subclass features ──────────────────────────────────────────────────────
+    // Only subclasses whose level-up features are modeled server-side appear here (today: the
+    // Death Knight hero subclass). Each level entry may REPLACE generic class features by name
+    // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
+
+    /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
+    private record SubclassGains(Set<String> replaces, List<FeatureGain> adds) {}
+
+    private static SubclassGains adds(FeatureGain... gains) {
+        return new SubclassGains(Set.of(), List.of(gains));
+    }
+
+    private static SubclassGains replaces(String replaced, FeatureGain... gains) {
+        return new SubclassGains(Set.of(replaced), List.of(gains));
+    }
+
+    /** class (lower-case) -> subclass (lower-case) -> level -> gains. */
+    private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = Map.of(
+            "paladin", Map.of(ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade())
+    );
+
+    /**
+     * Oath of the Ebon Blade (Death Knight, World of Warcraft tabletop module). Level 1's Death
+     * Coil (which replaces Lay On Hands) is a creation-time feature and so is not in this table.
+     */
+    private static Map<Integer, SubclassGains> ebonBlade() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(2, replaces("Divine Smite",
+                f("Runic Smite", "Replaces Divine Smite. When you hit with a melee weapon, you can expend a spell slot to drive runic power into the blow for extra necrotic damage.")));
+        f.put(3, adds(
+                f("Oath of the Ebon Blade Spells", "Your oath grants a list of spells that are always prepared for you at the listed Paladin levels."),
+                f("Runeforging", "You etch a rune of Blood, Frost, or Unholy into your weapon, choosing your Death Knight specialization. Each time you gain a level, you may swap it for another rune."),
+                f("Runic Power", "Your runes fuel your Death Knight abilities, granting benefits tied to the rune you have forged.")));
+        f.put(5, replaces("Faithful Steed",
+                f("Faithful Steed", "You always have Find Steed prepared and can cast it without a slot once per Long Rest. Your steed may take an undead form, and it gains Ghostly Stride.")));
+        f.put(7, adds(
+                f("Aura of Deathly Endurance", "You and allies within your Aura of Protection have resistance to Cold, Necrotic, and Psychic damage.")));
+        f.put(11, replaces("Radiant Strikes",
+                f("Runic Strikes", "Replaces Radiant Strikes. Your hits with melee weapons and Unarmed Strikes deal an extra 1d8 Necrotic damage.")));
+        f.put(14, replaces("Restoring Touch",
+                f("Improved Death Coil", "Replaces Restoring Touch. Your Death Coil grows stronger and gains additional effects when you use it.")));
+        f.put(15, adds(
+                f("Runic Mastery", "Your command of runes deepens, strengthening the benefits of your forged rune.")));
+        f.put(20, adds(
+                f("Aspect of the Horsemen", "You can take on the aspect of the legendary Horsemen of the Ebon Blade, unleashing a burst of deathly power for a short time.")));
+        return f;
+    }
+
+    /**
+     * Features gained at a level by a class with the given subclass: the generic class features,
+     * minus any the subclass replaces at that level, followed by the subclass's own features.
+     * A null/unknown subclass (or one with no modeled features) yields the generic list.
+     */
+    public static List<FeatureGain> featuresAt(String clazz, String subclass, int level) {
+        List<FeatureGain> generic = featuresAt(clazz, level);
+        if (clazz == null || subclass == null) return generic;
+        SubclassGains gains = SUBCLASS_FEATURES
+                .getOrDefault(clazz.trim().toLowerCase(), Map.of())
+                .getOrDefault(subclass.trim().toLowerCase(), Map.of())
+                .get(level);
+        if (gains == null) return generic;
+        List<FeatureGain> result = new ArrayList<>();
+        for (FeatureGain g : generic) {
+            if (!gains.replaces().contains(g.name())) result.add(g);
+        }
+        result.addAll(gains.adds());
+        return List.copyOf(result);
     }
 }

@@ -780,4 +780,134 @@ class LevelUpServiceTest {
         LevelUpPreview p = serviceRolling(10).preview(pc("Fighter", 4, 16, 30, 30));
         assertThat(p.hpGained()).isEqualTo(9); // d10 avg 6 + CON 3, not the forced roll of 13
     }
+
+    // --- Death Knight (Oath of the Ebon Blade hero subclass) ---
+
+    private static final String EBON_BLADE = "Oath of the Ebon Blade";
+
+    private static PC deathKnight(int level) {
+        PC dk = pc("Paladin", level, 14, 10 * level, 10 * level);
+        dk.setSubclass(EBON_BLADE);
+        return dk;
+    }
+
+    private static List<String> names(List<FeatureGain> gains) {
+        return gains.stream().map(FeatureGain::name).toList();
+    }
+
+    private static int status(Throwable e) {
+        return ((ResponseStatusException) e).getStatusCode().value();
+    }
+
+    @Test
+    void ebonBlade_notOfferedAtPaladinSubclassChoice() {
+        LevelUpPreview p = service.preview(pc("Paladin", 2, 14, 20, 20)); // 2 -> 3, no subclass yet
+        assertThat(p.subclassDue()).isTrue();
+        assertThat(p.subclassOptions()).contains("Oath of Devotion").doesNotContain(EBON_BLADE);
+    }
+
+    @Test
+    void ebonBlade_rejectedAsLevelUpSubclassChoice() {
+        PC paladin = pc("Paladin", 2, 14, 20, 20);
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, EBON_BLADE))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(paladin.getSubclass()).isNull();
+    }
+
+    @Test
+    void ebonBlade_subclassNotDueAtLevel3_whenAlreadySetFromCreation() {
+        PC dk = deathKnight(2); // 2 -> 3 is the paladin subclass level
+        assertThat(service.preview(dk).subclassDue()).isFalse();
+
+        service.applyLevelUp(dk); // no subclass choice required
+        assertThat(dk.getLevel()).isEqualTo((short) 3);
+        assertThat(dk.getSubclass()).isEqualTo(EBON_BLADE);
+    }
+
+    @Test
+    void ebonBlade_level2_runicSmiteReplacesDivineSmite() {
+        List<String> gained = names(service.preview(deathKnight(1)).featuresGained());
+        assertThat(gained).contains("Fighting Style", "Runic Smite").doesNotContain("Divine Smite");
+    }
+
+    @Test
+    void ebonBlade_level11_runicStrikesReplacesRadiantStrikes() {
+        List<String> gained = names(service.preview(deathKnight(10)).featuresGained());
+        assertThat(gained).containsExactly("Runic Strikes");
+    }
+
+    @Test
+    void ebonBlade_level14_improvedDeathCoilReplacesRestoringTouch() {
+        List<String> gained = names(service.preview(deathKnight(13)).featuresGained());
+        assertThat(gained).containsExactly("Improved Death Coil");
+    }
+
+    @Test
+    void ebonBlade_addsSubclassFeaturesAtLevels3_5_7_15_20() {
+        assertThat(names(service.preview(deathKnight(2)).featuresGained()))
+                .containsExactly("Oath of the Ebon Blade Spells", "Runeforging", "Runic Power");
+        List<FeatureGain> l5 = service.preview(deathKnight(4)).featuresGained();
+        assertThat(names(l5)).containsExactly("Extra Attack", "Faithful Steed"); // steed swapped, not duplicated
+        assertThat(l5.get(1).desc()).contains("undead").contains("Ghostly Stride");
+        assertThat(names(service.preview(deathKnight(6)).featuresGained()))
+                .containsExactly("Aura of Deathly Endurance");
+        assertThat(names(service.preview(deathKnight(14)).featuresGained()))
+                .containsExactly("Runic Mastery");
+        assertThat(names(service.preview(deathKnight(19)).featuresGained()))
+                .containsExactly("Aspect of the Horsemen");
+    }
+
+    @Test
+    void normalPaladin_keepsGenericFeatures() {
+        assertThat(names(service.preview(pc("Paladin", 1, 14, 10, 10)).featuresGained()))
+                .contains("Divine Smite").doesNotContain("Runic Smite");
+        PC devotion = pc("Paladin", 10, 14, 100, 100);
+        devotion.setSubclass("Oath of Devotion");
+        assertThat(names(service.preview(devotion).featuresGained())).containsExactly("Radiant Strikes");
+    }
+
+    @Test
+    void ebonBlade_applyLevelUp_recordsSubclassFeatures() {
+        PC dk = deathKnight(10);
+        service.applyLevelUp(dk);
+        assertThat(dk.getFeatures()).contains("\"name\":\"Runic Strikes\"").doesNotContain("\"name\":\"Radiant Strikes\"");
+    }
+
+    @Test
+    void applyLevelUp_changesRune_forDeathKnight() {
+        PC dk = deathKnight(5); // 5 -> 6: not an ASI level, so no other choice is required
+        dk.setRune("Blood");
+        service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Frost");
+        assertThat(dk.getRune()).isEqualTo("Frost");
+        assertThat(dk.getLevel()).isEqualTo((short) 6);
+    }
+
+    @Test
+    void applyLevelUp_nullRune_keepsCurrentRune() {
+        PC dk = deathKnight(4);
+        dk.setRune("Unholy");
+        service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, null);
+        assertThat(dk.getRune()).isEqualTo("Unholy");
+    }
+
+    @Test
+    void applyLevelUp_rejectsInvalidRune() {
+        PC dk = deathKnight(4);
+        dk.setRune("Blood");
+        assertThatThrownBy(() -> service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Fire"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(dk.getRune()).isEqualTo("Blood");
+    }
+
+    @Test
+    void applyLevelUp_rejectsRune_onNonEbonBladeSubclass() {
+        PC paladin = pc("Paladin", 4, 14, 40, 40);
+        paladin.setSubclass("Oath of Vengeance");
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, null, HpMode.AVERAGE, "Frost"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(paladin.getRune()).isNull();
+    }
 }

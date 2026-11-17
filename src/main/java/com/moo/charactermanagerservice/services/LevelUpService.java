@@ -90,7 +90,7 @@ public class LevelUpService {
                 ClassProgression.subclassesFor(pc.getClazz()),
                 asiDue,
                 asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
-                ClassFeatures.featuresAt(pc.getClazz(), newLevel),
+                ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
@@ -125,6 +125,12 @@ public class LevelUpService {
         return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, HpMode.AVERAGE);
     }
 
+    /** Convenience overload that leaves the Death Knight rune unchanged. */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, hpMode, null);
+    }
+
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
@@ -142,9 +148,13 @@ public class LevelUpService {
      * @param hpMode           average vs. rolled HP for this level; {@code null} means
      *                         {@link HpMode#AVERAGE}. In ROLL mode the server rolls the die — the
      *                         client supplies only the mode, never a roll result.
+     * @param rune             a new Death Knight rune (re-Runeforging on level gain), or
+     *                         {@code null} to keep the current one; only valid for an
+     *                         {@value ClassProgression#EBON_BLADE} character
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
-                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode) {
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                           String rune) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
@@ -153,6 +163,7 @@ public class LevelUpService {
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         applySubclassChoice(pc, newLevel, chosenSubclass);
+        applyRuneChoice(pc, rune);
         applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
         applySpellChoices(pc, currentLevel, newLevel, newSpells);
@@ -224,6 +235,13 @@ public class LevelUpService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "A subclass must be selected at level " + newLevel);
         }
+    }
+
+    /** Death Knight re-Runeforging: a new rune may be chosen whenever a level is gained. */
+    private void applyRuneChoice(PC pc, String rune) {
+        if (rune == null) return;
+        HeroClassRules.validateRune(pc.getSubclass(), rune);
+        pc.setRune(rune);
     }
 
     private static boolean isBlank(String s) {
@@ -317,7 +335,7 @@ public class LevelUpService {
 
     /** Append the class features (if any) gained at the new level to the PC's features list. */
     private void grantClassFeatures(PC pc, int newLevel) {
-        List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), newLevel);
+        List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), newLevel);
         if (gained.isEmpty()) return;
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
         String source = pc.getClazz() + " " + newLevel;

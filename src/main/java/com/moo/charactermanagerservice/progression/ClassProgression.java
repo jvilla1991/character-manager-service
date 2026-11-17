@@ -248,6 +248,8 @@ public final class ClassProgression {
                     "Battle Master", "Champion", "Eldritch Knight", "Psi Warrior")),
             Map.entry("monk", List.of(
                     "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements", "Warrior of the Open Hand")),
+            // Oath of the Ebon Blade (Death Knight) is a creation-only hero subclass — see
+            // HERO_SUBCLASSES — and is intentionally absent from this level-up list.
             Map.entry("paladin", List.of(
                     "Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance")),
             Map.entry("ranger", List.of(
@@ -269,10 +271,68 @@ public final class ClassProgression {
         return SUBCLASS_LEVEL.getOrDefault(clazz.trim().toLowerCase(), DEFAULT_SUBCLASS_LEVEL);
     }
 
-    /** Selectable subclass names for a class (empty when no catalog content exists yet). */
+    /**
+     * Selectable subclass names for a class at its level-up subclass choice (empty when no catalog
+     * content exists yet). Hero subclasses are deliberately NOT in this list — see
+     * {@link #isHeroSubclass}.
+     */
     public static List<String> subclassesFor(String clazz) {
         if (clazz == null) return List.of();
         return SUBCLASS_CATALOG.getOrDefault(clazz.trim().toLowerCase(), List.of());
+    }
+
+    // ── Hero subclasses (World of Warcraft tabletop module) ─────────────────────
+    // A "hero class" is chosen at CHARACTER CREATION and stored as a base class + a locked
+    // subclass — e.g. a Death Knight is clazz "paladin" + subclass "Oath of the Ebon Blade".
+    // Hero subclasses are valid only at creation: they are kept out of SUBCLASS_CATALOG so a
+    // normal member of the base class is never offered one at its level-3 subclass choice, and
+    // because the subclass is already set from level 1, LevelUpService never asks for another.
+
+    /** The Death Knight hero subclass (base class: paladin). */
+    public static final String EBON_BLADE = "Oath of the Ebon Blade";
+
+    /** Hero subclass name -> the base class it belongs to (lower-case). */
+    private static final Map<String, String> HERO_SUBCLASSES = Map.of(
+            EBON_BLADE, "paladin"
+    );
+
+    /**
+     * Death Knight specializations chosen via Runeforging (persisted as {@code pc.rune}).
+     * Exact, case-sensitive values.
+     */
+    public static final List<String> RUNES = List.of("Blood", "Frost", "Unholy");
+
+    /** True when the subclass name is a creation-only hero subclass (case-insensitive). */
+    public static boolean isHeroSubclass(String subclass) {
+        return heroSubclassBaseClass(subclass) != null;
+    }
+
+    /**
+     * Whether the hero subclass may be taken by the given class at creation. False for non-hero
+     * subclasses (callers check {@link #isHeroSubclass} first).
+     */
+    public static boolean heroSubclassAllowedFor(String subclass, String clazz) {
+        String base = heroSubclassBaseClass(subclass);
+        return base != null && clazz != null && base.equals(clazz.trim().toLowerCase());
+    }
+
+    private static String heroSubclassBaseClass(String subclass) {
+        if (subclass == null) return null;
+        String s = subclass.trim();
+        return HERO_SUBCLASSES.entrySet().stream()
+                .filter(e -> e.getKey().equalsIgnoreCase(s))
+                .map(Map.Entry::getValue)
+                .findFirst().orElse(null);
+    }
+
+    /** True when the subclass is the Ebon Blade (the only subclass that carries a rune). */
+    public static boolean isEbonBlade(String subclass) {
+        return subclass != null && EBON_BLADE.equalsIgnoreCase(subclass.trim());
+    }
+
+    /** True when {@code rune} is exactly one of {@link #RUNES}. */
+    public static boolean isValidRune(String rune) {
+        return rune != null && RUNES.contains(rune);
     }
 
     // ── Ability Score Improvement levels (Phase 4) ──────────────────────────────
