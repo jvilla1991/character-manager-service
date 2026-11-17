@@ -18,7 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Followers (V42): companions the campaign's DM grants to a character, each
+ * Followers (V43): companions the campaign's DM grants to a character, each
  * with its own stat block that the client renders as a cut-down sheet.
  *
  * <p>Authority: only the DM of the PC's campaign grants and dismisses a

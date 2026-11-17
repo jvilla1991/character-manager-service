@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * A character's followers (V42). The campaign's DM grants and dismisses them;
+ * A character's followers (V43). The campaign's DM grants and dismisses them;
  * the owning player and that DM read the list and update a follower's sheet.
  */
 @RestController

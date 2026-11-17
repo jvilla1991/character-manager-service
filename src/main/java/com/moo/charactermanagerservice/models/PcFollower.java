@@ -8,7 +8,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A follower the campaign's DM granted to a character (V42): a named companion
+ * A follower the campaign's DM granted to a character (V43): a named companion
  * with its own stat block. {@code statBlock} is an opaque JSON object in the
  * client's sheet shape — stored and returned verbatim, never interpreted here.
  * Only the DM grants or dismisses; the owning player and the DM may update it.
