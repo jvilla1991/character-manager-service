@@ -5,13 +5,18 @@ import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
+import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
+import com.moo.charactermanagerservice.models.SessionParticipant;
+import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
+import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.PcNoteRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,6 +54,12 @@ class PCServiceTest {
 
     @Mock
     private PcActivityLogService activityLogService;
+
+    @Mock
+    private CombatSessionRepository sessionRepository;
+
+    @Mock
+    private SessionParticipantRepository participantRepository;
 
     @InjectMocks
     private PCService pcService;
@@ -907,6 +918,142 @@ class PCServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
         verify(pcRepository, never()).save(any());
+        verify(sessionRepository, never()).save(any());
+    }
+
+    // --- live-session version bump (grant / revoke / level-up reach the poll) ---
+
+    /** A non-ended session (id 40, version 3) for campaign 7. */
+    private CombatSession liveSession() {
+        CombatSession session = new CombatSession();
+        session.setId(40L);
+        session.setCampaignId(7L);
+        session.setDmUserId(dmId);
+        session.setStatus(SessionStatus.ACTIVE);
+        session.setVersion(3L);
+        return session;
+    }
+
+    /** Stub the DM grant path for a campaign-7 PC with the given current flag. */
+    private void stubGrantPath(boolean currentlyGranted) {
+        pc.setCampaignId(7L);
+        pc.setPendingLevelGrant(currentlyGranted);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+    }
+
+    /** Seat PC 1 in {@code session}, the campaign's live session. */
+    private void seatInLiveSession(CombatSession session) {
+        when(sessionRepository.findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED))
+                .thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(40L, 1L))
+                .thenReturn(Optional.of(new SessionParticipant()));
+    }
+
+    @Test
+    void setLevelGrant_grant_bumpsTheSeatedLiveSessionsVersion() {
+        stubGrantPath(false);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.setLevelGrant(1L, true, dmId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void setLevelGrant_revoke_bumpsTheSeatedLiveSessionsVersion() {
+        stubGrantPath(true);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.setLevelGrant(1L, false, dmId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void setLevelGrant_unchangedFlag_doesNotBumpAnySession() {
+        stubGrantPath(true);
+
+        pcService.setLevelGrant(1L, true, dmId); // already granted: a no-op
+
+        verify(sessionRepository, never()).findByCampaignIdAndStatusNot(any(), any());
+        verify(sessionRepository, never()).save(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+    }
+
+    @Test
+    void setLevelGrant_onlyEndedSessions_touchesNoSession() {
+        // The lookup excludes ENDED by status, so a campaign whose only
+        // sessions are ended has nothing to bump.
+        stubGrantPath(false);
+        when(sessionRepository.findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED))
+                .thenReturn(Optional.empty());
+
+        pcService.setLevelGrant(1L, true, dmId);
+
+        verify(sessionRepository).findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED);
+        verify(sessionRepository, never()).save(any());
+    }
+
+    @Test
+    void setLevelGrant_liveSessionThePcHasNotJoined_isNotBumped() {
+        stubGrantPath(false);
+        CombatSession session = liveSession();
+        when(sessionRepository.findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED))
+                .thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(40L, 1L)).thenReturn(Optional.empty());
+
+        pcService.setLevelGrant(1L, true, dmId);
+
+        assertThat(session.getVersion()).isEqualTo(3L);
+        verify(sessionRepository, never()).save(any());
+    }
+
+    @Test
+    void levelUpPC_bumpsTheSeatedLiveSessionsVersion() {
+        pc.setCampaignId(7L);
+        pc.setPendingLevelGrant(true);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.levelUpPC(1L, ownerId, null);
+
+        assertThat(pc.getPendingLevelGrant()).isFalse();
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void levelUpPCAsDm_bumpsTheSeatedLiveSessionsVersion() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.levelUpPCAsDm(1L, dmId, null);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void levelUpPC_outsideAnyCampaign_touchesNoSession() {
+        pc.setPendingLevelGrant(true); // campaignId null
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId, null);
+
+        verifyNoInteractions(sessionRepository, participantRepository);
     }
 
     @Test

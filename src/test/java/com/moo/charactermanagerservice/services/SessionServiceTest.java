@@ -914,6 +914,63 @@ class SessionServiceTest {
         assertThat(sessionService.getState(1L, playerId, null)).isNotNull();
     }
 
+    // --- myLevelGrant (caller-scoped, like myXp) ---
+
+    /**
+     * {@link #hiddenEnemySetup()}'s two PCs with explicit grant flags: PC 7 is
+     * the player's own, PC 8 belongs to a teammate ({@code strangerId}).
+     */
+    private void stubPcsWithGrants(Boolean mineGranted, Boolean theirsGranted) {
+        PC mine = pcWithDex(7L, "Mine", 10);
+        mine.setPendingLevelGrant(mineGranted);
+        PC theirs = pcWithDex(8L, "Theirs", 10);
+        theirs.setPendingLevelGrant(theirsGranted);
+        when(pcRepository.findAllById(any())).thenReturn(List.of(mine, theirs));
+    }
+
+    @Test
+    void myLevelGrant_isTrue_forTheOwnerOfASeatedPcWithAPendingGrant() {
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcsWithGrants(true, false);
+
+        assertThat(sessionService.getState(1L, playerId, null).myLevelGrant()).isTrue();
+    }
+
+    @Test
+    void myLevelGrant_isFalse_whenTheSeatedPcHasNoGrant() {
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcsWithGrants(false, false);
+
+        assertThat(sessionService.getState(1L, playerId, null).myLevelGrant()).isFalse();
+    }
+
+    @Test
+    void myLevelGrant_isFalse_whenTheGrantColumnIsNull() {
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcsWithGrants(null, null);
+
+        assertThat(sessionService.getState(1L, playerId, null).myLevelGrant()).isFalse();
+    }
+
+    @Test
+    void myLevelGrant_isNull_forTheDm() {
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcsWithGrants(true, true);
+
+        assertThat(sessionService.getState(1L, dmId, null).myLevelGrant()).isNull();
+    }
+
+    @Test
+    void myLevelGrant_neverReflectsATeammatesGrant() {
+        // The teammate (PC 8) is granted; the requester's own PC (7) is not.
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcsWithGrants(false, true);
+
+        assertThat(sessionService.getState(1L, playerId, null).myLevelGrant()).isFalse();
+        // ...and the teammate sees only their own grant.
+        assertThat(sessionService.getState(1L, strangerId, null).myLevelGrant()).isTrue();
+    }
+
     // --- endSession (loot cleanup) ---
 
     @Test

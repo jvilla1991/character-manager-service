@@ -1910,11 +1910,16 @@ public class SessionService {
 
         // Caller-scoped XP: only the requester's own seated PC, never a teammate's
         // (ParticipantView is broadcast to everyone, so XP can't live there).
-        Integer myXp = participants.stream()
+        Optional<PC> mySeatedPc = participants.stream()
                 .filter(p -> requesterId.equals(p.getOwnerUserId()) && p.getPcId() != null)
                 .findFirst()
-                .map(p -> pcsById.get(p.getPcId()))
-                .map(PC::getXp)
+                .map(p -> pcsById.get(p.getPcId()));
+        Integer myXp = mySeatedPc.map(PC::getXp).orElse(null);
+        // Caller-scoped level-up grant, same rule as myXp: the requester's own
+        // seated PC only. A never-set (NULL) column reads as "not granted";
+        // null is reserved for "no seated PC" (the DM, or a spectator).
+        Boolean myLevelGrant = mySeatedPc
+                .map(pc -> Boolean.TRUE.equals(pc.getPendingLevelGrant()))
                 .orElse(null);
 
         // The campaign clock and party location ride every snapshot (each null
@@ -1979,6 +1984,7 @@ public class SessionService {
                 lootStatus,
                 lootName,
                 myXp,
+                myLevelGrant,
                 gameTime,
                 location,
                 weekDays,

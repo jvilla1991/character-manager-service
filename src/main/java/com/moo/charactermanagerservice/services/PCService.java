@@ -9,10 +9,13 @@ import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
+import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.progression.XpThresholds;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
+import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.PcNoteRepository;
+import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -31,16 +34,25 @@ public class PCService {
     private final CampaignRepository campaignRepository;
     private final PcNoteRepository pcNoteRepository;
     private final PcActivityLogService activityLogService;
+    // The session REPOSITORIES, not SessionService: SessionService already
+    // depends on this class, so injecting it here would be a circular bean
+    // dependency. See bumpLiveSessionVersion.
+    private final CombatSessionRepository sessionRepository;
+    private final SessionParticipantRepository participantRepository;
 
     @Autowired
     public PCService(PCRepository pcRepository, LevelUpService levelUpService,
                      CampaignRepository campaignRepository, PcNoteRepository pcNoteRepository,
-                     PcActivityLogService activityLogService) {
+                     PcActivityLogService activityLogService,
+                     CombatSessionRepository sessionRepository,
+                     SessionParticipantRepository participantRepository) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
         this.campaignRepository = campaignRepository;
         this.pcNoteRepository = pcNoteRepository;
         this.activityLogService = activityLogService;
+        this.sessionRepository = sessionRepository;
+        this.participantRepository = participantRepository;
     }
 
     public PC addPC(PC pc) {
@@ -236,6 +248,10 @@ public class PCService {
      * Shared tail of the owner and DM level-up paths: unpack the request, apply
      * the rules engine, consume any pending grant, persist, and log the new
      * level (the description prefix distinguishes who performed it).
+     *
+     * <p>Also wakes the PC's live session ({@link #bumpLiveSessionVersion}): a
+     * level-up changes the seated combatant's level and max HP and clears
+     * {@code myLevelGrant}, and nothing else on this path touches the session.
      */
     private PC applyLevelUpAndSave(PC pc, LevelUpRequest request, UUID actorUserId,
                                    String logDescriptionPrefix) {
@@ -249,6 +265,7 @@ public class PCService {
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
                 logDescriptionPrefix + saved.getLevel(), actorUserId);
+        bumpLiveSessionVersion(saved);
         return saved;
     }
 
@@ -257,6 +274,12 @@ public class PCService {
      * authorized by campaign-DM ownership like {@link #updatePCAsDm}. The flag
      * lets the player level once without meeting the XP threshold and is
      * cleared when the level-up is applied.
+     *
+     * <p>An actual change (grant or revoke) also wakes the PC's live session
+     * ({@link #bumpLiveSessionVersion}) so the player's next poll carries the
+     * new {@code myLevelGrant} — that is what makes the "level up now" prompt
+     * appear mid-session. Repeating the current value is a no-op and bumps
+     * nothing.
      */
     @Transactional
     public PC setLevelGrant(Long id, boolean granted, UUID dmUserId) {
@@ -268,8 +291,39 @@ public class PCService {
         if (granted != was) {
             activityLogService.log(saved.getId(), PcActivityType.DM_EDIT,
                     granted ? "DM granted a level-up" : "DM revoked the granted level-up", dmUserId);
+            bumpLiveSessionVersion(saved);
         }
         return saved;
+    }
+
+    /**
+     * Bump the version of the live session this PC is seated in, if any, so
+     * the 2s poll's {@code sinceVersion} short-circuit stops answering 204 and
+     * every viewer gets a fresh snapshot. For sheet changes made OUTSIDE the
+     * session endpoints (those bump the session they were handed) that a live
+     * table still needs to see at once.
+     *
+     * <p>"The live session" is singular on purpose: a PC belongs to one
+     * campaign, and a campaign has at most one non-ended session (the V8
+     * partial unique index behind
+     * {@link CombatSessionRepository#findByCampaignIdAndStatusNot}). Ended
+     * sessions are never touched, and neither is a live session the PC has
+     * not joined — its snapshot does not include this character.
+     *
+     * <p>Call it from inside the caller's transaction so the bump commits (or
+     * rolls back) together with the PC change it announces.
+     */
+    private void bumpLiveSessionVersion(PC pc) {
+        if (pc.getCampaignId() == null) {
+            return;
+        }
+        sessionRepository.findByCampaignIdAndStatusNot(pc.getCampaignId(), SessionStatus.ENDED)
+                .filter(session -> participantRepository
+                        .findBySessionIdAndPcId(session.getId(), pc.getId()).isPresent())
+                .ifPresent(session -> {
+                    session.bumpVersion();
+                    sessionRepository.save(session);
+                });
     }
 
     // --- Heroic Inspiration meter (V38) --------------------------------------
