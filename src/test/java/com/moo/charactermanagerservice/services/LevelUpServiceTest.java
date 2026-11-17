@@ -875,39 +875,243 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void applyLevelUp_changesRune_forDeathKnight() {
+    void applyLevelUp_changesSpecialization_forDeathKnight() {
         PC dk = deathKnight(5); // 5 -> 6: not an ASI level, so no other choice is required
-        dk.setRune("Blood");
+        dk.setSpecialization("Blood");
         service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Frost");
-        assertThat(dk.getRune()).isEqualTo("Frost");
+        assertThat(dk.getSpecialization()).isEqualTo("Frost");
         assertThat(dk.getLevel()).isEqualTo((short) 6);
     }
 
     @Test
-    void applyLevelUp_nullRune_keepsCurrentRune() {
+    void applyLevelUp_nullSpecialization_keepsCurrent() {
         PC dk = deathKnight(4);
-        dk.setRune("Unholy");
+        dk.setSpecialization("Unholy");
         service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, null);
-        assertThat(dk.getRune()).isEqualTo("Unholy");
+        assertThat(dk.getSpecialization()).isEqualTo("Unholy");
     }
 
     @Test
-    void applyLevelUp_rejectsInvalidRune() {
+    void applyLevelUp_rejectsInvalidEbonBladeSpecialization() {
         PC dk = deathKnight(4);
-        dk.setRune("Blood");
+        dk.setSpecialization("Blood");
         assertThatThrownBy(() -> service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Fire"))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        assertThat(dk.getRune()).isEqualTo("Blood");
+        assertThat(dk.getSpecialization()).isEqualTo("Blood");
     }
 
     @Test
-    void applyLevelUp_rejectsRune_onNonEbonBladeSubclass() {
+    void applyLevelUp_rejectsSpecialization_onNonHeroSubclass() {
         PC paladin = pc("Paladin", 4, 14, 40, 40);
         paladin.setSubclass("Oath of Vengeance");
         assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, null, HpMode.AVERAGE, "Frost"))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        assertThat(paladin.getRune()).isNull();
+        assertThat(paladin.getSpecialization()).isNull();
+    }
+
+    // --- Demon Hunter (ranger + Demon Hunter hero subclass) ---
+
+    private static final String DEMON_HUNTER = "Demon Hunter";
+
+    private static PC demonHunter(int level) {
+        PC dh = pc("Ranger", level, 14, 10 * level, 10 * level);
+        dh.setSubclass(DEMON_HUNTER);
+        return dh;
+    }
+
+    private static Map<String, Object> cantrip(String name) {
+        return Map.of("name", name, "lvl", 0);
+    }
+
+    @Test
+    void demonHunter_notOfferedAtRangerSubclassChoice() {
+        LevelUpPreview p = service.preview(pc("Ranger", 2, 14, 20, 20)); // 2 -> 3, no subclass yet
+        assertThat(p.subclassDue()).isTrue();
+        assertThat(p.subclassOptions()).contains("Hunter").doesNotContain(DEMON_HUNTER);
+        assertThatThrownBy(() -> service.applyLevelUp(pc("Ranger", 2, 14, 20, 20), DEMON_HUNTER))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void demonHunter_level2_swapsDeftExplorerAndFightingStyle_withoutDuplicating() {
+        List<FeatureGain> l2 = service.preview(demonHunter(1)).featuresGained();
+        assertThat(names(l2)).containsExactly("Deft Explorer", "Fighting Style");
+        assertThat(l2.get(0).desc()).contains("Eredun").contains("Nathrezim");
+        assertThat(l2.get(1).desc()).contains("Void Warrior");
+
+        List<FeatureGain> normal = service.preview(pc("Ranger", 1, 14, 10, 10)).featuresGained();
+        assertThat(names(normal)).containsExactly("Deft Explorer", "Fighting Style");
+        assertThat(normal.get(0).desc()).doesNotContain("Eredun");
+    }
+
+    @Test
+    void demonHunter_addsSubclassFeaturesAtLevels3_7_11_15() {
+        assertThat(names(service.preview(demonHunter(2)).featuresGained()))
+                .containsExactly("Demon Hunter Spells", "Soul Fragments", "Spectral Sight");
+        assertThat(names(service.preview(demonHunter(6)).featuresGained())).containsExactly("Torment");
+        assertThat(names(service.preview(demonHunter(10)).featuresGained())).containsExactly("Illidari Knowledge");
+        assertThat(names(service.preview(demonHunter(14)).featuresGained())).containsExactly("Soul Shatter");
+    }
+
+    @Test
+    void demonHunter_level18_improvedSpectralSightReplacesFeralSenses() {
+        List<FeatureGain> l18 = service.preview(demonHunter(17)).featuresGained();
+        assertThat(names(l18)).containsExactly("Improved Spectral Sight");
+        assertThat(l18.get(0).desc()).contains("Truesight");
+        assertThat(names(service.preview(pc("Ranger", 17, 14, 170, 170)).featuresGained()))
+                .containsExactly("Feral Senses");
+    }
+
+    @Test
+    void demonHunter_applyLevelUp_recordsSubclassFeatures() {
+        PC dh = demonHunter(17);
+        service.applyLevelUp(dh);
+        assertThat(dh.getFeatures()).contains("\"name\":\"Improved Spectral Sight\"")
+                .doesNotContain("\"name\":\"Feral Senses\"");
+    }
+
+    // Fighting Style choice + Void Warrior
+
+    @Test
+    void preview_fightingStyleOptions_includeVoidWarriorOnlyForDemonHunter() {
+        LevelUpPreview dh = service.preview(demonHunter(1));
+        assertThat(dh.fightingStyleDue()).isTrue();
+        assertThat(dh.fightingStyleOptions()).contains("Archery", "Void Warrior").isSorted();
+
+        LevelUpPreview ranger = service.preview(pc("Ranger", 1, 14, 10, 10));
+        assertThat(ranger.fightingStyleDue()).isTrue();
+        assertThat(ranger.fightingStyleOptions()).contains("Archery").doesNotContain("Void Warrior");
+
+        assertThat(service.preview(deathKnight(1)).fightingStyleOptions())
+                .contains("Defense").doesNotContain("Void Warrior");
+
+        // A "Demon Hunter" subclass on the wrong base class doesn't unlock it either.
+        PC paladin = pc("Paladin", 1, 14, 10, 10);
+        paladin.setSubclass(DEMON_HUNTER);
+        assertThat(service.preview(paladin).fightingStyleOptions()).doesNotContain("Void Warrior");
+    }
+
+    @Test
+    void preview_fightingStyleNotDue_awayFromTheFightingStyleLevel() {
+        LevelUpPreview p = service.preview(demonHunter(2)); // 2 -> 3
+        assertThat(p.fightingStyleDue()).isFalse();
+        assertThat(p.fightingStyleOptions()).isEmpty();
+        assertThat(service.preview(pc("Wizard", 1, 14, 6, 6)).fightingStyleDue()).isFalse();
+        assertThat(service.preview(pc("Fighter", 1, 14, 10, 10)).fightingStyleDue()).isFalse(); // fighter's is at level 1
+    }
+
+    @Test
+    void applyLevelUp_voidWarrior_withTwoCantrips_recordsStyleAndSavesCantrips() {
+        PC dh = demonHunter(1);
+        service.applyLevelUp(dh, null, null, null,
+                List.of(cantrip("Eldritch Blast"), cantrip("Chill Touch")), HpMode.AVERAGE, null, "Void Warrior");
+
+        assertThat(dh.getLevel()).isEqualTo((short) 2);
+        assertThat(dh.getSpells()).contains("Eldritch Blast").contains("Chill Touch");
+        assertThat(dh.getFeatures()).contains("\"name\":\"Void Warrior\"").contains("Warlock cantrips");
+    }
+
+    @Test
+    void applyLevelUp_voidWarrior_requiresExactlyTwoCantrips() {
+        for (List<Map<String, Object>> spells : List.<List<Map<String, Object>>>of(
+                List.of(),
+                List.of(cantrip("Eldritch Blast")),
+                List.of(cantrip("Eldritch Blast"), cantrip("Chill Touch"), cantrip("Minor Illusion")))) {
+            PC dh = demonHunter(1);
+            assertThatThrownBy(() -> service.applyLevelUp(dh, null, null, null, spells, HpMode.AVERAGE, null, "Void Warrior"))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(dh.getLevel()).isEqualTo((short) 1);
+        }
+        PC noSpells = demonHunter(1);
+        assertThatThrownBy(() -> service.applyLevelUp(noSpells, null, null, null, null, HpMode.AVERAGE, null, "Void Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_voidWarrior_rejectedForAnyoneButADemonHunter() {
+        List<Map<String, Object>> two = List.of(cantrip("Eldritch Blast"), cantrip("Chill Touch"));
+        for (PC other : List.of(pc("Ranger", 1, 14, 10, 10), deathKnight(1), pc("Paladin", 1, 14, 10, 10))) {
+            assertThatThrownBy(() -> service.applyLevelUp(other, null, null, null, two, HpMode.AVERAGE, null, "Void Warrior"))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        // ...and is not a feat at an ASI level, even for a Demon Hunter.
+        assertThatThrownBy(() -> service.applyLevelUp(demonHunter(3), null, null, "Void Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_fightingStyle_rejectedAwayFromTheFightingStyleLevel() {
+        PC dh = demonHunter(2); // 2 -> 3
+        assertThatThrownBy(() -> service.applyLevelUp(dh, null, null, null,
+                List.of(cantrip("Eldritch Blast"), cantrip("Chill Touch")), HpMode.AVERAGE, null, "Void Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_regularFightingStyle_isRecorded_andGrantsNoCantrips() {
+        PC ranger = pc("Ranger", 1, 14, 10, 10);
+        service.applyLevelUp(ranger, null, null, null, null, HpMode.AVERAGE, null, "archery");
+        assertThat(ranger.getFeatures()).contains("\"name\":\"Archery\"");
+
+        PC another = pc("Ranger", 1, 14, 10, 10);
+        assertThatThrownBy(() -> service.applyLevelUp(another, null, null, null,
+                List.of(cantrip("Eldritch Blast")), HpMode.AVERAGE, null, "Archery"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // Demon Hunter specialization on level-up (no respec)
+
+    @Test
+    void applyLevelUp_demonHunter_cannotChangeSpecialization() {
+        PC dh = demonHunter(5);
+        dh.setSpecialization("Havoc");
+        assertThatThrownBy(() -> service.applyLevelUp(dh, null, null, null, null, HpMode.AVERAGE, "Vengeance"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(dh.getSpecialization()).isEqualTo("Havoc");
+        assertThat(dh.getLevel()).isEqualTo((short) 5);
+    }
+
+    @Test
+    void applyLevelUp_demonHunter_mayRepeatOrFirstChooseSpecialization() {
+        PC same = demonHunter(5);
+        same.setSpecialization("Havoc");
+        service.applyLevelUp(same, null, null, null, null, HpMode.AVERAGE, "Havoc");
+        assertThat(same.getSpecialization()).isEqualTo("Havoc");
+
+        PC unset = demonHunter(5);
+        service.applyLevelUp(unset, null, null, null, null, HpMode.AVERAGE, "Devourer");
+        assertThat(unset.getSpecialization()).isEqualTo("Devourer");
+    }
+
+    @Test
+    void applyLevelUp_demonHunter_rejectsAnotherHeroClassesSpecialization() {
+        PC dh = demonHunter(5);
+        assertThatThrownBy(() -> service.applyLevelUp(dh, null, null, null, null, HpMode.AVERAGE, "Blood"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(dh.getSpecialization()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_ebonBlade_stillMayRespec_andRejectsDemonHunterValues() {
+        PC dk = deathKnight(5);
+        dk.setSpecialization("Blood");
+        service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Unholy");
+        assertThat(dk.getSpecialization()).isEqualTo("Unholy");
+
+        PC dk2 = deathKnight(5);
+        assertThatThrownBy(() -> service.applyLevelUp(dk2, null, null, null, null, HpMode.AVERAGE, "Havoc"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 }

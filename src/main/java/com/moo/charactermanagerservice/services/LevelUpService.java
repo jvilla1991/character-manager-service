@@ -94,7 +94,9 @@ public class LevelUpService {
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
-                ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
+                ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel),
+                FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel),
+                FeatCatalog.fightingStyleOptions(pc.getClazz(), pc.getSubclass(), newLevel)
         );
     }
 
@@ -125,10 +127,18 @@ public class LevelUpService {
         return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, HpMode.AVERAGE);
     }
 
-    /** Convenience overload that leaves the Death Knight rune unchanged. */
+    /** Convenience overload that leaves the hero-class specialization unchanged. */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
                            String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode) {
         return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, hpMode, null);
+    }
+
+    /** Convenience overload with no Fighting Style choice. */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                           String specialization) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, hpMode,
+                specialization, null);
     }
 
     /**
@@ -148,13 +158,19 @@ public class LevelUpService {
      * @param hpMode           average vs. rolled HP for this level; {@code null} means
      *                         {@link HpMode#AVERAGE}. In ROLL mode the server rolls the die — the
      *                         client supplies only the mode, never a roll result.
-     * @param rune             a new Death Knight rune (re-Runeforging on level gain), or
-     *                         {@code null} to keep the current one; only valid for an
-     *                         {@value ClassProgression#EBON_BLADE} character
+     * @param specialization   a new hero-class specialization (e.g. Death Knight re-Runeforging),
+     *                         or {@code null} to keep the current one; only valid for a hero
+     *                         subclass, and only a change where that subclass allows respec on
+     *                         level-up (see {@link HeroClassRules#validateLevelUpSpecialization})
+     * @param fightingStyle    the Fighting Style choice at the class's Fighting Style level (one of
+     *                         {@link FeatCatalog#fightingStyleOptions}), or {@code null}; choosing
+     *                         {@value FeatCatalog#VOID_WARRIOR} requires exactly
+     *                         {@value FeatCatalog#VOID_WARRIOR_CANTRIPS} extra cantrips in
+     *                         {@code newSpells}
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
                            String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
-                           String rune) {
+                           String specialization, String fightingStyle) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
@@ -163,10 +179,13 @@ public class LevelUpService {
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         applySubclassChoice(pc, newLevel, chosenSubclass);
-        applyRuneChoice(pc, rune);
+        String style = validateFightingStyleChoice(pc, newLevel, fightingStyle);
+        applySpecializationChoice(pc, specialization);
         applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
-        applySpellChoices(pc, currentLevel, newLevel, newSpells);
+        int bonusCantrips = FeatCatalog.VOID_WARRIOR.equals(style) ? FeatCatalog.VOID_WARRIOR_CANTRIPS : 0;
+        applySpellChoices(pc, currentLevel, newLevel, newSpells, bonusCantrips);
+        recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hitDie = ClassProgression.hitDie(pc.getClazz());
@@ -237,11 +256,46 @@ public class LevelUpService {
         }
     }
 
-    /** Death Knight re-Runeforging: a new rune may be chosen whenever a level is gained. */
-    private void applyRuneChoice(PC pc, String rune) {
-        if (rune == null) return;
-        HeroClassRules.validateRune(pc.getSubclass(), rune);
-        pc.setRune(rune);
+    /**
+     * Hero-class specialization chosen on level-up (e.g. Death Knight re-Runeforging). Whether an
+     * existing one may be changed depends on the hero subclass's respec policy.
+     */
+    private void applySpecializationChoice(PC pc, String specialization) {
+        if (specialization == null) return;
+        HeroClassRules.validateLevelUpSpecialization(pc.getSubclass(), pc.getSpecialization(), specialization);
+        pc.setSpecialization(specialization);
+    }
+
+    // ── Fighting Style class-feature choice ──────────────────────────────────────
+
+    /**
+     * Validate the optional Fighting Style choice: only at the class's Fighting Style level, and
+     * only one of {@link FeatCatalog#fightingStyleOptions} (so {@value FeatCatalog#VOID_WARRIOR}
+     * is rejected for anyone but a Demon Hunter ranger). Returns the canonical option name, or
+     * {@code null} when none was chosen. Optional — omitting it keeps older clients working.
+     */
+    private String validateFightingStyleChoice(PC pc, int newLevel, String fightingStyle) {
+        if (isBlank(fightingStyle)) return null;
+        String name = fightingStyle.trim();
+        if (!FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "No Fighting Style choice is available for " + pc.getClazz() + " at level " + newLevel);
+        }
+        String match = FeatCatalog.matchFightingStyle(name, pc.getClazz(), pc.getSubclass(), newLevel);
+        if (match == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "'" + name + "' is not a selectable Fighting Style");
+        }
+        return match;
+    }
+
+    /** Record the chosen Fighting Style among the PC's features. */
+    private void recordFightingStyle(PC pc, int newLevel, String style) {
+        if (style == null) return;
+        String desc = FeatCatalog.VOID_WARRIOR.equals(style) ? FeatCatalog.VOID_WARRIOR_DESC : "";
+        List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
+        features.add(jsonColumns.featureEntry(style, "Fighting Style (Level " + newLevel + ")", desc));
+        pc.setFeatures(jsonColumns.write(features));
     }
 
     private static boolean isBlank(String s) {
@@ -359,10 +413,16 @@ public class LevelUpService {
      * Individual spell <em>names</em> are NOT validated — the spell list lives in the frontend
      * (the backend must not depend on the external D&D API), so the client-supplied spell objects
      * are accepted as-is. Same trust posture as feats and subclasses.
+     *
+     * <p>{@code bonusCantrips} are cantrips granted by another choice in the same request (the
+     * Demon Hunter's {@value FeatCatalog#VOID_WARRIOR}). When positive, the request must carry
+     * <em>exactly</em> the class's cantrip delta plus the bonus — the count is all that is checked
+     * (the server has no spell list, so it can't confirm they are Warlock cantrips).
      */
     private void applySpellChoices(PC pc, int currentLevel, int newLevel,
-                                   List<Map<String, Object>> chosen) {
-        if (chosen == null || chosen.isEmpty()) return;
+                                   List<Map<String, Object>> chosen, int bonusCantrips) {
+        if ((chosen == null || chosen.isEmpty()) && bonusCantrips == 0) return;
+        if (chosen == null) chosen = List.of();
 
         // The highest spell level the character has slots for at the new level (0 = none).
         int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel).keySet().stream()
@@ -379,7 +439,14 @@ public class LevelUpService {
             if (spellLevelOf(spell) == 0) newCantrips++;
             else newLeveled++;
         }
-        if (newCantrips > Math.max(0, cantripDelta)) {
+        if (bonusCantrips > 0) {
+            int required = Math.max(0, cantripDelta) + bonusCantrips;
+            if (newCantrips != required) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        FeatCatalog.VOID_WARRIOR + " requires exactly " + required
+                                + " new cantrip(s) at level " + newLevel);
+            }
+        } else if (newCantrips > Math.max(0, cantripDelta)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "You can learn at most " + Math.max(0, cantripDelta) + " new cantrip(s) at level " + newLevel);
         }

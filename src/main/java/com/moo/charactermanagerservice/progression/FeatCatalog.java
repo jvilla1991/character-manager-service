@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.progression;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -20,6 +21,10 @@ import java.util.Set;
  *
  * <p>Origin feats (Alert, Tough, Lucky, Magic Initiate, …) are deliberately excluded: those are
  * granted at level 1 by a background, not chosen at an ASI level.
+ *
+ * <p>Also home to the <b>Fighting Style class-feature choice</b> made on level-up at the class's
+ * Fighting Style level (Paladin and Ranger at 2; a Fighter's is at level 1, i.e. creation): the
+ * Fighting Style feats, plus {@value #VOID_WARRIOR} for a Demon Hunter ranger only.
  */
 public final class FeatCatalog {
 
@@ -103,6 +108,63 @@ public final class FeatCatalog {
             "Boon of Truesight",
             "Boon of the Night Spirit"
     );
+
+    // ── Fighting Style class-feature choice ──────────────────────────────────────
+
+    /**
+     * Demon Hunter-only Fighting Style option, taken instead of a Fighting Style feat: the
+     * character learns {@value #VOID_WARRIOR_CANTRIPS} Warlock cantrips that count as Ranger spells
+     * (Wisdom is their spellcasting ability), and may swap one for another Warlock cantrip each
+     * time they gain a Ranger level.
+     */
+    public static final String VOID_WARRIOR = "Void Warrior";
+
+    /** Cantrips a {@value #VOID_WARRIOR} learns — required in the same level-up request. */
+    public static final int VOID_WARRIOR_CANTRIPS = 2;
+
+    /** Short summary recorded on the PC's features list when {@value #VOID_WARRIOR} is chosen. */
+    public static final String VOID_WARRIOR_DESC = "You learn two Warlock cantrips of your choice; "
+            + "they count as Ranger spells for you and Wisdom is your spellcasting ability for them. "
+            + "Whenever you gain a Ranger level, you can swap one of them for another Warlock cantrip.";
+
+    /** Class -> the level at which its Fighting Style choice is made on level-up. */
+    private static final Map<String, Integer> FIGHTING_STYLE_CHOICE_LEVEL = Map.of(
+            "paladin", 2,
+            "ranger", 2
+    );
+
+    /** Whether the class makes its Fighting Style choice when reaching the given (new) level. */
+    public static boolean fightingStyleDue(String clazz, int newLevel) {
+        if (clazz == null) return false;
+        Integer level = FIGHTING_STYLE_CHOICE_LEVEL.get(clazz.trim().toLowerCase());
+        return level != null && level == newLevel;
+    }
+
+    /**
+     * The Fighting Style options for a character reaching the given (new) level, sorted: empty
+     * unless the choice is due; otherwise the Fighting Style feats, plus {@value #VOID_WARRIOR}
+     * for a ranger with the Demon Hunter hero subclass.
+     */
+    public static List<String> fightingStyleOptions(String clazz, String subclass, int newLevel) {
+        if (!fightingStyleDue(clazz, newLevel)) return List.of();
+        List<String> options = new ArrayList<>(FIGHTING_STYLE_FEATS);
+        if (ClassProgression.heroSubclassAllowedFor(subclass, clazz) && ClassProgression.isDemonHunter(subclass)) {
+            options.add(VOID_WARRIOR);
+        }
+        return options.stream().sorted().toList();
+    }
+
+    /**
+     * The canonical option name matching {@code name} (case-insensitive, trimmed) among
+     * {@link #fightingStyleOptions}, or {@code null} when it is not selectable.
+     */
+    public static String matchFightingStyle(String name, String clazz, String subclass, int newLevel) {
+        if (name == null) return null;
+        String trimmed = name.trim();
+        return fightingStyleOptions(clazz, subclass, newLevel).stream()
+                .filter(o -> o.equalsIgnoreCase(trimmed))
+                .findFirst().orElse(null);
+    }
 
     /**
      * Every feat selectable by the given class at the given (new) level, sorted: General feats

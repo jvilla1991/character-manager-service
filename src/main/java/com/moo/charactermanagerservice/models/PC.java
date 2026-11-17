@@ -1,5 +1,6 @@
 package com.moo.charactermanagerservice.models;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.moo.charactermanagerservice.validation.ValidDndClass;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
@@ -63,10 +64,14 @@ public class PC implements Serializable {
     private String species;
     private String background;
     private String subclass;
-    // Death Knight specialization chosen via Runeforging (V45): "Blood", "Frost" or
-    // "Unholy". Only meaningful (and only allowed non-null) when subclass is the
-    // "Oath of the Ebon Blade" hero subclass — validated in PCService/LevelUpService.
-    private String rune;
+    // Hero-class specialization (V46, formerly the Death Knight "rune" from V45): e.g.
+    // "Blood"/"Frost"/"Unholy" for the Oath of the Ebon Blade, "Devourer"/"Havoc"/
+    // "Vengeance" for the Demon Hunter. Only allowed non-null on a hero subclass, and only
+    // one of that subclass's values — validated in HeroClassRules. The "rune" alias accepts
+    // the old JSON name from SPA builds deployed before V46 (input only; output is
+    // "specialization"); drop it once every client sends "specialization".
+    @JsonAlias("rune")
+    private String specialization;
     private String alignment;
     private String portraitTint;
     private String portraitInitials;
@@ -201,7 +206,7 @@ public class PC implements Serializable {
     public void setSpecies(String species) { this.species = species; }
     public void setBackground(String background) { this.background = background; }
     public void setSubclass(String subclass) { this.subclass = subclass; }
-    public void setRune(String rune) { this.rune = rune; }
+    public void setSpecialization(String specialization) { this.specialization = specialization; }
     public void setAlignment(String alignment) { this.alignment = alignment; }
     public void setPortraitTint(String portraitTint) { this.portraitTint = portraitTint; }
     public void setPortraitInitials(String portraitInitials) { this.portraitInitials = portraitInitials; }
