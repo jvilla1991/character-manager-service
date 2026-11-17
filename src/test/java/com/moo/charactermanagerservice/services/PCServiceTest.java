@@ -680,7 +680,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
         verify(pcRepository).save(pc);
     }
 
@@ -705,7 +705,7 @@ class PCServiceTest {
         List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null);
     }
 
     @Test
@@ -716,7 +716,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, HpMode.ROLL));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.ROLL, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.ROLL, null, null);
     }
 
     @Test
@@ -728,7 +728,7 @@ class PCServiceTest {
         // hpMode explicitly null in the request -> service coalesces to AVERAGE.
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, null));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
     }
 
     @Test
@@ -767,7 +767,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, null);
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
     }
 
     @Test
@@ -780,7 +780,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, null);
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
         assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
     }
 
@@ -797,7 +797,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPCAsDm(1L, dmId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
     }
 
     @Test
@@ -810,7 +810,7 @@ class PCServiceTest {
         List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
         pcService.levelUpPCAsDm(1L, dmId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null);
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null);
     }
 
     @Test
@@ -1133,7 +1133,7 @@ class PCServiceTest {
         assertThat(result).containsExactly(pc);
     }
 
-    // --- Death Knight hero class (paladin + Oath of the Ebon Blade, rune) ---
+    // --- Death Knight hero class (paladin + Oath of the Ebon Blade, specialization) ---
 
     private static int status(Throwable e) {
         return ((ResponseStatusException) e).getStatusCode().value();
@@ -1143,23 +1143,23 @@ class PCServiceTest {
     void addPC_acceptsEbonBlade_onPaladinAtLevelOne() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of the Ebon Blade");
-        pc.setRune("Frost");
+        pc.setSpecialization("Frost");
         when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
         PC saved = pcService.addPC(pc);
 
         assertThat(saved.getLevel()).isEqualTo((short) 1);
         assertThat(saved.getSubclass()).isEqualTo("Oath of the Ebon Blade");
-        assertThat(saved.getRune()).isEqualTo("Frost");
+        assertThat(saved.getSpecialization()).isEqualTo("Frost");
     }
 
     @Test
-    void addPC_acceptsEbonBlade_withoutRune() {
+    void addPC_acceptsEbonBlade_withoutSpecialization() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of the Ebon Blade");
         when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThat(pcService.addPC(pc).getRune()).isNull();
+        assertThat(pcService.addPC(pc).getSpecialization()).isNull();
     }
 
     @Test
@@ -1183,10 +1183,10 @@ class PCServiceTest {
     }
 
     @Test
-    void addPC_rejectsInvalidRuneValue() {
+    void addPC_rejectsInvalidEbonBladeSpecialization() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of the Ebon Blade");
-        pc.setRune("blood"); // exact values only
+        pc.setSpecialization("blood"); // exact values only
 
         assertThatThrownBy(() -> pcService.addPC(pc))
                 .isInstanceOf(ResponseStatusException.class)
@@ -1194,10 +1194,10 @@ class PCServiceTest {
     }
 
     @Test
-    void addPC_rejectsRune_onOtherSubclass() {
+    void addPC_rejectsSpecialization_onNonHeroSubclass() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of Devotion");
-        pc.setRune("Unholy");
+        pc.setSpecialization("Unholy");
 
         assertThatThrownBy(() -> pcService.addPC(pc))
                 .isInstanceOf(ResponseStatusException.class)
@@ -1205,8 +1205,8 @@ class PCServiceTest {
     }
 
     @Test
-    void addPC_rejectsRune_withNoSubclass() {
-        pc.setRune("Blood");
+    void addPC_rejectsSpecialization_withNoSubclass() {
+        pc.setSpecialization("Blood");
 
         assertThatThrownBy(() -> pcService.addPC(pc))
                 .isInstanceOf(ResponseStatusException.class)
@@ -1214,10 +1214,10 @@ class PCServiceTest {
     }
 
     @Test
-    void updatePC_changesRune_forDeathKnight() {
+    void updatePC_changesSpecialization_forDeathKnight() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of the Ebon Blade");
-        pc.setRune("Blood");
+        pc.setSpecialization("Blood");
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -1225,36 +1225,36 @@ class PCServiceTest {
         incoming.setId(1L);
         incoming.setClazz("paladin");
         incoming.setSubclass("Oath of the Ebon Blade");
-        incoming.setRune("Unholy");
+        incoming.setSpecialization("Unholy");
 
-        assertThat(pcService.updatePC(incoming, ownerId).getRune()).isEqualTo("Unholy");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Unholy");
     }
 
     @Test
-    void updatePC_preservesRune_whenTheBodyOmitsIt() {
+    void updatePC_preservesSpecialization_whenTheBodyOmitsIt() {
         pc.setClazz("paladin");
         pc.setSubclass("Oath of the Ebon Blade");
-        pc.setRune("Blood");
+        pc.setSpecialization("Blood");
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
         PC incoming = new PC();
         incoming.setId(1L);
         incoming.setClazz("paladin");
-        incoming.setSubclass("Oath of the Ebon Blade"); // rune null — built without the field
+        incoming.setSubclass("Oath of the Ebon Blade"); // specialization null — built without the field
 
-        assertThat(pcService.updatePC(incoming, ownerId).getRune()).isEqualTo("Blood");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Blood");
     }
 
     @Test
-    void updatePC_rejectsRune_onOtherSubclass() {
+    void updatePC_rejectsSpecialization_onNonHeroSubclass() {
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
 
         PC incoming = new PC();
         incoming.setId(1L);
         incoming.setClazz("paladin");
         incoming.setSubclass("Oath of Glory");
-        incoming.setRune("Frost");
+        incoming.setSpecialization("Frost");
 
         assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
                 .isInstanceOf(ResponseStatusException.class)
@@ -1280,13 +1280,133 @@ class PCServiceTest {
     }
 
     @Test
-    void levelUpPC_forwardsRuneToRulesEngine() {
+    void levelUpPC_forwardsSpecializationToRulesEngine() {
         pc.setXp(1_000_000);
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(pc)).thenReturn(pc);
 
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, null, "Frost"));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, "Frost");
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, "Frost", null);
+    }
+
+    // --- Demon Hunter hero class (ranger + Demon Hunter, specialization) ---
+
+    @Test
+    void addPC_acceptsDemonHunter_onRangerWithSpecialization() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Demon Hunter");
+        pc.setSpecialization("Havoc");
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC saved = pcService.addPC(pc);
+
+        assertThat(saved.getSubclass()).isEqualTo("Demon Hunter");
+        assertThat(saved.getSpecialization()).isEqualTo("Havoc");
+    }
+
+    @Test
+    void addPC_rejectsDemonHunter_onNonRanger() {
+        for (String clazz : List.of("paladin", "fighter", "warlock")) {
+            pc.setClazz(clazz);
+            pc.setSubclass("Demon Hunter");
+
+            assertThatThrownBy(() -> pcService.addPC(pc))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void addPC_rejectsSpecialization_notInTheHeroSubclassList() {
+        // A Death Knight rune on a Demon Hunter, a wrong-case value, and a DH value on a Death Knight.
+        for (String[] c : new String[][] {
+                {"ranger", "Demon Hunter", "Blood"},
+                {"ranger", "Demon Hunter", "havoc"},
+                {"paladin", "Oath of the Ebon Blade", "Vengeance"}}) {
+            pc.setClazz(c[0]);
+            pc.setSubclass(c[1]);
+            pc.setSpecialization(c[2]);
+
+            assertThatThrownBy(() -> pcService.addPC(pc))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerCannotChangeDemonHunterSpecialization() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Demon Hunter");
+        pc.setSpecialization("Havoc");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("ranger");
+        incoming.setSubclass("Demon Hunter");
+        incoming.setSpecialization("Vengeance");
+
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePC_ownerMayKeepOrFirstSetDemonHunterSpecialization() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Demon Hunter");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("ranger");
+        incoming.setSubclass("Demon Hunter");
+        incoming.setSpecialization("Devourer"); // none stored yet
+
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Devourer");
+
+        pc.setSpecialization("Devourer");
+        PC omitted = new PC();
+        omitted.setId(1L);
+        omitted.setClazz("ranger");
+        omitted.setSubclass("Demon Hunter"); // specialization omitted — keeps the stored one
+
+        assertThat(pcService.updatePC(omitted, ownerId).getSpecialization()).isEqualTo("Devourer");
+    }
+
+    @Test
+    void updatePCAsDm_mayChangeDemonHunterSpecialization() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Demon Hunter");
+        pc.setSpecialization("Havoc");
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("ranger");
+        incoming.setSubclass("Demon Hunter");
+        incoming.setSpecialization("Vengeance");
+
+        assertThat(pcService.updatePCAsDm(incoming, null, dmId).getSpecialization()).isEqualTo("Vengeance");
+    }
+
+    @Test
+    void levelUpPC_forwardsFightingStyleToRulesEngine() {
+        pc.setXp(1_000_000);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.levelUpPC(1L, ownerId,
+                new LevelUpRequest(null, null, null, null, null, null, "Void Warrior"));
+
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, "Void Warrior");
     }
 }

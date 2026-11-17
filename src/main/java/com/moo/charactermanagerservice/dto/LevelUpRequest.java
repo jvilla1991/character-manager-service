@@ -1,5 +1,7 @@
 package com.moo.charactermanagerservice.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+
 import java.util.List;
 import java.util.Map;
 
@@ -25,9 +27,17 @@ import java.util.Map;
  * unaffected. In {@link HpMode#ROLL} the server rolls the die — the client never sends a roll
  * result, only the choice of mode.
  *
- * <p>Rune: {@code rune} — optional Death Knight re-Runeforging ({@code "Blood"}, {@code "Frost"}
- * or {@code "Unholy"}); a Death Knight may swap runes whenever they gain a level. {@code null}
- * keeps the current rune. Only valid for an "Oath of the Ebon Blade" character.
+ * <p>Specialization: {@code specialization} — an optional new hero-class specialization (e.g. a
+ * Death Knight re-Runeforging to {@code "Frost"}). {@code null} keeps the current one. Only valid
+ * for a hero-subclass character, only one of that subclass's values, and only a <em>change</em>
+ * when the subclass allows respec on level-up (the Ebon Blade does; the Demon Hunter does not —
+ * a Demon Hunter may only pick one here while none is set). The old JSON name {@code rune} is
+ * still accepted as an alias for SPA builds deployed before V46.
+ *
+ * <p>Fighting Style: {@code fightingStyle} — optional choice at the class's Fighting Style level
+ * (Paladin/Ranger 2), one of the preview's {@code fightingStyleOptions}. Choosing
+ * {@code "Void Warrior"} (Demon Hunter only) requires exactly two cantrips (level 0) in
+ * {@code newSpells}.
  */
 public record LevelUpRequest(
         String subclass,
@@ -35,17 +45,25 @@ public record LevelUpRequest(
         String feat,
         List<Map<String, Object>> newSpells,
         HpMode hpMode,
-        String rune
+        @JsonAlias("rune") String specialization,
+        String fightingStyle
 ) {
     /** Back-compat constructor for callers that don't choose an HP mode: defaults to AVERAGE. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells) {
-        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE, null);
+        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE, null, null);
     }
 
-    /** Back-compat constructor for callers that don't change the rune. */
+    /** Back-compat constructor for callers that don't change the specialization. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells, HpMode hpMode) {
-        this(subclass, abilityIncreases, feat, newSpells, hpMode, null);
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, null, null);
+    }
+
+    /** Back-compat constructor for callers that don't choose a Fighting Style. */
+    public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
+                          String feat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                          String specialization) {
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, specialization, null);
     }
 }
