@@ -250,7 +250,8 @@ public final class ClassProgression {
             Map.entry("monk", List.of(
                     "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements", "Warrior of the Open Hand")),
             // Oath of the Ebon Blade (Death Knight) is a creation-only hero subclass — see
-            // HERO_SUBCLASSES — and is intentionally absent from this level-up list.
+            // HERO_SUBCLASSES — and is intentionally absent from this level-up list. Oath of the
+            // Holy is offered on top of these to WoW paladins only — see WOW_ONLY_SUBCLASSES.
             Map.entry("paladin", List.of(
                     "Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance")),
             // Demon Hunter is likewise a creation-only hero subclass, absent from this list.
@@ -281,6 +282,34 @@ public final class ClassProgression {
     public static List<String> subclassesFor(String clazz) {
         if (clazz == null) return List.of();
         return SUBCLASS_CATALOG.getOrDefault(clazz.trim().toLowerCase(), List.of());
+    }
+
+    /** The WoW Paladin's own oath (World of Warcraft tabletop module), offered only to WoW paladins. */
+    public static final String OATH_OF_THE_HOLY = "Oath of the Holy";
+
+    /**
+     * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
+     * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
+     * values. A base-game member (specialization null) never sees these.
+     */
+    private static final Map<String, List<String>> WOW_ONLY_SUBCLASSES = Map.of(
+            "paladin", List.of(OATH_OF_THE_HOLY)
+    );
+
+    /**
+     * Selectable subclass names at the level-up subclass choice for a class + specialization: the
+     * class's {@link #subclassesFor(String) catalog}, plus its WoW-only subclasses when the
+     * specialization marks the character as that class's WoW variant (see
+     * {@link #isClassSpecialization}). Hero subclasses are never included.
+     */
+    public static List<String> subclassesFor(String clazz, String specialization) {
+        List<String> base = subclassesFor(clazz);
+        if (!isClassSpecialization(clazz, specialization)) return base;
+        List<String> wowOnly = WOW_ONLY_SUBCLASSES.getOrDefault(clazz.trim().toLowerCase(), List.of());
+        if (wowOnly.isEmpty()) return base;
+        List<String> all = new java.util.ArrayList<>(base);
+        all.addAll(wowOnly);
+        return List.copyOf(all);
     }
 
     // ── Hero subclasses (World of Warcraft tabletop module) ─────────────────────
@@ -343,7 +372,10 @@ public final class ClassProgression {
     // the ordinary druid class plus a specialization (Balance/Feral/Guardian/Restoration) that only
     // guides choices — its subclass is still picked normally at level 3 from SUBCLASS_CATALOG. A
     // druid whose specialization is null is a base-game druid. The specialization is persisted in
-    // the same pc.specialization column the hero subclasses use.
+    // the same pc.specialization column the hero subclasses use. The WoW Paladin
+    // (Holy/Protection/Retribution) works the same way, except that it also unlocks a WoW-only
+    // subclass (Oath of the Holy) at its level-3 choice; a paladin with the Ebon Blade hero
+    // subclass is a Death Knight and keeps the hero subclass's list instead.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -353,17 +385,37 @@ public final class ClassProgression {
      * @param respecOnLevelUp        whether a level-up may change an already-chosen specialization
      * @param recommendedSubclasses  specialization → the subclass it recommends (advisory only,
      *                               never enforced)
+     * @param recommendedFightingStyles specialization → the Fighting Style options it recommends at
+     *                               the class's Fighting Style choice (advisory only, never enforced;
+     *                               empty for classes without that choice)
      */
     public record ClassSpecializations(String baseClass, List<String> specializations,
                                        boolean respecOnLevelUp,
-                                       Map<String, String> recommendedSubclasses) {}
+                                       Map<String, String> recommendedSubclasses,
+                                       Map<String, List<String>> recommendedFightingStyles) {
+
+        /** A class whose specializations recommend no Fighting Style. */
+        public ClassSpecializations(String baseClass, List<String> specializations, boolean respecOnLevelUp,
+                                    Map<String, String> recommendedSubclasses) {
+            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, Map.of());
+        }
+    }
 
     private static final List<ClassSpecializations> CLASS_SPECIALIZATIONS = List.of(
             new ClassSpecializations("druid", List.of("Balance", "Feral", "Guardian", "Restoration"), true,
                     Map.of("Balance", "Circle of the Stars",
                             "Feral", "Circle of the Moon",
                             "Guardian", "Circle of the Moon",
-                            "Restoration", "Circle of the Land"))
+                            "Restoration", "Circle of the Land")),
+            // WoW Paladin. A Death Knight (paladin + Oath of the Ebon Blade) is NOT covered by this
+            // entry: its hero subclass's own list (Blood/Frost/Unholy) always wins.
+            new ClassSpecializations("paladin", List.of("Holy", "Protection", "Retribution"), true,
+                    Map.of("Holy", OATH_OF_THE_HOLY,
+                            "Protection", "Oath of Devotion",
+                            "Retribution", "Oath of Vengeance"),
+                    Map.of("Holy", List.of("Blessed Warrior"),
+                            "Protection", List.of("Interception", "Protection"),
+                            "Retribution", List.of("Great Weapon Fighting")))
     );
 
     /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */
@@ -382,6 +434,30 @@ public final class ClassProgression {
         return classSpecializations(clazz)
                 .map(s -> s.recommendedSubclasses().get(specialization))
                 .orElse(null);
+    }
+
+    /**
+     * The Fighting Style options a class specialization recommends (e.g. a Retribution paladin →
+     * Great Weapon Fighting), or an empty list when there is no such recommendation. Callers filter
+     * against the options actually offered.
+     */
+    public static List<String> recommendedFightingStyles(String clazz, String specialization) {
+        if (specialization == null) return List.of();
+        return classSpecializations(clazz)
+                .map(s -> s.recommendedFightingStyles().getOrDefault(specialization, List.of()))
+                .orElse(List.of());
+    }
+
+    /**
+     * True when the specialization is one of the class's WoW {@link ClassSpecializations} values
+     * (exact match) — i.e. the character is that class's World of Warcraft variant. False for a
+     * null specialization and for hero-subclass specializations (e.g. a Death Knight's "Frost").
+     */
+    public static boolean isClassSpecialization(String clazz, String specialization) {
+        if (specialization == null) return false;
+        return classSpecializations(clazz)
+                .map(s -> s.specializations().contains(specialization))
+                .orElse(false);
     }
 
     /** True when the subclass is the Demon Hunter hero subclass (case-insensitive). */

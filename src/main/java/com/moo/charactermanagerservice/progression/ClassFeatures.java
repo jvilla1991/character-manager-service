@@ -236,7 +236,7 @@ public final class ClassFeatures {
 
     // ── Subclass features ──────────────────────────────────────────────────────
     // Only subclasses whose level-up features are modeled server-side appear here (today: the
-    // Death Knight and Demon Hunter hero subclasses). Each level entry may REPLACE generic class features by name
+    // Death Knight and Demon Hunter hero subclasses, and the WoW Paladin's Oath of the Holy). Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -256,7 +256,9 @@ public final class ClassFeatures {
 
     /** class (lower-case) -> subclass (lower-case) -> level -> gains. */
     private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = Map.of(
-            "paladin", Map.of(ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade()),
+            "paladin", Map.of(
+                    ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade(),
+                    ClassProgression.OATH_OF_THE_HOLY.toLowerCase(), oathOfTheHoly()),
             "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter())
     );
 
@@ -284,6 +286,32 @@ public final class ClassFeatures {
                 f("Runic Mastery", "Your command of runes deepens, strengthening the benefits of your forged rune.")));
         f.put(20, adds(
                 f("Aspect of the Horsemen", "You can take on the aspect of the legendary Horsemen of the Ebon Blade, unleashing a burst of deathly power for a short time.")));
+        return f;
+    }
+
+    /**
+     * Oath of the Holy (World of Warcraft tabletop module), the WoW Paladin's own level-3 oath.
+     * Purely additive: the generic Paladin table has no subclass placeholders at these levels.
+     */
+    private static Map<Integer, SubclassGains> oathOfTheHoly() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Oath of the Holy Spells", "These spells are always prepared for you once you reach the listed Paladin level: "
+                        + "3rd — Cure Wounds, Healing Word; 5th — Lesser Restoration, Prayer of Healing; "
+                        + "9th — Dispel Magic, Mass Healing Word; 13th — Aura of Life, Death Ward; "
+                        + "17th — Greater Restoration, Mass Cure Wounds."),
+                f("Beacon of Light", "As a Magic action, expend one use of your Channel Divinity to mark an ally you can see within 60 feet for 1 minute. "
+                        + "Whenever you restore Hit Points to another creature with a spell or Lay On Hands, the marked ally also regains half that amount.")));
+        f.put(7, adds(
+                f("Lightbringer's Aura", "When you restore Hit Points with a spell or Lay On Hands to a Bloodied creature within your Aura of Protection, "
+                        + "it regains an extra 1d6 Hit Points.")));
+        f.put(15, adds(
+                f("Infusion of Light", "When a spell you cast deals Radiant damage, your Lay On Hands pool recovers Hit Points equal to the Radiant damage rolled, "
+                        + "but the pool can't exceed five times your Paladin level.")));
+        f.put(20, adds(
+                f("Holy Deliverance", "As a Bonus Action, you radiate holy power for 10 minutes: each ally who starts its turn Bloodied within your aura "
+                        + "regains Hit Points equal to your Charisma modifier plus your Proficiency Bonus, and the aura sheds Bright Light that counts as sunlight. "
+                        + "Once used, you can't do so again until you finish a Long Rest unless you expend a level 5 spell slot to use it again.")));
         return f;
     }
 
