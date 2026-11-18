@@ -307,6 +307,9 @@ public final class ClassProgression {
     /** The WoW Priest's Shadow domain (cleric), offered only to WoW clerics. */
     public static final String SHADOW_DOMAIN = "Shadow Domain";
 
+    /** The PHB ranger subclass whose Primal Companion a WoW Hunter may give a pet family. */
+    public static final String BEAST_MASTER = "Beast Master";
+
     /** The PHB sorcerer subclass every WoW Evoker must have (see {@link ClassSpecializations#requiredSubclass}). */
     public static final String DRACONIC_SORCERY = "Draconic Sorcery";
 
@@ -416,7 +419,12 @@ public final class ClassProgression {
     // Shadow Domain at its level-3 choice, with no feature overrides. The WoW Evoker — a sorcerer
     // with Augmentation/Devastation/Preservation — is the first variant that REQUIRES a subclass:
     // it must be a Draconic Sorcery sorcerer (see ClassSpecializations#requiredSubclass), and it
-    // gains Evoker Spells in place of Draconic Spells (see ClassFeatures' variant features).
+    // gains Evoker Spells in place of Draconic Spells (see ClassFeatures' variant features). The WoW
+    // Hunter — a ranger with Beast Mastery/Marksmanship/Survival and no hero subclass — may take any
+    // ranger subclass; a Beast Mastery hunter gains Pet Specialization in place of Roving, and a
+    // hunter whose subclass is Beast Master may record its companion's pet family (see
+    // PET_FAMILIES). A ranger with the Demon Hunter hero subclass keeps the hero subclass's
+    // Devourer/Havoc/Vengeance list instead.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -495,6 +503,16 @@ public final class ClassProgression {
                     Map.of("Assassination", "Assassin",
                             "Outlaw", SWASHBUCKLER,
                             "Subtlety", "Soulknife")),
+            // WoW Hunter. A Demon Hunter (ranger + Demon Hunter) is NOT covered by this entry: its
+            // hero subclass's own list (Devourer/Havoc/Vengeance) always wins. The ranger's Fighting
+            // Style is due at level 2, so these styles show in the level-up preview.
+            new ClassSpecializations("ranger", List.of("Beast Mastery", "Marksmanship", "Survival"), true,
+                    Map.of("Beast Mastery", BEAST_MASTER,
+                            "Marksmanship", "Hunter",
+                            "Survival", BEAST_MASTER),
+                    Map.of("Beast Mastery", List.of("Archery"),
+                            "Marksmanship", List.of("Archery"),
+                            "Survival", List.of("Great Weapon Fighting"))),
             // WoW Evoker. Every Evoker is a Draconic Sorcery sorcerer (required, not just
             // recommended); sorcerers pick their subclass at level 1 (creation), so the level-up
             // preview never has a subclass due. No Fighting Style choice.
@@ -562,6 +580,37 @@ public final class ClassProgression {
         return classSpecializations(clazz)
                 .map(s -> s.specializations().contains(specialization))
                 .orElse(false);
+    }
+
+    // ── Hunter pet families (World of Warcraft tabletop module) ─────────────────
+    // A WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival) whose subclass is Beast Master may
+    // record the pet family of its Primal Companion (pc.pet_family, V51). The family decides which
+    // pet specialization (Cunning/Ferocity/Tenacity) a Beast Mastery hunter's Pet Specialization
+    // feature uses; that mapping is presentation and lives in the frontend.
+
+    /** The exact pet family names a WoW Hunter's beast may have (matched case-sensitively). */
+    public static final List<String> PET_FAMILIES = List.of(
+            "Basilisk", "Bat", "Bear", "Beetle", "Bird of Prey", "Blood Beast", "Boar", "Camel",
+            "Carrion Bird", "Cat", "Courser", "Crab", "Crocolisk", "Direhorn", "Dolphin", "Dragonhawk",
+            "Feathermane", "Fox", "Frenzy", "Gorilla", "Gruffhorn", "Hopper", "Hound", "Hydra", "Hyena",
+            "Lizard", "Mammoth", "Mechanized Animal", "Monkey", "Moth", "Oxen", "Raptor", "Ray",
+            "Riverbeast", "Rodent", "Scalehide", "Scorpid", "Serpent", "Shark", "Spider", "Stag",
+            "Tallstrider", "Threshadon", "Turtle", "Wasp", "Waterfowl", "Wolf");
+
+    /** True when the name is exactly one of {@link #PET_FAMILIES}. */
+    public static boolean isPetFamily(String name) {
+        return name != null && PET_FAMILIES.contains(name);
+    }
+
+    /**
+     * Whether a PC may record a pet family: only a WoW Hunter (a ranger whose specialization is one
+     * of the ranger's {@link ClassSpecializations} values — never a Demon Hunter) whose subclass is
+     * {@value #BEAST_MASTER} (case-insensitive).
+     */
+    public static boolean petFamilyAllowed(String clazz, String subclass, String specialization) {
+        return clazz != null && "ranger".equals(clazz.trim().toLowerCase())
+                && isClassSpecialization(clazz, specialization)
+                && subclass != null && BEAST_MASTER.equalsIgnoreCase(subclass.trim());
     }
 
     /** True when the subclass is the Demon Hunter hero subclass (case-insensitive). */

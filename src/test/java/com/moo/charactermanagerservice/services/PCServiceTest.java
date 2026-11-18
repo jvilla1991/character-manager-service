@@ -2215,4 +2215,193 @@ class PCServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
+
+    // --- WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival; pet family on Beast Master) ---
+
+    private static PC rangerBody(String subclass, String spec, String petFamily) {
+        PC r = new PC();
+        r.setClazz("ranger");
+        r.setSubclass(subclass);
+        r.setSpecialization(spec);
+        r.setPetFamily(petFamily);
+        return r;
+    }
+
+    @Test
+    void addPC_acceptsEachHunterSpecialization_andBaseRanger() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Beast Mastery", "Marksmanship", "Survival")) {
+            PC saved = pcService.addPC(rangerBody(null, spec, null));
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+        assertThat(pcService.addPC(rangerBody(null, null, null)).getSpecialization()).isNull();
+    }
+
+    @Test
+    void addPC_demonHunterAndHunterSpecializations_stayApart() {
+        // A Demon Hunter can't take a hunter spec, and a non-DH ranger can't take a DH spec.
+        for (String spec : List.of("Beast Mastery", "Marksmanship", "Survival")) {
+            PC dh = rangerBody("Demon Hunter", spec, null);
+            assertThatThrownBy(() -> pcService.addPC(dh))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String spec : List.of("Devourer", "Havoc", "Vengeance")) {
+            PC r = rangerBody(null, spec, null);
+            assertThatThrownBy(() -> pcService.addPC(r))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String bad : List.of("marksmanship", "Beast Master", "Arms", "Holy")) {
+            PC r = rangerBody(null, bad, null);
+            assertThatThrownBy(() -> pcService.addPC(r))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("druid", "fighter", "paladin")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Marksmanship");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void addPC_acceptsPetFamily_onABeastMasterHunter_forEverySpecAndFamily() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Beast Mastery", "Marksmanship", "Survival")) {
+            PC saved = pcService.addPC(rangerBody("Beast Master", spec, "Wolf"));
+            assertThat(saved.getPetFamily()).isEqualTo("Wolf");
+        }
+        for (String family : com.moo.charactermanagerservice.progression.ClassProgression.PET_FAMILIES) {
+            assertThat(pcService.addPC(rangerBody("beast master", "Beast Mastery", family)).getPetFamily())
+                    .isEqualTo(family);
+        }
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression.PET_FAMILIES)
+                .hasSize(47).contains("Bird of Prey", "Mechanized Animal", "Threshadon").doesNotHaveDuplicates();
+    }
+
+    @Test
+    void addPC_rejectsPetFamily_onTheWrongSubclass_aBaseRanger_aDemonHunter_orAnUnknownName() {
+        List<PC> bad = List.of(
+                rangerBody("Hunter", "Beast Mastery", "Wolf"),        // wrong subclass
+                rangerBody(null, "Beast Mastery", "Wolf"),            // no subclass yet
+                rangerBody("Beast Master", null, "Wolf"),             // base ranger
+                rangerBody("Demon Hunter", "Havoc", "Wolf"),          // Demon Hunter
+                rangerBody("Beast Master", "Beast Mastery", "wolf"),  // case-sensitive
+                rangerBody("Beast Master", "Beast Mastery", "Dragon"), // unknown family
+                rangerBody("Beast Master", "Beast Mastery", ""));
+        for (PC body : bad) {
+            assertThatThrownBy(() -> pcService.addPC(body))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        PC druid = new PC();
+        druid.setClazz("druid");
+        druid.setSpecialization("Feral");
+        druid.setPetFamily("Cat");
+        assertThatThrownBy(() -> pcService.addPC(druid))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeHunterSpecializationAndPetFamily() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Beast Mastery");
+        pc.setPetFamily("Wolf");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = rangerBody("Beast Master", "Survival", "Raptor");
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpecialization()).isEqualTo("Survival");
+        assertThat(saved.getPetFamily()).isEqualTo("Raptor");
+    }
+
+    @Test
+    void updatePC_preservesHunterSpecializationAndPetFamily_whenTheBodyOmitsThem() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Beast Mastery");
+        pc.setPetFamily("Bird of Prey");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = rangerBody("Beast Master", null, null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpecialization()).isEqualTo("Beast Mastery");
+        assertThat(saved.getPetFamily()).isEqualTo("Bird of Prey");
+    }
+
+    @Test
+    void updatePC_dropsTheStoredPetFamily_whenTheHunterLeavesBeastMaster() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Marksmanship");
+        pc.setPetFamily("Cat");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = rangerBody("Hunter", null, null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpecialization()).isEqualTo("Marksmanship");
+        assertThat(saved.getPetFamily()).isNull();
+    }
+
+    @Test
+    void updatePC_rejectsAPetFamily_onTheWrongSubclass_orAnUnknownName() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Hunter");
+        pc.setSpecialization("Marksmanship");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC wrongSubclass = rangerBody("Hunter", "Marksmanship", "Wolf");
+        wrongSubclass.setId(1L);
+        assertThatThrownBy(() -> pcService.updatePC(wrongSubclass, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        PC unknown = rangerBody("Beast Master", "Marksmanship", "Unicorn");
+        unknown.setId(1L);
+        assertThatThrownBy(() -> pcService.updatePC(unknown, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsAndPreservesPetFamily_andRejectsItOnABaseRanger() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Beast Mastery");
+        pc.setPetFamily("Bear");
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC change = rangerBody("Beast Master", "Beast Mastery", "Turtle");
+        change.setId(1L);
+        assertThat(pcService.updatePCAsDm(change, null, dmId).getPetFamily()).isEqualTo("Turtle");
+
+        PC omit = rangerBody("Beast Master", null, null);
+        omit.setId(1L);
+        assertThat(pcService.updatePCAsDm(omit, null, dmId).getPetFamily()).isEqualTo("Bear");
+
+        PC base = rangerBody("Beast Master", null, "Bear");
+        base.setId(1L);
+        pc.setSpecialization(null); // stored as a base ranger: nothing to carry over
+        assertThatThrownBy(() -> pcService.updatePCAsDm(base, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
 }

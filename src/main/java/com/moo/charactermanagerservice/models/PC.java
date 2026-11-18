@@ -72,6 +72,11 @@ public class PC implements Serializable {
     // "specialization"); drop it once every client sends "specialization".
     @JsonAlias("rune")
     private String specialization;
+    // WoW Hunter pet family (V51): the family of a Beast Master hunter's Primal Companion, e.g.
+    // "Wolf" or "Bird of Prey". Only allowed non-null on a WoW Hunter (ranger + Beast Mastery/
+    // Marksmanship/Survival) whose subclass is Beast Master, and only one of
+    // ClassProgression.PET_FAMILIES — validated in HeroClassRules.
+    private String petFamily;
     private String alignment;
     private String portraitTint;
     private String portraitInitials;
@@ -207,6 +212,7 @@ public class PC implements Serializable {
     public void setBackground(String background) { this.background = background; }
     public void setSubclass(String subclass) { this.subclass = subclass; }
     public void setSpecialization(String specialization) { this.specialization = specialization; }
+    public void setPetFamily(String petFamily) { this.petFamily = petFamily; }
     public void setAlignment(String alignment) { this.alignment = alignment; }
     public void setPortraitTint(String portraitTint) { this.portraitTint = portraitTint; }
     public void setPortraitInitials(String portraitInitials) { this.portraitInitials = portraitInitials; }

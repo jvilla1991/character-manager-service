@@ -1775,7 +1775,7 @@ class LevelUpServiceTest {
         assertThat(ClassProgression.recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
         assertThat(ClassProgression.recommendedSubclass("druid", "Balance")).isEqualTo("Circle of the Stars");
         assertThat(ClassProgression.recommendedSubclass("barbarian", "Elemental")).isEqualTo(PATH_OF_THE_ELEMENTS);
-        assertThat(ClassProgression.classSpecializations("ranger")).isEmpty();
+        assertThat(ClassProgression.recommendedSubclass("ranger", "Arms")).isNull();
     }
 
     // --- WoW Shaman (barbarian + Elemental/Enhancement/Restoration, two WoW-only paths, Totems) ---
@@ -2542,5 +2542,181 @@ class LevelUpServiceTest {
                 .featuresAt("wizard", "Evoker", "Devastation", 3)))
                 .containsExactlyElementsOf(names(com.moo.charactermanagerservice.progression.ClassFeatures
                         .featuresAt("wizard", "Evoker", 3)));
+    }
+
+    // --- WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival; Pet Specialization for BM) ---
+
+    private static final String BEAST_MASTER = "Beast Master";
+    private static final List<String> HUNTER_SPECS = List.of("Beast Mastery", "Marksmanship", "Survival");
+    private static final List<String> DH_SPECS = List.of("Devourer", "Havoc", "Vengeance");
+
+    private static PC ranger(int level, String subclass) {
+        PC r = pc("Ranger", level, 14, 10 * level, 10 * level);
+        r.setSubclass(subclass);
+        return r;
+    }
+
+    private static PC hunter(int level, String subclass, String spec) {
+        PC r = ranger(level, subclass);
+        r.setSpecialization(spec);
+        return r;
+    }
+
+    @Test
+    void applyLevelUp_ranger_acceptsEachHunterSpecialization_andRejectsOthers() {
+        for (String spec : HUNTER_SPECS) {
+            PC r = ranger(5, "Hunter"); // 5 -> 6: not an ASI level
+            service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(r.getSpecialization()).isEqualTo(spec);
+            assertThat(r.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("marksmanship", "Beast Master", "Havoc", "Vengeance", "Arms", "Balance")) {
+            PC r = hunter(5, "Hunter", "Marksmanship");
+            assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(r.getSpecialization()).isEqualTo("Marksmanship");
+            assertThat(r.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowHunter_mayRespec() {
+        PC r = hunter(5, BEAST_MASTER, "Beast Mastery");
+        service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, "Survival");
+        assertThat(r.getSpecialization()).isEqualTo("Survival");
+    }
+
+    @Test
+    void demonHunterAndHunterSpecializations_stayApart() {
+        // A Demon Hunter keeps its hero list: no hunter specs.
+        for (String spec : HUNTER_SPECS) {
+            PC dh = demonHunter(5);
+            assertThatThrownBy(() -> service.applyLevelUp(dh, null, null, null, null, HpMode.AVERAGE, spec))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(dh.getSpecialization()).isNull();
+        }
+        // A non-DH ranger can't take a Demon Hunter spec.
+        for (String spec : DH_SPECS) {
+            PC r = ranger(5, "Hunter");
+            assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, spec))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(r.getSpecialization()).isNull();
+        }
+        // The DH still accepts its own.
+        PC dh = demonHunter(5);
+        service.applyLevelUp(dh, null, null, null, null, HpMode.AVERAGE, "Havoc");
+        assertThat(dh.getSpecialization()).isEqualTo("Havoc");
+        assertThat(ClassProgression.isClassSpecialization("ranger", "Havoc")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("ranger", "Marksmanship")).isTrue();
+    }
+
+    @Test
+    void classProgression_hunterLookups_returnExactNames() {
+        assertThat(ClassProgression.recommendedSubclass("ranger", "Beast Mastery")).isEqualTo(BEAST_MASTER);
+        assertThat(ClassProgression.recommendedSubclass("Ranger", "Marksmanship")).isEqualTo("Hunter");
+        assertThat(ClassProgression.recommendedSubclass("ranger", "Survival")).isEqualTo(BEAST_MASTER);
+        assertThat(ClassProgression.recommendedSubclass("ranger", "survival")).isNull();
+        assertThat(ClassProgression.recommendedSubclass("ranger", "Havoc")).isNull();
+        assertThat(ClassProgression.recommendedFightingStyles("ranger", "Beast Mastery")).containsExactly("Archery");
+        assertThat(ClassProgression.recommendedFightingStyles("ranger", "Marksmanship")).containsExactly("Archery");
+        assertThat(ClassProgression.recommendedFightingStyles("ranger", "Survival"))
+                .containsExactly("Great Weapon Fighting");
+        assertThat(ClassProgression.classSpecializations("ranger")).get()
+                .satisfies(s -> {
+                    assertThat(s.specializations()).containsExactlyElementsOf(HUNTER_SPECS);
+                    assertThat(s.respecOnLevelUp()).isTrue();
+                    assertThat(s.requiredSubclass()).isNull();
+                });
+        // Recommendations are real catalog names; no WoW-only ranger subclass is added.
+        List<String> styles = FeatCatalog.fightingStyleOptions("ranger", null, 2);
+        for (String spec : HUNTER_SPECS) {
+            assertThat(ClassProgression.subclassesFor("ranger", spec))
+                    .containsExactlyElementsOf(ClassProgression.subclassesFor("ranger"))
+                    .contains(ClassProgression.recommendedSubclass("ranger", spec));
+            assertThat(styles).containsAll(ClassProgression.recommendedFightingStyles("ranger", spec));
+        }
+    }
+
+    @Test
+    void preview_wowHunter_recommendsFightingStyleAt2_andSubclassAt3() {
+        String[][] styleCases = {{"Beast Mastery", "Archery"}, {"Marksmanship", "Archery"},
+                {"Survival", "Great Weapon Fighting"}};
+        for (String[] c : styleCases) {
+            LevelUpPreview p = service.preview(hunter(1, null, c[0])); // 1 -> 2: Fighting Style due
+            assertThat(p.fightingStyleDue()).isTrue();
+            assertThat(p.recommendedFightingStyles()).containsExactly(c[1]);
+            assertThat(p.recommendedSubclass()).isNull();
+        }
+        String[][] subclassCases = {{"Beast Mastery", BEAST_MASTER}, {"Marksmanship", "Hunter"},
+                {"Survival", BEAST_MASTER}};
+        for (String[] c : subclassCases) {
+            LevelUpPreview p = service.preview(hunter(2, null, c[0])); // 2 -> 3: subclass due
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]).doesNotContain(DEMON_HUNTER);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        // A base ranger gets no recommendations.
+        assertThat(service.preview(ranger(1, null)).recommendedFightingStyles()).isEmpty();
+        assertThat(service.preview(ranger(2, null)).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void petSpecialization_replacesRovingAt6_onlyForBeastMastery() {
+        for (String subclass : List.of(BEAST_MASTER, "Hunter", "Fey Wanderer", "Gloom Stalker")) {
+            assertThat(names(service.preview(hunter(5, subclass, "Beast Mastery")).featuresGained()))
+                    .as(subclass).containsExactly("Pet Specialization");
+            PC r = hunter(5, subclass, "Beast Mastery");
+            service.applyLevelUp(r);
+            assertThat(r.getFeatures()).as(subclass)
+                    .contains("\"name\":\"Pet Specialization\"")
+                    .contains("Cunning").contains("Ferocity").contains("Tenacity")
+                    .doesNotContain("\"name\":\"Roving\"");
+        }
+        // Marksmanship and Survival hunters keep Roving, as does a base ranger and a Demon Hunter.
+        for (String spec : List.of("Marksmanship", "Survival")) {
+            assertThat(names(service.preview(hunter(5, BEAST_MASTER, spec)).featuresGained()))
+                    .as(spec).containsExactly("Roving");
+        }
+        assertThat(names(service.preview(ranger(5, BEAST_MASTER)).featuresGained())).containsExactly("Roving");
+        PC dh = demonHunter(5);
+        dh.setSpecialization("Havoc");
+        assertThat(names(service.preview(dh).featuresGained())).containsExactly("Roving");
+        // A respec into Beast Mastery on the same level-up applies it at once.
+        PC respec = hunter(5, BEAST_MASTER, "Survival");
+        service.applyLevelUp(respec, null, null, null, null, HpMode.AVERAGE, "Beast Mastery");
+        assertThat(respec.getFeatures()).contains("\"name\":\"Pet Specialization\"").doesNotContain("\"name\":\"Roving\"");
+    }
+
+    @Test
+    void petSpecialization_onlyAtLevel6_andOtherVariantsUnchanged() {
+        for (int level : List.of(1, 2, 4, 6, 8, 9, 12, 13, 16, 17, 19)) {
+            assertThat(names(service.preview(hunter(level, BEAST_MASTER, "Beast Mastery")).featuresGained()))
+                    .as("level %d", level)
+                    .containsExactlyElementsOf(names(service.preview(ranger(level, BEAST_MASTER)).featuresGained()));
+        }
+        assertThat(com.moo.charactermanagerservice.progression.ClassFeatures
+                .progression("ranger", BEAST_MASTER, "Beast Mastery"))
+                .filteredOn(e -> e.name().equals("Pet Specialization"))
+                .singleElement()
+                .satisfies(e -> {
+                    assertThat(e.level()).isEqualTo(6);
+                    assertThat(e.subclass()).isFalse();
+                });
+        List<String> marksmanship = com.moo.charactermanagerservice.progression.ClassFeatures
+                .progression("ranger", BEAST_MASTER, "Marksmanship").stream().map(e -> e.name()).toList();
+        assertThat(marksmanship).contains("Roving").doesNotContain("Pet Specialization");
+        // Unrestricted variant features still apply to every spec of their class.
+        for (String spec : SHAMAN_SPECS) {
+            assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                    .featuresAt("barbarian", PATH_OF_THE_ELEMENTS, spec, 3)))
+                    .containsExactly("Totems", "Raging Elements");
+        }
+        for (String spec : EVOKER_SPECS) {
+            assertThat(names(service.preview(evoker(2, spec)).featuresGained())).contains("Evoker Spells");
+        }
     }
 }

@@ -24,7 +24,8 @@ import java.util.Optional;
  *       {@code barbarian}, Elemental/Enhancement/Restoration), the WoW Priest (clazz
  *       {@code cleric}, Discipline/Holy/Shadow) and the WoW Evoker (clazz {@code sorcerer},
  *       Augmentation/Devastation/Preservation, which additionally REQUIRES the Draconic Sorcery
- *       subclass) —
+ *       subclass) and the WoW Hunter (clazz {@code ranger}, Beast Mastery/Marksmanship/Survival,
+ *       whose Beast Master companion may carry a {@code petFamily}) —
  *       whose {@code specialization} is drawn from the class's list. A druid or paladin with no
  *       specialization is a base-game one. A paladin with the Ebon Blade hero subclass is a Death
  *       Knight: the hero subclass's list wins, so it can't take "Holy" (nor a WoW paladin "Frost").</li>
@@ -71,6 +72,27 @@ final class HeroClassRules {
         }
         validateSpecialization(pc.getClazz(), subclass, pc.getSpecialization());
         validateRequiredSubclass(pc.getClazz(), subclass, pc.getSpecialization());
+        validatePetFamily(pc.getClazz(), subclass, pc.getSpecialization(), pc.getPetFamily());
+    }
+
+    /**
+     * A pet family may be null; a non-null one is allowed only on a WoW Hunter (ranger with a
+     * Beast Mastery/Marksmanship/Survival specialization — never a Demon Hunter) whose subclass is
+     * Beast Master, and must be exactly (case-sensitively) one of
+     * {@link ClassProgression#PET_FAMILIES}. Anything else is a 400.
+     */
+    static void validatePetFamily(String clazz, String subclass, String specialization, String petFamily) {
+        if (petFamily == null) return;
+        if (!ClassProgression.petFamilyAllowed(clazz, subclass, specialization)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A pet family can only be set on a World of Warcraft Hunter whose subclass is "
+                            + ClassProgression.BEAST_MASTER);
+        }
+        if (!ClassProgression.isPetFamily(petFamily)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "'" + petFamily + "' is not a valid pet family (expected one of "
+                            + String.join(", ", ClassProgression.PET_FAMILIES) + ")");
+        }
     }
 
     /**
