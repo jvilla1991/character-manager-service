@@ -21,7 +21,7 @@ import java.util.Set;
  * of Warcraft module's hero and WoW-only subclasses (some of which also replace generic
  * Paladin/Ranger features), plus — via {@link #featuresAt(String, String, String, int)} — the
  * features a World of Warcraft class variant swaps in or adds (the WoW Shaman's Totems, the WoW
- * Evoker's Evoker Spells).
+ * Evoker's Evoker Spells, a Beast Mastery hunter's Pet Specialization).
  * Level-1 features are excluded (granted at character creation), as are Ability Score
  * Improvements (handled by the ASI/feat choice). Descriptions are concise summaries — see the
  * 2024 Player's Handbook (or the relevant module) for full text.
@@ -545,13 +545,25 @@ public final class ClassFeatures {
     // it replaces: when that is a generic class feature at the level it is swapped in place (the WoW
     // Shaman's Totems for Primal Knowledge); otherwise the entry is ADDED among the class features
     // and a subclass feature of that name, if any, is dropped (the WoW Evoker's Evoker Spells for
-    // Draconic Sorcery's Draconic Spells). A null name is a pure addition.
+    // Draconic Sorcery's Draconic Spells). A null name is a pure addition. An entry may also be
+    // limited to some of the class's specializations (the WoW Hunter's Pet Specialization replaces
+    // Roving only for Beast Mastery); an unrestricted entry applies to every specialization.
 
     /**
      * One variant feature: at {@code level}, {@code gain} replaces the feature named
-     * {@code replaces} (generic or subclass), or is simply added when there is none.
+     * {@code replaces} (generic or subclass), or is simply added when there is none. {@code onlyFor}
+     * lists the specializations it applies to (exact names); empty means every WoW specialization of
+     * the class.
      */
-    private record VariantFeature(int level, String replaces, FeatureGain gain) {}
+    private record VariantFeature(int level, String replaces, FeatureGain gain, Set<String> onlyFor) {
+        VariantFeature(int level, String replaces, FeatureGain gain) {
+            this(level, replaces, gain, Set.of());
+        }
+
+        boolean appliesTo(String specialization) {
+            return onlyFor.isEmpty() || onlyFor.contains(specialization);
+        }
+    }
 
     /** class (lower-case) -> its WoW variant's features. */
     private static final Map<String, List<VariantFeature>> VARIANT_FEATURES = Map.of(
@@ -572,14 +584,26 @@ public final class ClassFeatures {
             "sorcerer", List.of(new VariantFeature(3, "Draconic Spells",
                     f("Evoker Spells", "Replaces Draconic Spells. You always have certain spells prepared once you reach "
                             + "the listed Sorcerer levels on the Evoker Spells table: every spell in the All column, plus "
-                            + "those in the column for your specialization.")))
+                            + "those in the column for your specialization."))),
+            // Marksmanship and Survival hunters keep Roving.
+            "ranger", List.of(new VariantFeature(6, "Roving",
+                    f("Pet Specialization", "Replaces Roving. While your Primal Companion beast is within 60 feet of "
+                            + "you, you gain a benefit based on its pet family's specialization. Cunning: you and your "
+                            + "beast gain a 10-foot bonus to your Speed, and once per Long Rest the beast can take its "
+                            + "action to cast Freedom of Movement, without components, on itself and on you if you are in "
+                            + "range. Ferocity: when your beast is Bloodied and hits with its Beast's Strike, you and it "
+                            + "each regain Hit Points equal to your Wisdom modifier, and once per Long Rest it can cast "
+                            + "Haste on itself and you. Tenacity: your Hit Point maximum increases by 6, plus 1 more each "
+                            + "time you gain a Ranger level, and your beast's Hit Point maximum increases by your Ranger "
+                            + "level; once per Long Rest it can cast Stoneskin on itself and you."),
+                    Set.of("Beast Mastery")))
     );
 
     /** The class's WoW variant features at a level — only when the specialization marks that variant. */
     private static List<VariantFeature> variantFeaturesAt(String clazz, String specialization, int level) {
         if (clazz == null || !ClassProgression.isClassSpecialization(clazz, specialization)) return List.of();
         return VARIANT_FEATURES.getOrDefault(clazz.trim().toLowerCase(), List.of()).stream()
-                .filter(v -> v.level() == level)
+                .filter(v -> v.level() == level && v.appliesTo(specialization))
                 .toList();
     }
 
