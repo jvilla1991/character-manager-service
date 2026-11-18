@@ -282,13 +282,13 @@ public class ShopService {
      * line. Atomic: inventory and coins change together on the pc row, under the
      * same pessimistic lock as {@link #purchase}.
      *
-     * <p>Sell price prefers the live catalog price (via the item's catalogKey) so
-     * a player can't inflate what they claim to have paid; items with no catalog
-     * match (ad-hoc/DM-granted items) fall back to the price snapshot already on
-     * the line ({@code unitCostCp}). Standard shops only buy back items in their
-     * open category (mirrors what they sell); curated shops buy anything, since
-     * they have no category of their own. Dropped items and equipped items are
-     * otherwise ordinary — dropped items can't be sold (use Discard instead);
+     * <p>Every held item can be sold, at any shop, whatever its category. The
+     * price is resolved in this order: the live catalog price via the item's
+     * catalogKey (so a player can't inflate what they claim to have paid); the
+     * price snapshot on the line ({@code unitCostCp}, ad-hoc/DM-granted items);
+     * a catalog entry with the same name (starting equipment carries a name and
+     * nothing else). An item none of those can price still sells — for nothing.
+     * Dropped items can't be sold (they are no longer held — use Discard);
      * equipped items sell fine and are simply removed, no explicit unequip step
      * needed.
      */
@@ -320,10 +320,6 @@ public class ShopService {
         if ("dropped".equals(entry.get("status"))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Dropped items can't be sold");
         }
-        if (shop.getShopId() == null
-                && !InventoryEntries.categoryLabel(shop.getCategory()).equals(entry.get("category"))) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "This shop doesn't buy that kind of item");
-        }
 
         Long baseUnitCp = null;
         Object catalogKey = entry.get("catalogKey");
@@ -333,8 +329,12 @@ public class ShopService {
         if (baseUnitCp == null && entry.get("unitCostCp") instanceof Number n) {
             baseUnitCp = n.longValue();
         }
+        if (baseUnitCp == null && entry.get("name") instanceof String name && !name.isBlank()) {
+            baseUnitCp = srdItemRepository.findFirstByNameIgnoreCase(name.trim())
+                    .map(SrdItem::getCostCp).orElse(null);
+        }
         if (baseUnitCp == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Item has no resolvable price and can't be sold");
+            baseUnitCp = 0L; // nothing prices it — the shop takes it for nothing
         }
 
         int stackQty = entry.get("qty") instanceof Number n ? n.intValue() : 1;
@@ -361,7 +361,8 @@ public class ShopService {
         pcRepository.save(pc);
 
         activityLogService.log(pcId, PcActivityType.SALE,
-                "Sold " + itemName + (sellQty > 1 ? " ×" + sellQty : "") + " for " + CoinPurse.format(totalGainCp), userId);
+                "Sold " + itemName + (sellQty > 1 ? " ×" + sellQty : "")
+                        + (totalGainCp > 0 ? " for " + CoinPurse.format(totalGainCp) : " for nothing"), userId);
 
         return new SellResult(newCoins, inventory, totalGainCp);
     }

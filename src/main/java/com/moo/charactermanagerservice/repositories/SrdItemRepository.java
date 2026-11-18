@@ -15,6 +15,12 @@ public interface SrdItemRepository extends JpaRepository<SrdItem, Long> {
     /** Resolve a single catalog entry by its stable slug (used at purchase). */
     Optional<SrdItem> findByItemKey(String itemKey);
 
+    /**
+     * Resolve a catalog entry by its display name, ignoring case — how a sale
+     * prices an owned item that carries no catalog key (starting equipment).
+     */
+    Optional<SrdItem> findFirstByNameIgnoreCase(String name);
+
     /** Batch-resolve catalog entries by slug (used to render curated shop lines). */
     List<SrdItem> findByItemKeyIn(Collection<String> itemKeys);
 }

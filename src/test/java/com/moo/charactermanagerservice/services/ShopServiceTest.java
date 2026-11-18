@@ -480,16 +480,33 @@ class ShopServiceTest {
     }
 
     @Test
-    void sell_throws400_whenStandardShopCategoryMismatches() {
-        stubActiveShopWithAttendee(); // shop category is WEAPON
+    void sell_buysAnyCategory_atAStandardShop() {
+        stubActiveShopWithAttendee(); // shop category is WEAPON; the item is armor
         PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
                 "[{\"catalogKey\":\"shield\",\"category\":\"armor\",\"qty\":1,\"unitCostCp\":1000}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        verify(pcRepository, never()).save(any());
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(500L);
+        assertThat(result.inventory()).isEmpty();
+    }
+
+    @Test
+    void sell_pricesStartingEquipment_byItsCatalogName() {
+        stubActiveShopWithAttendee();
+        // A starting-kit line: a name and nothing else — no key, no price paid.
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"name\":\"longsword\",\"category\":\"weapon\",\"qty\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(srdItemRepository.findFirstByNameIgnoreCase("longsword")).thenReturn(Optional.of(longsword()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(750L); // half the 1500cp catalog price
+        assertThat(result.inventory()).isEmpty();
     }
 
     @Test
@@ -513,15 +530,20 @@ class ShopServiceTest {
     }
 
     @Test
-    void sell_throws400_whenNoResolvablePrice() {
+    void sell_takesAnUnpricedItemForNothing() {
         stubActiveShopWithAttendee();
-        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
-                "[{\"name\":\"Mystery Note\",\"category\":\"weapon\",\"qty\":1}]");
+        PC pc = pcOwnedBy(playerId, "{\"gp\":3}",
+                "[{\"name\":\"Mystery Note\",\"category\":\"gear\",\"qty\":1}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(srdItemRepository.findFirstByNameIgnoreCase("Mystery Note")).thenReturn(Optional.empty());
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isZero();
+        assertThat(result.coins()).containsEntry("gp", 3);
+        assertThat(result.inventory()).isEmpty();
+        verify(activityLogService).log(7L, PcActivityType.SALE, "Sold Mystery Note for nothing", playerId);
     }
 
     @Test
