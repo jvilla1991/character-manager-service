@@ -2,7 +2,6 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.AddLootItemRequest;
-import com.moo.charactermanagerservice.dto.ClaimResult;
 import com.moo.charactermanagerservice.dto.LootView;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.CuratedLoot;
@@ -10,6 +9,9 @@ import com.moo.charactermanagerservice.models.CuratedLootItem;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.SessionLoot;
+import com.moo.charactermanagerservice.models.SessionLootAllocation;
+import com.moo.charactermanagerservice.models.SessionLootBallot;
+import com.moo.charactermanagerservice.models.SessionLootResult;
 import com.moo.charactermanagerservice.models.SessionLootItem;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionStatus;
@@ -18,7 +20,10 @@ import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.CuratedLootItemRepository;
 import com.moo.charactermanagerservice.repositories.CuratedLootRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootAllocationRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
 import com.moo.charactermanagerservice.repositories.SrdItemRepository;
@@ -31,6 +36,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,8 +50,10 @@ import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for the post-combat loot pool: DM lifecycle (open/seed/drop/edit),
- * per-caller visibility, and the first-come-first-served claim paths that write
- * through to the pc row. Pure Mockito — mirrors {@link ShopServiceTest}.
+ * per-caller visibility, and the party split — moving shares, locking it for a
+ * vote, and every way a vote resolves (PvP cancel, majority distribution into
+ * the pc rows, no majority, DM override). Pure Mockito — mirrors
+ * {@link ShopServiceTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class LootServiceTest {
@@ -52,6 +61,9 @@ class LootServiceTest {
     @Mock private CombatSessionRepository sessionRepository;
     @Mock private SessionLootRepository lootRepository;
     @Mock private SessionLootItemRepository lootItemRepository;
+    @Mock private SessionLootAllocationRepository allocationRepository;
+    @Mock private SessionLootBallotRepository ballotRepository;
+    @Mock private SessionLootResultRepository resultRepository;
     @Mock private SessionParticipantRepository participantRepository;
     @Mock private CuratedLootRepository curatedLootRepository;
     @Mock private CuratedLootItemRepository curatedLootItemRepository;
@@ -70,7 +82,7 @@ class LootServiceTest {
     @BeforeEach
     void setUp() {
         lootService = new LootService(sessionRepository, lootRepository, lootItemRepository,
-                participantRepository, curatedLootRepository, curatedLootItemRepository,
+                allocationRepository, ballotRepository, resultRepository, participantRepository, curatedLootRepository, curatedLootItemRepository,
                 srdItemRepository, pcRepository, activityLogService, new ObjectMapper());
 
         dmId = UUID.randomUUID();
@@ -88,6 +100,7 @@ class LootServiceTest {
         pool.setSessionId(1L);
         pool.setName("Goblin Ambush");
         pool.setDropped(true);
+        pool.setSplitPhase("SPLITTING");
         pool.setCoinCpTotal(12550L);
         pool.setCoinCpRemaining(12550L);
     }
@@ -155,6 +168,7 @@ class LootServiceTest {
         lootService.openLoot(1L, null, "Bandit spoils", dmId);
 
         verify(lootItemRepository).deleteBySessionLootId(19L);
+        verify(allocationRepository).deleteBySessionLootId(19L);
         verify(lootRepository).delete(existing);
     }
 
@@ -209,6 +223,7 @@ class LootServiceTest {
         LootView view = lootService.dropLoot(1L, dmId);
 
         assertThat(view.dropped()).isTrue();
+        assertThat(view.phase()).isEqualTo("SPLITTING"); // the party starts dividing it
         verify(lootRepository).save(pool);
         verify(sessionRepository).save(session);
     }
@@ -294,250 +309,402 @@ class LootServiceTest {
     }
 
     @Test
-    void updateItem_qtyChange_shiftsRemainingByDelta_clampedAtZero() {
+    void updateItem_qtyBelowWhatWasShared_returnsThatLinesSharesToThePile() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
         SessionLootItem line = poolLine(30L, "longsword", null, 3);
-        line.setQtyRemaining(1); // 2 already claimed
         when(lootItemRepository.findById(30L)).thenReturn(Optional.of(line));
+        when(allocationRepository.findBySessionLootIdOrderByIdAsc(20L))
+                .thenReturn(List.of(itemShare(101L, 30L, 2)));
         when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
 
-        lootService.updateItem(1L, 30L, 5, null, null, dmId); // +2
+        lootService.updateItem(1L, 30L, 1, null, null, dmId);
 
-        assertThat(line.getQty()).isEqualTo(5);
-        assertThat(line.getQtyRemaining()).isEqualTo(3);
-
-        lootService.updateItem(1L, 30L, 1, null, null, dmId); // -4, remaining clamps at 0
-        assertThat(line.getQtyRemaining()).isEqualTo(0);
+        assertThat(line.getQty()).isEqualTo(1);
+        verify(allocationRepository).deleteBySessionLootIdAndLootItemId(20L, 30L);
     }
 
     @Test
-    void setCoins_shiftsRemainingByDelta() {
+    void setCoins_belowWhatWasShared_returnsEveryCoinShareToThePile() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        pool.setCoinCpTotal(1000L);
-        pool.setCoinCpRemaining(400L); // 600 already claimed
+        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
+        when(allocationRepository.findBySessionLootIdOrderByIdAsc(20L))
+                .thenReturn(List.of(coinShare(101L, 6000L), coinShare(102L, 6000L)));
+        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
+
+        lootService.setCoins(1L, 100.0, dmId); // 12 000 cp shared > 10 000 cp
+
+        assertThat(pool.getCoinCpTotal()).isEqualTo(10000L);
+        verify(allocationRepository).deleteBySessionLootIdAndLootItemIdIsNull(20L);
+    }
+
+    @Test
+    void addItem_whileVoting_reopensTheSplit_andDropsTheBallots() {
+        pool.setSplitPhase("VOTING");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
         when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
 
-        lootService.setCoins(1L, 15.0, dmId); // total 1000 → 1500
+        lootService.addItem(1L, addRequest(null, "Silver Idol"), dmId);
 
-        assertThat(pool.getCoinCpTotal()).isEqualTo(1500L);
-        assertThat(pool.getCoinCpRemaining()).isEqualTo(900L);
+        assertThat(pool.getSplitPhase()).isEqualTo("SPLITTING");
+        verify(ballotRepository).deleteBySessionLootId(20L);
     }
 
-    // --- claimItem ---
+    // --- split: moving shares ---
 
     @Test
-    void claimItem_decrementsRemaining_appendsSnapshot_andLogs() {
-        stubClaimableSessionWithSeatedPc();
-        SessionLootItem line = poolLine(30L, "longsword", null, 2);
-        when(lootItemRepository.findByIdForUpdate(30L)).thenReturn(Optional.of(line));
-        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
-        PC pc = pcOwnedBy(playerId, "{\"gp\":5}", null);
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
-        when(srdItemRepository.findByItemKeyIn(anyList())).thenReturn(List.of(longsword()));
+    void assignItem_pileToCharacter_createsAShare_andBumps() {
+        stubSplit(List.of(), poolLine(30L, "longsword", null, 2));
 
-        ClaimResult result = lootService.claimItem(1L, 7L, 30L, 1, playerId);
+        lootService.assignItem(1L, 30L, null, 102L, 1, playerId);
 
-        assertThat(line.getQtyRemaining()).isEqualTo(1);
-        assertThat(result.inventory()).hasSize(1);
-        assertThat(result.inventory().get(0))
-                .containsEntry("catalogKey", "longsword")
-                .containsEntry("category", "weapon")
-                .containsEntry("qty", 1)
-                .doesNotContainKey("unitCostCp"); // nothing was paid
-        assertThat(result.coins()).containsEntry("gp", 5); // purse untouched
-        assertThat(result.loot().items().get(0).qtyRemaining()).isEqualTo(1);
-        verify(activityLogService).log(7L, PcActivityType.LOOT, "Looted Longsword", playerId);
-        verify(sessionRepository).save(session); // claims bump — everyone re-fetches the pool
-    }
-
-    @Test
-    void claimItem_legacyCustomLine_defaultsToGearEntryWithNotes() {
-        // A pre-V35 pool line has all-null attributes: the claim must still land
-        // safely — category defaults to 'gear', bulk to the unknown-weight band.
-        stubClaimableSessionWithSeatedPc();
-        SessionLootItem line = poolLine(31L, null, "Cloak of Elvenkind", 1);
-        line.setCustomNotes("Advantage on Stealth.");
-        when(lootItemRepository.findByIdForUpdate(31L)).thenReturn(Optional.of(line));
-        PC pc = pcOwnedBy(playerId, null, null);
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
-
-        ClaimResult result = lootService.claimItem(1L, 7L, 31L, 1, playerId);
-
-        assertThat(result.inventory().get(0))
-                .containsEntry("name", "Cloak of Elvenkind")
-                .containsEntry("category", "gear")
-                .containsEntry("bulk", BigDecimal.ONE) // unknown weight → 1, "a small object"
-                .containsEntry("notes", "Advantage on Stealth.")
-                .doesNotContainKey("catalogKey")
-                .doesNotContainKey("unitCostCp")
-                .doesNotContainKey("weight")
-                .doesNotContainKey("damage")
-                .doesNotContainKey("armorClass");
-        verify(activityLogService).log(7L, PcActivityType.LOOT, "Looted Cloak of Elvenkind", playerId);
-    }
-
-    @Test
-    void claimItem_customLineWithAttributes_stampsThemLikeADmGrant() {
-        stubClaimableSessionWithSeatedPc();
-        SessionLootItem line = poolLine(31L, null, "Flametongue", 1);
-        line.setCustomNotes("Ignites on command.");
-        line.setCategory("weapon");
-        line.setUnitCostCp(500000L);
-        line.setWeight(new BigDecimal("3"));
-        line.setDamage("1d8 slashing + 2d6 fire");
-        when(lootItemRepository.findByIdForUpdate(31L)).thenReturn(Optional.of(line));
-        PC pc = pcOwnedBy(playerId, null, null);
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
-
-        ClaimResult result = lootService.claimItem(1L, 7L, 31L, 1, playerId);
-
-        assertThat(result.inventory().get(0))
-                .containsEntry("name", "Flametongue")
-                .containsEntry("category", "weapon")
-                .containsEntry("unitCostCp", 500000L)
-                .containsEntry("weight", new BigDecimal("3"))
-                // 3 lb → the ≤5 lb band, same bulk a DM grant would stamp client-side.
-                .containsEntry("bulk", new BigDecimal("2"))
-                .containsEntry("damage", "1d8 slashing + 2d6 fire")
-                .containsEntry("notes", "Ignites on command.")
-                .doesNotContainKey("catalogKey")
-                .doesNotContainKey("armorClass");
-    }
-
-    @Test
-    void claimItem_customArmorLine_carriesArmorClass() {
-        stubClaimableSessionWithSeatedPc();
-        SessionLootItem line = poolLine(31L, null, "Mithral Plate", 1);
-        line.setCategory("armor");
-        line.setArmorClass("18");
-        when(lootItemRepository.findByIdForUpdate(31L)).thenReturn(Optional.of(line));
-        PC pc = pcOwnedBy(playerId, null, null);
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(line));
-
-        ClaimResult result = lootService.claimItem(1L, 7L, 31L, 1, playerId);
-
-        assertThat(result.inventory().get(0))
-                .containsEntry("category", "armor")
-                .containsEntry("armorClass", "18")
-                .doesNotContainKey("damage");
-    }
-
-    @Test
-    void claimItem_throws409_whenNotEnoughLeft() {
-        stubClaimableSessionWithSeatedPc();
-        SessionLootItem line = poolLine(30L, "longsword", null, 2);
-        line.setQtyRemaining(0);
-        when(lootItemRepository.findByIdForUpdate(30L)).thenReturn(Optional.of(line));
-
-        assertThatThrownBy(() -> lootService.claimItem(1L, 7L, 30L, 1, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
-        verify(pcRepository, never()).save(any());
-    }
-
-    @Test
-    void claimItem_throws404_whenPoolNotDropped() {
-        pool.setDropped(false);
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
-
-        assertThatThrownBy(() -> lootService.claimItem(1L, 7L, 30L, 1, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
-    }
-
-    @Test
-    void claimItem_throws409_whenSessionEnded() {
-        session.setStatus(SessionStatus.ENDED);
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-
-        assertThatThrownBy(() -> lootService.claimItem(1L, 7L, 30L, 1, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
-    }
-
-    @Test
-    void claimItem_throws403_whenPcNotSeated() {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> lootService.claimItem(1L, 7L, 30L, 1, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
-    }
-
-    @Test
-    void claimItem_throws403_whenClaimingAnotherUsersPc() {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L))
-                .thenReturn(Optional.of(participant(7L, strangerId)));
-
-        assertThatThrownBy(() -> lootService.claimItem(1L, 7L, 30L, 1, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
-    }
-
-    // --- claimCoins ---
-
-    @Test
-    void claimCoins_creditsPurse_andDecrementsPile() {
-        stubClaimableSessionWithSeatedPc();
-        when(lootRepository.findByIdForUpdate(20L)).thenReturn(Optional.of(pool));
-        PC pc = pcOwnedBy(playerId, "{\"gp\":1}", null);
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
-
-        ClaimResult result = lootService.claimCoins(1L, 7L, Map.of("gp", 25), playerId);
-
-        assertThat(pool.getCoinCpRemaining()).isEqualTo(12550L - 2500L);
-        // 1 gp + 25 gp = 2600 cp, re-minted greedily → 2 pp 6 gp
-        assertThat(result.coins()).containsEntry("pp", 2).containsEntry("gp", 6);
-        assertThat(result.loot().coinCpRemaining()).isEqualTo(10050L);
-        // format() renders greedily, like purchase logs: 2500 cp → "2 pp 5 gp"
-        verify(activityLogService).log(7L, PcActivityType.LOOT, "Looted 2 pp 5 gp", playerId);
+        ArgumentCaptor<SessionLootAllocation> captor = ArgumentCaptor.forClass(SessionLootAllocation.class);
+        verify(allocationRepository).save(captor.capture());
+        assertThat(captor.getValue().getParticipantId()).isEqualTo(102L); // any seat — not just your own
+        assertThat(captor.getValue().getLootItemId()).isEqualTo(30L);
+        assertThat(captor.getValue().getQty()).isEqualTo(1);
         verify(sessionRepository).save(session);
     }
 
     @Test
-    void claimCoins_throws409_whenPileTooSmall() {
-        stubClaimableSessionWithSeatedPc();
-        pool.setCoinCpRemaining(100L);
-        when(lootRepository.findByIdForUpdate(20L)).thenReturn(Optional.of(pool));
+    void assignItem_characterToCharacter_movesTheShare() {
+        SessionLootAllocation held = itemShare(101L, 30L, 2);
+        stubSplit(List.of(held), poolLine(30L, "longsword", null, 2));
 
-        assertThatThrownBy(() -> lootService.claimCoins(1L, 7L, Map.of("gp", 25), playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
-        verify(pcRepository, never()).save(any());
+        lootService.assignItem(1L, 30L, 101L, 103L, 1, playerId);
+
+        assertThat(held.getQty()).isEqualTo(1);
+        ArgumentCaptor<SessionLootAllocation> captor = ArgumentCaptor.forClass(SessionLootAllocation.class);
+        verify(allocationRepository, times(2)).save(captor.capture());
+        SessionLootAllocation created = captor.getAllValues().get(1);
+        assertThat(created).isNotSameAs(held);
+        assertThat(created.getParticipantId()).isEqualTo(103L);
+        assertThat(created.getQty()).isEqualTo(1);
     }
 
     @Test
-    void claimCoins_throws400_whenAmountNotPositive() {
-        assertThatThrownBy(() -> lootService.claimCoins(1L, 7L, Map.of(), playerId))
+    void assignItem_backToPile_deletesAnEmptiedShare() {
+        SessionLootAllocation held = itemShare(101L, 30L, 1);
+        stubSplit(List.of(held), poolLine(30L, "longsword", null, 1));
+
+        lootService.assignItem(1L, 30L, 101L, null, 1, playerId);
+
+        verify(allocationRepository).delete(held);
+    }
+
+    @Test
+    void assignItem_throws409_whenThePileIsShort() {
+        stubSplit(List.of(itemShare(101L, 30L, 2)), poolLine(30L, "longsword", null, 2));
+
+        assertThatThrownBy(() -> lootService.assignItem(1L, 30L, null, 102L, 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(allocationRepository, never()).save(any());
+    }
+
+    @Test
+    void assignItem_throws409_whileThePartyIsVoting() {
+        pool.setSplitPhase("VOTING");
+        stubSplit(List.of(), poolLine(30L, "longsword", null, 2));
+
+        assertThatThrownBy(() -> lootService.assignItem(1L, 30L, null, 102L, 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void assignItem_throws403_forSomeoneWithoutASeat() {
+        stubSplit(List.of(), poolLine(30L, "longsword", null, 2));
+
+        assertThatThrownBy(() -> lootService.assignItem(1L, 30L, null, 102L, 1, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void assignItem_throws400_whenTheTargetIsNotSeated() {
+        stubSplit(List.of(), poolLine(30L, "longsword", null, 2));
+
+        assertThatThrownBy(() -> lootService.assignItem(1L, 30L, null, 999L, 1, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
+    @Test
+    void setCoinShare_throws409_whenItWouldExceedThePile() {
+        stubSplit(List.of(coinShare(102L, 10000L)));
+
+        assertThatThrownBy(() -> lootService.setCoinShare(1L, 101L, 3000L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void splitCoinsEvenly_replacesShares_leftoverCopperToTheFirstSeats() {
+        pool.setCoinCpTotal(1001L);
+        stubSplit(List.of());
+
+        lootService.splitCoinsEvenly(1L, playerId);
+
+        verify(allocationRepository).deleteBySessionLootIdAndLootItemIdIsNull(20L);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<SessionLootAllocation>> captor = ArgumentCaptor.forClass(List.class);
+        verify(allocationRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).extracting(SessionLootAllocation::getCoinCp)
+                .containsExactly(334L, 334L, 333L);
+    }
+
+    // --- split: locking it for a vote ---
+
+    @Test
+    void proposeSplit_throws409_whileAnythingIsStillInThePile() {
+        stubSplit(List.of(itemShare(101L, 30L, 1), coinShare(101L, 12550L)),
+                poolLine(30L, "longsword", null, 2));
+
+        assertThatThrownBy(() -> lootService.proposeSplit(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(ballotRepository, never()).saveAll(anyList());
+    }
+
+    @Test
+    void proposeSplit_locksIt_andGivesEverySeatedCharacterABallot() {
+        stubSplit(List.of(itemShare(101L, 30L, 2), coinShare(102L, 12550L)),
+                poolLine(30L, "longsword", null, 2));
+
+        lootService.proposeSplit(1L, playerId);
+
+        assertThat(pool.getSplitPhase()).isEqualTo("VOTING");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<SessionLootBallot>> captor = ArgumentCaptor.forClass(List.class);
+        verify(ballotRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).extracting(SessionLootBallot::getDisplayName)
+                .containsExactly("Thessaly", "Brakka", "Quill");
+        assertThat(captor.getValue()).allMatch(b -> b.getVote() == null);
+    }
+
+    // --- split: the vote ---
+
+    @Test
+    void castVote_anXWithPvp_cancelsTheLootBackToADraft_atOnce() {
+        pool.setSplitPhase("VOTING");
+        stubVote(ballots(null, null, null), List.of());
+
+        LootView view = lootService.castVote(1L, false, true, playerId); // Thessaly draws steel
+
+        assertThat(view).isNull(); // the pool is hidden from players again
+        assertThat(pool.isDropped()).isFalse();
+        assertThat(pool.getSplitPhase()).isNull();
+        verify(allocationRepository).deleteBySessionLootId(20L);
+        verify(pcRepository, never()).save(any());
+        SessionLootResult result = savedResult();
+        assertThat(result.getOutcome()).isEqualTo("PVP");
+        assertThat(result.getPvpCallers()).isEqualTo("Thessaly");
+    }
+
+    @Test
+    void castVote_waits_whileAnyBallotIsUnsettled() {
+        pool.setSplitPhase("VOTING");
+        stubVote(ballots(null, true, true), List.of());
+
+        LootView view = lootService.castVote(1L, false, null, playerId); // ✗, still deciding on PvP
+
+        assertThat(view).isNotNull();
+        assertThat(view.phase()).isEqualTo("VOTING");
+        verify(resultRepository, never()).save(any());
+    }
+
+    @Test
+    void castVote_majorityAgree_writesEveryShareIntoTheSheets_andDeletesThePool() {
+        pool.setSplitPhase("VOTING");
+        pool.setCoinCpTotal(6000L);
+        SessionLootItem sword = poolLine(30L, "longsword", null, 1);
+        SessionLootItem potions = poolLine(31L, null, "Potion of Healing", 2);
+        potions.setCategory("consumable");
+        stubVote(ballots(null, false, true), List.of(
+                itemShare(101L, 30L, 1), itemShare(102L, 31L, 2),
+                coinShare(101L, 3000L), coinShare(102L, 3000L)), sword, potions);
+        when(srdItemRepository.findByItemKeyIn(anyList())).thenReturn(List.of(longsword()));
+        // Brakka objected but declined PvP; Quill agreed — Thessaly's ✓ makes 2 of 3.
+        ballotsByName.get("Brakka").setPvp(false);
+        PC thessaly = pc(7L, "{\"gp\":1}");
+        PC brakka = pc(8L, null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(thessaly));
+        when(pcRepository.findByIdForUpdate(8L)).thenReturn(Optional.of(brakka));
+
+        LootView view = lootService.castVote(1L, true, null, playerId);
+
+        assertThat(view).isNull(); // distributed — the pool is gone
+        verify(lootRepository).delete(pool);
+        assertThat(thessaly.getInventory()).contains("longsword");
+        assertThat(thessaly.getCoins()).contains("\"pp\":3").contains("\"gp\":1"); // 1 gp + 30 gp
+        assertThat(brakka.getInventory()).contains("Potion of Healing").contains("\"qty\":2");
+        verify(activityLogService).log(7L, PcActivityType.LOOT,
+                "Received from the party split: Longsword, 3 pp", playerId);
+        verify(activityLogService).log(8L, PcActivityType.LOOT,
+                "Received from the party split: Potion of Healing ×2, 3 pp", playerId);
+        SessionLootResult result = savedResult();
+        assertThat(result.getOutcome()).isEqualTo("APPROVED");
+        assertThat(result.getAgreeCount()).isEqualTo(2);
+        assertThat(result.getObjectCount()).isEqualTo(1);
+    }
+
+    @Test
+    void castVote_noMajority_reopensTheSplit_keepingEveryShare() {
+        pool.setSplitPhase("VOTING");
+        stubVote(ballots(null, false, false), List.of());
+        ballotsByName.get("Brakka").setPvp(false);
+        ballotsByName.get("Quill").setPvp(false);
+
+        LootView view = lootService.castVote(1L, true, null, playerId); // 1 ✓ of 3
+
+        assertThat(view).isNotNull();
+        assertThat(pool.getSplitPhase()).isEqualTo("SPLITTING");
+        assertThat(pool.isDropped()).isTrue();
+        verify(ballotRepository).deleteBySessionLootId(20L);
+        verify(allocationRepository, never()).deleteBySessionLootId(any());
+        assertThat(savedResult().getOutcome()).isEqualTo("NO_MAJORITY");
+    }
+
+    @Test
+    void castVote_throws403_forACallerWithoutABallot() {
+        pool.setSplitPhase("VOTING");
+        stubVote(ballots(null, null, null), List.of());
+
+        assertThatThrownBy(() -> lootService.castVote(1L, true, null, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void castVote_throws409_whenNoVoteIsOpen() {
+        stubVote(ballots(null, null, null), List.of());
+
+        assertThatThrownBy(() -> lootService.castVote(1L, true, null, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    // --- DM override ---
+
+    @Test
+    void overrideSplit_cancel_takesTheLootBackAsADraft() {
+        pool.setSplitPhase("VOTING");
+        stubVote(ballots(true, null, null), List.of());
+
+        lootService.overrideSplit(1L, "CANCEL", dmId);
+
+        assertThat(pool.isDropped()).isFalse();
+        assertThat(savedResult().getOutcome()).isEqualTo("DM_CANCELLED");
+    }
+
+    @Test
+    void overrideSplit_approve_throws409_whileThePileIsNotEmpty() {
+        stubVote(ballots(null, null, null), List.of(), poolLine(30L, "longsword", null, 1));
+
+        assertThatThrownBy(() -> lootService.overrideSplit(1L, "APPROVE", dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void overrideSplit_throws403_forAPlayer() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> lootService.overrideSplit(1L, "APPROVE", playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
     // --- helpers ---
 
-    private void stubClaimableSessionWithSeatedPc() {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
-        when(participantRepository.findBySessionIdAndPcId(1L, 7L))
-                .thenReturn(Optional.of(participant(7L, playerId)));
+    private final Map<String, SessionLootBallot> ballotsByName = new HashMap<>();
+
+    /** Three seated characters: Thessaly (the caller, pc 7), Brakka (pc 8), Quill (pc 9). */
+    private List<SessionParticipant> table() {
+        return List.of(seat(101L, 7L, playerId, "Thessaly"),
+                seat(102L, 8L, UUID.randomUUID(), "Brakka"),
+                seat(103L, 9L, UUID.randomUUID(), "Quill"));
     }
+
+    /** A dropped pool mid-split, with these shares and lines. Lenient: not every test reads all of it. */
+    private void stubSplit(List<SessionLootAllocation> shares, SessionLootItem... lines) {
+        lenient().when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        lenient().when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
+        lenient().when(lootRepository.findByIdForUpdate(20L)).thenReturn(Optional.of(pool));
+        List<SessionParticipant> seats = table();
+        lenient().when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(seats);
+        lenient().when(allocationRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(shares);
+        lenient().when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of(lines));
+        for (SessionLootItem line : lines) {
+            lenient().when(lootItemRepository.findById(line.getId())).thenReturn(Optional.of(line));
+        }
+    }
+
+    private void stubVote(List<SessionLootBallot> ballots, List<SessionLootAllocation> shares,
+                          SessionLootItem... lines) {
+        stubSplit(shares, lines);
+        lenient().when(ballotRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(ballots);
+        lenient().when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    /** Ballots for Thessaly, Brakka and Quill, in that order. */
+    private List<SessionLootBallot> ballots(Boolean thessaly, Boolean brakka, Boolean quill) {
+        List<SessionLootBallot> list = new ArrayList<>();
+        String[] names = {"Thessaly", "Brakka", "Quill"};
+        Boolean[] votes = {thessaly, brakka, quill};
+        for (int i = 0; i < 3; i++) {
+            SessionLootBallot b = new SessionLootBallot();
+            b.setSessionLootId(20L);
+            b.setParticipantId(101L + i);
+            b.setDisplayName(names[i]);
+            b.setVote(votes[i]);
+            list.add(b);
+            ballotsByName.put(names[i], b);
+        }
+        return list;
+    }
+
+    private SessionLootResult savedResult() {
+        ArgumentCaptor<SessionLootResult> captor = ArgumentCaptor.forClass(SessionLootResult.class);
+        verify(resultRepository).save(captor.capture());
+        return captor.getValue();
+    }
+
+    private static SessionLootAllocation itemShare(Long participantId, Long lootItemId, int qty) {
+        SessionLootAllocation a = new SessionLootAllocation();
+        a.setSessionLootId(20L);
+        a.setParticipantId(participantId);
+        a.setLootItemId(lootItemId);
+        a.setQty(qty);
+        return a;
+    }
+
+    private static SessionLootAllocation coinShare(Long participantId, long coinCp) {
+        SessionLootAllocation a = new SessionLootAllocation();
+        a.setSessionLootId(20L);
+        a.setParticipantId(participantId);
+        a.setCoinCp(coinCp);
+        return a;
+    }
+
+    private static SessionParticipant seat(Long id, Long pcId, UUID owner, String name) {
+        SessionParticipant p = new SessionParticipant();
+        p.setId(id);
+        p.setPcId(pcId);
+        p.setOwnerUserId(owner);
+        p.setDisplayName(name);
+        return p;
+    }
+
+    private static PC pc(Long id, String coinsJson) {
+        PC pc = new PC();
+        pc.setId(id);
+        pc.setCoins(coinsJson);
+        return pc;
+    }
+
 
     private static int status(Throwable e) {
         return ((ResponseStatusException) e).getStatusCode().value();
@@ -595,14 +762,5 @@ class LootServiceTest {
         p.setPcId(pcId);
         p.setOwnerUserId(owner);
         return p;
-    }
-
-    private static PC pcOwnedBy(UUID owner, String coinsJson, String inventoryJson) {
-        PC pc = new PC();
-        pc.setId(7L);
-        pc.setUserId(owner);
-        pc.setCoins(coinsJson);
-        pc.setInventory(inventoryJson);
-        return pc;
     }
 }

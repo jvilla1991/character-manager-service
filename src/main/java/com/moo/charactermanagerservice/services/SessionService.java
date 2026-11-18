@@ -7,6 +7,7 @@ import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
+import com.moo.charactermanagerservice.dto.LootResultView;
 import com.moo.charactermanagerservice.dto.RestVoteView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -35,6 +36,7 @@ import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
 import com.moo.charactermanagerservice.repositories.SessionRollRepository;
@@ -104,6 +106,7 @@ public class SessionService {
     private final SessionRollRepository sessionRollRepository;
     private final SessionRestVoteRepository restVoteRepository;
     private final SessionRestVoteBallotRepository restVoteBallotRepository;
+    private final SessionLootResultRepository lootResultRepository;
     private final PcJsonColumns json;
 
     /**
@@ -131,6 +134,7 @@ public class SessionService {
                           SessionRollRepository sessionRollRepository,
                           SessionRestVoteRepository restVoteRepository,
                           SessionRestVoteBallotRepository restVoteBallotRepository,
+                          SessionLootResultRepository lootResultRepository,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -148,6 +152,7 @@ public class SessionService {
         this.sessionRollRepository = sessionRollRepository;
         this.restVoteRepository = restVoteRepository;
         this.restVoteBallotRepository = restVoteBallotRepository;
+        this.lootResultRepository = lootResultRepository;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -1684,7 +1689,8 @@ public class SessionService {
      * (the ON DELETE CASCADE backstop only fires on campaign deletion).
      */
     private CombatSession endSessionInternal(CombatSession session) {
-        // Unclaimed loot is discarded — the pool never outlives its session.
+        // Unsplit loot is discarded — the pool never outlives its session
+        // (its shares and ballots cascade in the DB).
         lootRepository.findBySessionId(session.getId()).ifPresent(pool -> {
             lootItemRepository.deleteBySessionLootId(pool.getId());
             lootRepository.delete(pool);
@@ -1697,6 +1703,8 @@ public class SessionService {
         sessionRollRepository.deleteBySessionId(session.getId());
         // Rest-vote rows are ephemeral like the roll log; ballots cascade in the DB.
         restVoteRepository.deleteBySessionId(session.getId());
+        // So is the last loot-split outcome.
+        lootResultRepository.deleteBySessionId(session.getId());
         return saved;
     }
 
@@ -1892,8 +1900,8 @@ public class SessionService {
         // Loot signal, caller-scoped like the shop's: "DRAFT" only for the DM
         // (players never learn an undropped pool exists), "DROPPED" for the DM
         // and for seated players, null otherwise. Pool contents are fetched
-        // separately from /loot, re-keyed on every version change (claims and
-        // DM edits mutate the pool under a stable status).
+        // separately from /loot, re-keyed on every version change (split edits,
+        // votes and DM edits mutate the pool under a stable status).
         SessionLoot loot = lootRepository.findBySessionId(session.getId()).orElse(null);
         String lootStatus = null;
         String lootName = null;
@@ -1965,6 +1973,19 @@ public class SessionService {
                                 .toList()))
                 .orElse(null);
 
+        // The latest loot-split outcome — broadcast so every client can announce
+        // it, even though an approved pool is gone and a cancelled one is hidden.
+        LootResultView lootResult = lootResultRepository.findBySessionId(session.getId())
+                .map(r -> new LootResultView(
+                        r.getId(),
+                        r.getOutcome(),
+                        r.getLootName(),
+                        r.getPvpCallers() == null ? List.of() : List.of(r.getPvpCallers().split(",")),
+                        r.getAgreeCount(),
+                        r.getObjectCount(),
+                        r.getCreatedAt() == null ? null : r.getCreatedAt().toString()))
+                .orElse(null);
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -1990,7 +2011,8 @@ public class SessionService {
                 weekDays,
                 views,
                 rolls,
-                restVote
+                restVote,
+                lootResult
         );
     }
 

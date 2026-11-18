@@ -28,6 +28,7 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
 import com.moo.charactermanagerservice.repositories.SessionRollRepository;
@@ -79,6 +80,7 @@ class SessionServiceTest {
     @Mock private SessionRollRepository sessionRollRepository;
     @Mock private SessionRestVoteRepository restVoteRepository;
     @Mock private SessionRestVoteBallotRepository restVoteBallotRepository;
+    @Mock private SessionLootResultRepository lootResultRepository;
 
     private SessionService sessionService;
 
@@ -94,7 +96,7 @@ class SessionServiceTest {
                 shopAttendeeRepository, lootRepository, lootItemRepository, pcRepository, pcService,
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
                 activityLogService, sessionRollRepository, restVoteRepository,
-                restVoteBallotRepository, new ObjectMapper());
+                restVoteBallotRepository, lootResultRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
