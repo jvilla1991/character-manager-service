@@ -1716,6 +1716,95 @@ class PCServiceTest {
         assertThat(pcService.updatePCAsDm(rogue, null, dmId).getSpecialization()).isEqualTo("Assassination");
     }
 
+    // --- WoW Warrior (fighter + Arms/Fury/Protection) ---
+
+    @Test
+    void addPC_acceptsEachWarriorSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Arms", "Fury", "Protection")) {
+            PC fighter = new PC();
+            fighter.setClazz("fighter");
+            fighter.setSpecialization(spec);
+
+            PC saved = pcService.addPC(fighter);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidWarriorSpecialization_andWarriorSpecsOnOtherClasses() {
+        for (String bad : List.of("arms", "Holy", "Elemental", "Outlaw", "Retribution")) {
+            PC fighter = new PC();
+            fighter.setClazz("fighter");
+            fighter.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(fighter))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("rogue", "barbarian", "druid", "ranger")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Arms");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        PC paladin = new PC();
+        paladin.setClazz("paladin");
+        paladin.setSpecialization("Fury");
+        assertThatThrownBy(() -> pcService.addPC(paladin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeWarriorSpecialization() {
+        pc.setClazz("fighter");
+        pc.setSubclass("Battle Master");
+        pc.setSpecialization("Arms");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("fighter");
+        incoming.setSubclass("Battle Master");
+        incoming.setSpecialization("Protection");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Protection");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidWarriorSpecialization() {
+        pc.setClazz("fighter");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("fighter");
+        incoming.setSpecialization("Elemental");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsWarriorSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC fighter = new PC();
+        fighter.setId(1L);
+        fighter.setClazz("fighter");
+        fighter.setSpecialization("Fury");
+        assertThat(pcService.updatePCAsDm(fighter, null, dmId).getSpecialization()).isEqualTo("Fury");
+    }
+
     // --- WoW Shaman (barbarian + Elemental/Enhancement/Restoration) ---
 
     @Test

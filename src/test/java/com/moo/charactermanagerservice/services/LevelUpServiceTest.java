@@ -5,6 +5,8 @@ import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.models.PC;
+import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.FeatCatalog;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -1646,6 +1648,132 @@ class LevelUpServiceTest {
         PC l9 = swashbuckler(8);
         service.applyLevelUp(l9);
         assertThat(l9.getFeatures()).contains("Goad").contains("Awe");
+    }
+
+    // --- WoW Warrior (fighter + Arms/Fury/Protection) ---
+
+    private static final List<String> WARRIOR_SPECS = List.of("Arms", "Fury", "Protection");
+
+    private static PC fighter(int level) {
+        PC f = pc("Fighter", level, 14, 10 * level, 10 * level);
+        if (level >= 3) f.setSubclass("Champion");
+        return f;
+    }
+
+    private static PC wowFighter(int level, String spec) {
+        PC f = fighter(level);
+        f.setSpecialization(spec);
+        return f;
+    }
+
+    @Test
+    void applyLevelUp_fighter_acceptsEachWarriorSpecialization_andRejectsOthers() {
+        for (String spec : WARRIOR_SPECS) {
+            PC f = fighter(4); // 4 -> 5: not an ASI level for a fighter
+            service.applyLevelUp(f, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(f.getSpecialization()).isEqualTo(spec);
+            assertThat(f.getLevel()).isEqualTo((short) 5);
+        }
+        for (String bad : List.of("arms", "Holy", "Elemental", "Outlaw", "Retribution")) {
+            PC f = wowFighter(4, "Arms");
+            assertThatThrownBy(() -> service.applyLevelUp(f, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(f.getSpecialization()).isEqualTo("Arms");
+            assertThat(f.getLevel()).isEqualTo((short) 4);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowFighter_mayRespec() {
+        PC f = wowFighter(4, "Arms");
+        service.applyLevelUp(f, null, null, null, null, HpMode.AVERAGE, "Protection");
+        assertThat(f.getSpecialization()).isEqualTo("Protection");
+    }
+
+    @Test
+    void applyLevelUp_warriorSpecialization_rejectedOnOtherClasses() {
+        for (String spec : List.of("Arms", "Fury")) {
+            PC r = rogue(5);
+            assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, spec))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(r.getSpecialization()).isNull();
+        }
+        PC b = wowBarbarian(5, "Elemental");
+        assertThatThrownBy(() -> service.applyLevelUp(b, null, null, null, null, HpMode.AVERAGE, "Fury"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(b.getSpecialization()).isEqualTo("Elemental");
+    }
+
+    @Test
+    void preview_wowFighter_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Arms", "Battle Master"},
+                {"Fury", "Champion"},
+                {"Protection", "Battle Master"},
+        };
+        for (String[] c : cases) {
+            LevelUpPreview p = service.preview(wowFighter(2, c[0]));
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+            // The fighter's Fighting Style is a level-1 creation choice, never due on level-up.
+            assertThat(p.fightingStyleDue()).isFalse();
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        assertThat(service.preview(fighter(2)).recommendedSubclass()).isNull();
+        assertThat(service.preview(wowFighter(4, "Arms")).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_wowFighter_stillMayPickAnyFighterSubclass() {
+        PC f = wowFighter(2, "Fury");
+        service.applyLevelUp(f, "Eldritch Knight");
+        assertThat(f.getSubclass()).isEqualTo("Eldritch Knight"); // recommendation is not enforced
+    }
+
+    @Test
+    void classProgression_warriorLookups_returnExactCatalogNames() {
+        assertThat(ClassProgression.recommendedSubclass("fighter", "Arms")).isEqualTo("Battle Master");
+        assertThat(ClassProgression.recommendedSubclass("Fighter", "Fury")).isEqualTo("Champion");
+        assertThat(ClassProgression.recommendedSubclass("fighter", "Protection")).isEqualTo("Battle Master");
+        assertThat(ClassProgression.recommendedSubclass("fighter", "arms")).isNull();
+        assertThat(ClassProgression.recommendedSubclass("fighter", null)).isNull();
+
+        assertThat(ClassProgression.recommendedFightingStyles("fighter", "Arms"))
+                .containsExactly("Great Weapon Fighting");
+        assertThat(ClassProgression.recommendedFightingStyles("fighter", "Fury"))
+                .containsExactly("Two-Weapon Fighting");
+        assertThat(ClassProgression.recommendedFightingStyles("fighter", "Protection"))
+                .containsExactly("Interception", "Protection");
+        assertThat(ClassProgression.recommendedFightingStyles("fighter", "Holy")).isEmpty();
+        // Every recommended style is a real Fighting Style feat name (the fighter picks at creation,
+        // so borrow the paladin level-2 option list, which holds every Fighting Style feat).
+        List<String> options = FeatCatalog.fightingStyleOptions("paladin", null, 2);
+        for (String spec : WARRIOR_SPECS) {
+            assertThat(options).containsAll(ClassProgression.recommendedFightingStyles("fighter", spec));
+            assertThat(ClassProgression.subclassesFor("fighter"))
+                    .contains(ClassProgression.recommendedSubclass("fighter", spec));
+        }
+
+        assertThat(ClassProgression.classSpecializations("fighter")).get()
+                .satisfies(s -> {
+                    assertThat(s.specializations()).containsExactlyElementsOf(WARRIOR_SPECS);
+                    assertThat(s.respecOnLevelUp()).isTrue();
+                });
+        assertThat(ClassProgression.isClassSpecialization("fighter", "Arms")).isTrue();
+        assertThat(ClassProgression.isClassSpecialization("paladin", "Arms")).isFalse();
+
+        // Other variants unchanged — including the paladin's same-named "Protection".
+        assertThat(ClassProgression.recommendedSubclass("paladin", "Protection")).isEqualTo("Oath of Devotion");
+        assertThat(ClassProgression.recommendedFightingStyles("paladin", "Protection"))
+                .containsExactly("Interception", "Protection");
+        assertThat(ClassProgression.recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
+        assertThat(ClassProgression.recommendedSubclass("druid", "Balance")).isEqualTo("Circle of the Stars");
+        assertThat(ClassProgression.recommendedSubclass("barbarian", "Elemental")).isEqualTo(PATH_OF_THE_ELEMENTS);
+        assertThat(ClassProgression.classSpecializations("ranger")).isEmpty();
     }
 
     // --- WoW Shaman (barbarian + Elemental/Enhancement/Restoration, two WoW-only paths, Totems) ---
