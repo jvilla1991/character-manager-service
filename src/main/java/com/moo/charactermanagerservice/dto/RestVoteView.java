@@ -10,10 +10,13 @@ import java.util.List;
  * rather than ticking locally, so a backgrounded tab snaps correct on return.
  * A terminal vote (PASSED/FAILED/CANCELLED) stays in the snapshot until the
  * next vote replaces it, letting clients announce the outcome.
+ * {@code restType} is SHORT or LONG — a passed LONG vote opens the long rest
+ * phase ({@link LongRestView}) instead of the short-rest window.
  */
 public record RestVoteView(
         Long voteId,
         String status,
+        String restType,
         Long initiatorParticipantId,
         String initiatorName,
         String expiresAt,

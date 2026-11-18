@@ -33,6 +33,10 @@ public class SessionRestVote implements Serializable {
     @Enumerated(EnumType.STRING)
     private RestVoteStatus status = RestVoteStatus.ACTIVE;
 
+    // Which rest the party is voting on (V52). SHORT for every pre-V52 row.
+    @Enumerated(EnumType.STRING)
+    private RestType restType = RestType.SHORT;
+
     @Column(name = "expires_at")
     private Instant expiresAt;
 
@@ -47,5 +51,6 @@ public class SessionRestVote implements Serializable {
     public void setInitiatorParticipantId(Long initiatorParticipantId) { this.initiatorParticipantId = initiatorParticipantId; }
     public void setInitiatorName(String initiatorName) { this.initiatorName = initiatorName; }
     public void setStatus(RestVoteStatus status) { this.status = status; }
+    public void setRestType(RestType restType) { this.restType = restType; }
     public void setExpiresAt(Instant expiresAt) { this.expiresAt = expiresAt; }
 }
