@@ -55,6 +55,27 @@ class ClassFeaturesTest {
     }
 
     @Test
+    void wowPriestDomains_haveFeaturesAtEachClericSubclassLevel() {
+        for (String domain : List.of(ClassProgression.DISCIPLINE_DOMAIN, ClassProgression.SHADOW_DOMAIN)) {
+            List<FeatureProgressionEntry> entries = ClassFeatures.progression("Cleric", domain, "Shadow").stream()
+                    .filter(FeatureProgressionEntry::subclass)
+                    .toList();
+            assertThat(entries.stream().map(FeatureProgressionEntry::level).collect(Collectors.toSet()))
+                    .as("%s subclass feature levels", domain)
+                    .isEqualTo(SUBCLASS_LEVELS.get("cleric"));
+            assertThat(entries).allSatisfy(e -> {
+                assertThat(e.name()).isNotBlank();
+                assertThat(e.desc()).isNotBlank();
+            });
+        }
+        assertThat(ClassProgression.subclassesFor("cleric", "Holy"))
+                .containsAll(ClassProgression.subclassesFor("cleric"))
+                .contains(ClassProgression.DISCIPLINE_DOMAIN, ClassProgression.SHADOW_DOMAIN);
+        assertThat(ClassProgression.subclassesFor("cleric", null))
+                .doesNotContain(ClassProgression.DISCIPLINE_DOMAIN, ClassProgression.SHADOW_DOMAIN);
+    }
+
+    @Test
     void everyFeature_hasANameAndADescription() {
         SUBCLASS_LEVELS.keySet().forEach(clazz -> {
             List<String> subclasses = new ArrayList<>(ClassProgression.subclassesFor(clazz));

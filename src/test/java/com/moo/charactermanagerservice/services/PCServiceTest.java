@@ -1983,4 +1983,97 @@ class PCServiceTest {
         warlock.setSpecialization("Destruction");
         assertThat(pcService.updatePCAsDm(warlock, null, dmId).getSpecialization()).isEqualTo("Destruction");
     }
+
+    // --- WoW Priest (cleric + Discipline/Holy/Shadow) ---
+
+    @Test
+    void addPC_acceptsEachPriestSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Discipline", "Holy", "Shadow")) {
+            PC cleric = new PC();
+            cleric.setClazz("cleric");
+            cleric.setSpecialization(spec);
+
+            PC saved = pcService.addPC(cleric);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_acceptsBaseGameCleric_withoutSpecialization() {
+        pc.setClazz("Cleric");
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.addPC(pc).getSpecialization()).isNull();
+    }
+
+    @Test
+    void addPC_rejectsInvalidPriestSpecialization_andPriestSpecsOnOtherClasses() {
+        for (String bad : List.of("holy", "Protection", "Elemental", "Disc", "Frost", "Restoration")) {
+            PC cleric = new PC();
+            cleric.setClazz("cleric");
+            cleric.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(cleric))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("druid", "rogue", "barbarian", "wizard")) {
+            for (String spec : List.of("Discipline", "Shadow")) {
+                PC other = new PC();
+                other.setClazz(clazz);
+                other.setSpecialization(spec);
+                assertThatThrownBy(() -> pcService.addPC(other))
+                        .isInstanceOf(ResponseStatusException.class)
+                        .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            }
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangePriestSpecialization() {
+        pc.setClazz("cleric");
+        pc.setSubclass("Shadow Domain");
+        pc.setSpecialization("Shadow");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("cleric");
+        incoming.setSubclass("Shadow Domain");
+        incoming.setSpecialization("Discipline");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Discipline");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidPriestSpecialization() {
+        pc.setClazz("cleric");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("cleric");
+        incoming.setSpecialization("Protection");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsPriestSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC cleric = new PC();
+        cleric.setId(1L);
+        cleric.setClazz("cleric");
+        cleric.setSpecialization("Holy");
+        assertThat(pcService.updatePCAsDm(cleric, null, dmId).getSpecialization()).isEqualTo("Holy");
+    }
 }
