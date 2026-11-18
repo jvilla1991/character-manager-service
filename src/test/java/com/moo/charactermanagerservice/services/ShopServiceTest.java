@@ -198,7 +198,7 @@ class ShopServiceTest {
                 .containsEntry("damage", "1d8 slashing");
         verify(pcRepository).findByIdForUpdate(7L); // locked read
         verify(pcRepository).save(pc);
-        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword for 1 pp 5 gp", playerId);
+        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword for 15 gp", playerId);
     }
 
     @Test
@@ -211,7 +211,7 @@ class ShopServiceTest {
 
         shopService.purchase(1L, 7L, "longsword", 2, playerId);
 
-        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword ×2 for 3 pp", playerId);
+        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Longsword ×2 for 30 gp", playerId);
     }
 
     @Test
@@ -398,7 +398,7 @@ class ShopServiceTest {
 
         assertThat(result.totalGainCp()).isEqualTo(750L); // half of 1500 catalog price
         // 500cp (5gp) + 750cp = 1250cp -> re-minted as 1pp 2gp 5sp
-        assertThat(result.coins()).containsEntry("pp", 1).containsEntry("gp", 2).containsEntry("sp", 5);
+        assertThat(result.coins()).containsEntry("pp", 0).containsEntry("gp", 12).containsEntry("sp", 5);
         assertThat(result.inventory()).isEmpty();
         verify(pcRepository).findByIdForUpdate(7L);
         verify(pcRepository).save(pc);
