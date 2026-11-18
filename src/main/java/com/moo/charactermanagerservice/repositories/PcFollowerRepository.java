@@ -8,6 +8,9 @@ import java.util.List;
 
 @Repository
 public interface PcFollowerRepository extends JpaRepository<PcFollower, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select f from PcFollower f where f.id = :id")
+    java.util.Optional<PcFollower> findByIdForUpdate(@org.springframework.data.repository.query.Param("id") Long id);
     /** A character's followers in the order they were granted. */
     List<PcFollower> findByPcIdOrderByCreatedAtAscIdAsc(Long pcId);
 
