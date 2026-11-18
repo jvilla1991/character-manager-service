@@ -273,6 +273,23 @@ class PCServiceTest {
     }
 
     @Test
+    void updatePC_ignoresTheOwnersExhaustion_whenTheCharacterIsInACampaign() {
+        pc.setExhaustion((short) 3);
+        pc.setCampaignId(7L); // in a campaign the level is the DM's to set
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setExhaustion((short) 0);
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getExhaustion()).isEqualTo((short) 3);
+    }
+
+    @Test
     void updatePCAsDm_preservesExhaustion_whenTheBodyOmitsIt() {
         PC existing = new PC();
         existing.setId(1L);
