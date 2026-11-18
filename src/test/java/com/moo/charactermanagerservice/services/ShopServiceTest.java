@@ -189,7 +189,7 @@ class ShopServiceTest {
 
         assertThat(result.totalCostCp()).isEqualTo(1500L);
         // 20 gp - 15 gp = 5 gp
-        assertThat(result.coins()).containsEntry("gp", 5).containsEntry("pp", 0);
+        assertThat(result.coins()).containsOnlyKeys("cp", "sp", "gp").containsEntry("gp", 5);
         assertThat(result.inventory()).hasSize(1);
         assertThat(result.inventory().get(0))
                 .containsEntry("catalogKey", "longsword")
@@ -398,7 +398,7 @@ class ShopServiceTest {
 
         assertThat(result.totalGainCp()).isEqualTo(750L); // half of 1500 catalog price
         // 500cp (5gp) + 750cp = 1250cp -> re-minted as 1pp 2gp 5sp
-        assertThat(result.coins()).containsEntry("pp", 0).containsEntry("gp", 12).containsEntry("sp", 5);
+        assertThat(result.coins()).containsOnlyKeys("cp", "sp", "gp").containsEntry("gp", 12).containsEntry("sp", 5);
         assertThat(result.inventory()).isEmpty();
         verify(pcRepository).findByIdForUpdate(7L);
         verify(pcRepository).save(pc);
