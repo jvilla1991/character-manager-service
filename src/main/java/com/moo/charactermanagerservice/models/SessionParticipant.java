@@ -66,6 +66,13 @@ public class SessionParticipant implements Serializable {
     // ready. Reset to false every time a phase opens.
     private Boolean longRestReady = false;
 
+    // Long rest choices (V53): what this seat's player chose with their Ready
+    // — JSON {"preparedSpells":[...],"runeWeapon":"..."} — waiting to be
+    // applied when the rest finishes. Null when there are none; cleared when
+    // the player un-readies and whenever a phase opens.
+    @Column(columnDefinition = "TEXT")
+    private String longRestChoices;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -91,5 +98,6 @@ public class SessionParticipant implements Serializable {
     public void setNpcConditions(String npcConditions) { this.npcConditions = npcConditions; }
     public void setDeathSaveSuccesses(Short deathSaveSuccesses) { this.deathSaveSuccesses = deathSaveSuccesses; }
     public void setLongRestReady(Boolean longRestReady) { this.longRestReady = longRestReady; }
+    public void setLongRestChoices(String longRestChoices) { this.longRestChoices = longRestChoices; }
     public void setDeathSaveFailures(Short deathSaveFailures) { this.deathSaveFailures = deathSaveFailures; }
 }

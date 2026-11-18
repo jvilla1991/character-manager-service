@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.CastSpellRequest;
+import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.LongRestOptionsRequest;
 import com.moo.charactermanagerservice.dto.LongRestReadyRequest;
 import com.moo.charactermanagerservice.dto.LongRestRequest;
@@ -277,7 +278,9 @@ public class SessionController {
 
     /**
      * A player marks their own seated PC ready (or not ready) for the open
-     * long rest. The last able player's Ready finishes the rest.
+     * long rest. A Ready may carry the hero's choices (prepared spells, rune
+     * weapon), which are checked here (400) and applied when the rest
+     * finishes. The last able player's Ready finishes the rest.
      */
     @PostMapping("/session/{id}/long-rest/ready")
     public ResponseEntity<SessionStateView> longRestReady(@PathVariable Long id,
@@ -285,7 +288,8 @@ public class SessionController {
                                                           Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.setLongRestReady(
-                id, request.pcId(), request.ready(), user.getUuid()));
+                id, request.pcId(), request.ready(),
+                new LongRestChoices(request.preparedSpells(), request.runeWeapon()), user.getUuid()));
     }
 
     /** DM sets the open long rest's options (advance the clock, undisturbed). */
