@@ -1876,4 +1876,105 @@ class LevelUpServiceTest {
                 .featuresAt("barbarian", PATH_OF_THE_ELEMENTS, "Elemental", 3)))
                 .containsExactly("Totems", "Raging Elements");
     }
+
+    // --- WoW Warlock (warlock + Affliction/Demonology/Destruction; patron chosen at level 1) ---
+
+    private static final List<String> WARLOCK_SPECS = List.of("Affliction", "Demonology", "Destruction");
+
+    private static PC warlock(int level) {
+        PC w = pc("Warlock", level, 14, 8 * level, 8 * level);
+        w.setSubclass("Fiend Patron"); // warlocks choose their patron at level 1
+        return w;
+    }
+
+    private static PC wowWarlock(int level, String spec) {
+        PC w = warlock(level);
+        w.setSpecialization(spec);
+        return w;
+    }
+
+    @Test
+    void applyLevelUp_warlock_acceptsEachWowSpecialization_andRejectsOthers() {
+        for (String spec : WARLOCK_SPECS) {
+            PC w = warlock(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(w.getSpecialization()).isEqualTo(spec);
+            assertThat(w.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("affliction", "Fire", "Holy", "Outlaw", "Frost")) {
+            PC w = wowWarlock(5, "Affliction");
+            assertThatThrownBy(() -> service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(w.getSpecialization()).isEqualTo("Affliction");
+            assertThat(w.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_warlockSpecialization_rejectedOnOtherClasses() {
+        PC r = rogue(5);
+        assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, "Destruction"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(r.getSpecialization()).isNull();
+        assertThat(r.getLevel()).isEqualTo((short) 5);
+    }
+
+    @Test
+    void applyLevelUp_wowWarlock_mayRespec() {
+        PC w = wowWarlock(5, "Affliction");
+        service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, "Destruction");
+        assertThat(w.getSpecialization()).isEqualTo("Destruction");
+        assertThat(w.getSubclass()).isEqualTo("Fiend Patron");
+    }
+
+    @Test
+    void wowWarlock_recommendedSubclassData_andNoSubclassEverDueOnLevelUp() {
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("warlock", "Affliction")).isEqualTo("Great Old One Patron");
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("warlock", "Demonology")).isEqualTo("Fiend Patron");
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("Warlock", "Destruction")).isEqualTo("Fiend Patron");
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("warlock", "affliction")).isNull();
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedFightingStyles("warlock", "Destruction")).isEmpty();
+        // Every recommendation is a real catalog patron; no WoW-only patrons are added.
+        for (String spec : WARLOCK_SPECS) {
+            assertThat(com.moo.charactermanagerservice.progression.ClassProgression.subclassesFor("warlock", spec))
+                    .containsExactlyElementsOf(com.moo.charactermanagerservice.progression.ClassProgression
+                            .subclassesFor("warlock"))
+                    .contains(com.moo.charactermanagerservice.progression.ClassProgression
+                            .recommendedSubclass("warlock", spec));
+        }
+        // The patron is picked at creation, so the level-up preview never recommends one.
+        for (String spec : WARLOCK_SPECS) {
+            for (int level : List.of(1, 2, 4)) {
+                LevelUpPreview p = service.preview(wowWarlock(level, spec));
+                assertThat(p.subclassDue()).isFalse();
+                assertThat(p.recommendedSubclass()).isNull();
+                assertThat(p.recommendedFightingStyles()).isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void wowWarlock_addsNoFeatureOverrides_andOtherVariantsUnchanged() {
+        for (int level : List.of(1, 2, 4, 8)) {
+            assertThat(names(service.preview(wowWarlock(level, "Demonology")).featuresGained()))
+                    .containsExactlyElementsOf(names(service.preview(warlock(level)).featuresGained()));
+        }
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("druid", "Balance")).isEqualTo("Circle of the Stars");
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("paladin", "Holy")).isEqualTo(OATH_OF_THE_HOLY);
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .recommendedSubclass("barbarian", "Elemental")).isEqualTo(PATH_OF_THE_ELEMENTS);
+        assertThat(com.moo.charactermanagerservice.progression.ClassProgression
+                .isClassSpecialization("sorcerer", "Destruction")).isFalse();
+    }
 }

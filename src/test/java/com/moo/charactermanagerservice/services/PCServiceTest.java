@@ -1798,4 +1798,88 @@ class PCServiceTest {
         barbarian.setSpecialization("Restoration");
         assertThat(pcService.updatePCAsDm(barbarian, null, dmId).getSpecialization()).isEqualTo("Restoration");
     }
+
+    // --- WoW Warlock (warlock + Affliction/Demonology/Destruction) ---
+
+    @Test
+    void addPC_acceptsEachWarlockSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Affliction", "Demonology", "Destruction")) {
+            PC warlock = new PC();
+            warlock.setClazz("warlock");
+            warlock.setSubclass("Fiend Patron");
+            warlock.setSpecialization(spec);
+
+            PC saved = pcService.addPC(warlock);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isEqualTo("Fiend Patron");
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidWarlockSpecialization_andWarlockSpecsOnOtherClasses() {
+        for (String bad : List.of("affliction", "Fire", "Holy", "Outlaw", "Elemental")) {
+            PC warlock = new PC();
+            warlock.setClazz("warlock");
+            warlock.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(warlock))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("sorcerer", "wizard", "paladin", "rogue")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Destruction");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeWarlockSpecialization() {
+        pc.setClazz("warlock");
+        pc.setSubclass("Great Old One Patron");
+        pc.setSpecialization("Affliction");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("warlock");
+        incoming.setSubclass("Great Old One Patron");
+        incoming.setSpecialization("Demonology");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Demonology");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidWarlockSpecialization() {
+        pc.setClazz("warlock");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("warlock");
+        incoming.setSpecialization("Fire");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsWarlockSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC warlock = new PC();
+        warlock.setId(1L);
+        warlock.setClazz("warlock");
+        warlock.setSpecialization("Destruction");
+        assertThat(pcService.updatePCAsDm(warlock, null, dmId).getSpecialization()).isEqualTo("Destruction");
+    }
 }

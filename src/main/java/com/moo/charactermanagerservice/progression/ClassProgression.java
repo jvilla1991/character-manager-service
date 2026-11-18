@@ -394,7 +394,8 @@ public final class ClassProgression {
     // the WoW Shaman — a barbarian with Elemental/Enhancement/Restoration — unlocks the Path of the
     // Elements and the Path of the Spiritual Guardian. The Shaman is also the first variant whose
     // specialization swaps a generic class feature (Totems for Primal Knowledge) — see
-    // ClassFeatures' variant feature overrides.
+    // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
+    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -444,7 +445,14 @@ public final class ClassProgression {
             new ClassSpecializations("rogue", List.of("Assassination", "Outlaw", "Subtlety"), true,
                     Map.of("Assassination", "Assassin",
                             "Outlaw", SWASHBUCKLER,
-                            "Subtlety", "Soulknife"))
+                            "Subtlety", "Soulknife")),
+            // WoW Warlock. No WoW-only patron and no Fighting Style choice. Warlocks pick their
+            // patron at level 1 (creation), so the level-up preview never has a subclass due; the
+            // recommendations are kept for consistency with the other variants.
+            new ClassSpecializations("warlock", List.of("Affliction", "Demonology", "Destruction"), true,
+                    Map.of("Affliction", "Great Old One Patron",
+                            "Demonology", "Fiend Patron",
+                            "Destruction", "Fiend Patron"))
     );
 
     /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */
