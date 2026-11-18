@@ -34,10 +34,11 @@ import java.util.Map;
  *
  * <p>{@code lootStatus} is the analogous caller-scoped signal for post-combat
  * loot: null when there is no pool (or the caller may not see it), "DRAFT" for
- * the DM while the pool is an unpublished draft, "DROPPED" once players can
- * claim (sent to the DM and to seated players). The pool itself is fetched from
- * {@code GET /session/{id}/loot}; clients must re-fetch on every version change
- * while a status is set, since claims change the pool under a stable status.
+ * the DM while the pool is an unpublished draft, "DROPPED" once the party can
+ * split it (sent to the DM and to seated players). The pool itself is fetched
+ * from {@code GET /session/{id}/loot}; clients must re-fetch on every version
+ * change while a status is set, since split edits and votes change the pool
+ * under a stable status.
  * {@code lootName} is the drop's label for the panel header.
  *
  * <p>{@code myXp} is deliberately caller-scoped rather than living on
@@ -80,6 +81,10 @@ import java.util.Map;
  * vote rides along even after it resolves so clients can announce the
  * outcome — it is replaced when the next vote opens and purged with the
  * session. See {@link RestVoteView}.
+ *
+ * <p>{@code lootResult} is the latest party loot-split outcome (or null) —
+ * broadcast, and kept after the pool it describes is distributed or hidden
+ * again, so every client can announce it once. See {@link LootResultView}.
  */
 public record SessionStateView(
         Long sessionId,
@@ -106,5 +111,6 @@ public record SessionStateView(
         List<String> weekDays,
         List<ParticipantView> participants,
         List<SessionRollView> rolls,
-        RestVoteView restVote
+        RestVoteView restVote,
+        LootResultView lootResult
 ) {}
