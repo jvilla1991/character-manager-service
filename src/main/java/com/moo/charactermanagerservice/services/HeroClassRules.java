@@ -19,8 +19,10 @@ import java.util.Optional;
  *       {@value ClassProgression#DEMON_HUNTER}) — whose {@code specialization} is drawn from the
  *       hero subclass's own list;</li>
  *   <li>WoW class variants with no subclass lock — e.g. the WoW Druid (clazz {@code druid}, any
- *       normal circle) — whose {@code specialization} is drawn from the class's list. A druid with
- *       no specialization is a base-game druid.</li>
+ *       normal circle) and the WoW Paladin (clazz {@code paladin}, Holy/Protection/Retribution) —
+ *       whose {@code specialization} is drawn from the class's list. A druid or paladin with no
+ *       specialization is a base-game one. A paladin with the Ebon Blade hero subclass is a Death
+ *       Knight: the hero subclass's list wins, so it can't take "Holy" (nor a WoW paladin "Frost").</li>
  * </ul>
  * The rules themselves (lists, base classes, respec policy) are data in {@link ClassProgression};
  * this class turns violations into 400s for the PC write paths (create, owner update, DM update)

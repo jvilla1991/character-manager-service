@@ -75,6 +75,13 @@ public class LevelUpService {
         int hpGained = hpCalculator.average(hitDie, conMod);
         boolean asiDue = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
         boolean subclassDue = subclassDue(pc, newLevel);
+        boolean fightingStyleDue = FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel);
+        List<String> fightingStyleOptions =
+                FeatCatalog.fightingStyleOptions(pc.getClazz(), pc.getSubclass(), newLevel);
+        List<String> recommendedFightingStyles = fightingStyleDue
+                ? ClassProgression.recommendedFightingStyles(pc.getClazz(), pc.getSpecialization()).stream()
+                        .filter(fightingStyleOptions::contains).toList()
+                : List.of();
 
         return new LevelUpPreview(
                 currentLevel,
@@ -88,7 +95,7 @@ public class LevelUpService {
                 spellSlotCalculator.currentMax(pc.getSpellSlots()),
                 ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
                 subclassDue,
-                ClassProgression.subclassesFor(pc.getClazz()),
+                ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
                 asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), newLevel),
@@ -96,9 +103,10 @@ public class LevelUpService {
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel),
-                FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel),
-                FeatCatalog.fightingStyleOptions(pc.getClazz(), pc.getSubclass(), newLevel),
-                subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null
+                fightingStyleDue,
+                fightingStyleOptions,
+                subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null,
+                recommendedFightingStyles
         );
     }
 
@@ -166,9 +174,10 @@ public class LevelUpService {
      *                         level-up (see {@link HeroClassRules#validateLevelUpSpecialization})
      * @param fightingStyle    the Fighting Style choice at the class's Fighting Style level (one of
      *                         {@link FeatCatalog#fightingStyleOptions}), or {@code null}; choosing
-     *                         {@value FeatCatalog#VOID_WARRIOR} requires exactly
-     *                         {@value FeatCatalog#VOID_WARRIOR_CANTRIPS} extra cantrips in
-     *                         {@code newSpells}
+     *                         a cantrip Fighting Style ({@value FeatCatalog#BLESSED_WARRIOR},
+     *                         {@value FeatCatalog#DRUIDIC_WARRIOR}, {@value FeatCatalog#VOID_WARRIOR})
+     *                         requires exactly {@value FeatCatalog#CANTRIP_STYLE_CANTRIPS} extra
+     *                         cantrips in {@code newSpells}
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
                            String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
@@ -180,13 +189,15 @@ public class LevelUpService {
         int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
-        applySubclassChoice(pc, newLevel, chosenSubclass);
+        // A WoW-only subclass (Oath of the Holy) is unlocked by the specialization, so the subclass
+        // options use the one this request sets, if any (it is validated just below).
+        String effectiveSpecialization = specialization != null ? specialization : pc.getSpecialization();
+        applySubclassChoice(pc, newLevel, chosenSubclass, effectiveSpecialization);
         String style = validateFightingStyleChoice(pc, newLevel, fightingStyle);
         applySpecializationChoice(pc, specialization);
         applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
-        int bonusCantrips = FeatCatalog.VOID_WARRIOR.equals(style) ? FeatCatalog.VOID_WARRIOR_CANTRIPS : 0;
-        applySpellChoices(pc, currentLevel, newLevel, newSpells, bonusCantrips);
+        applySpellChoices(pc, currentLevel, newLevel, newSpells, style);
         recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
@@ -230,12 +241,14 @@ public class LevelUpService {
     /**
      * Validate and apply the player's subclass choice for this level. Server-authoritative:
      * a choice is only accepted when it is actually due, and (once catalog content exists) it
-     * must be a known subclass for the class. With the catalog empty, the flow is dormant — no
-     * choice is required and none is offered — so today this is effectively a no-op.
+     * must be a known subclass for the class + specialization (WoW-only subclasses such as Oath of
+     * the Holy are valid only for that class's WoW variant — see
+     * {@link ClassProgression#subclassesFor(String, String)}). With the catalog empty, the flow is
+     * dormant — no choice is required and none is offered.
      */
-    private void applySubclassChoice(PC pc, int newLevel, String chosen) {
+    private void applySubclassChoice(PC pc, int newLevel, String chosen, String specialization) {
         boolean due = subclassDue(pc, newLevel);
-        List<String> options = ClassProgression.subclassesFor(pc.getClazz());
+        List<String> options = ClassProgression.subclassesFor(pc.getClazz(), specialization);
 
         if (chosen != null && !chosen.isBlank()) {
             String choice = chosen.trim();
@@ -295,7 +308,7 @@ public class LevelUpService {
     /** Record the chosen Fighting Style among the PC's features. */
     private void recordFightingStyle(PC pc, int newLevel, String style) {
         if (style == null) return;
-        String desc = FeatCatalog.VOID_WARRIOR.equals(style) ? FeatCatalog.VOID_WARRIOR_DESC : "";
+        String desc = FeatCatalog.cantripFightingStyle(style).map(FeatCatalog.CantripFightingStyle::desc).orElse("");
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
         features.add(jsonColumns.featureEntry(style, "Fighting Style (Level " + newLevel + ")", desc));
         pc.setFeatures(jsonColumns.write(features));
@@ -417,13 +430,16 @@ public class LevelUpService {
      * (the backend must not depend on the external D&D API), so the client-supplied spell objects
      * are accepted as-is. Same trust posture as feats and subclasses.
      *
-     * <p>{@code bonusCantrips} are cantrips granted by another choice in the same request (the
-     * Demon Hunter's {@value FeatCatalog#VOID_WARRIOR}). When positive, the request must carry
-     * <em>exactly</em> the class's cantrip delta plus the bonus — the count is all that is checked
-     * (the server has no spell list, so it can't confirm they are Warlock cantrips).
+     * <p>{@code fightingStyle} is the Fighting Style chosen in the same request; when it is a
+     * cantrip Fighting Style ({@link FeatCatalog#cantripFightingStyle} — Blessed Warrior, Druidic
+     * Warrior, Void Warrior) the request must carry <em>exactly</em> the class's cantrip delta plus
+     * the style's extra cantrips — the count is all that is checked (the server has no spell list,
+     * so it can't confirm they are Cleric/Druid/Warlock cantrips).
      */
     private void applySpellChoices(PC pc, int currentLevel, int newLevel,
-                                   List<Map<String, Object>> chosen, int bonusCantrips) {
+                                   List<Map<String, Object>> chosen, String fightingStyle) {
+        FeatCatalog.CantripFightingStyle cantripStyle = FeatCatalog.cantripFightingStyle(fightingStyle).orElse(null);
+        int bonusCantrips = cantripStyle == null ? 0 : cantripStyle.extraCantrips();
         if ((chosen == null || chosen.isEmpty()) && bonusCantrips == 0) return;
         if (chosen == null) chosen = List.of();
 
@@ -446,7 +462,7 @@ public class LevelUpService {
             int required = Math.max(0, cantripDelta) + bonusCantrips;
             if (newCantrips != required) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        FeatCatalog.VOID_WARRIOR + " requires exactly " + required
+                        cantripStyle.name() + " requires exactly " + required
                                 + " new cantrip(s) at level " + newLevel);
             }
         } else if (newCantrips > Math.max(0, cantripDelta)) {

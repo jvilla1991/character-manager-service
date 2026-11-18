@@ -21,7 +21,13 @@ import java.util.Map;
  * <p>Recommended subclass: when {@code subclassDue} and the PC has a World of Warcraft class
  * specialization (e.g. a Balance druid), {@code recommendedSubclass} names the option that
  * specialization recommends (e.g. {@code "Circle of the Stars"}) so the SPA can highlight it;
- * advisory only, never enforced. Otherwise null.
+ * advisory only, never enforced. Otherwise null. {@code subclassOptions} also includes any
+ * WoW-only subclass the specialization unlocks (e.g. {@code "Oath of the Holy"} for a WoW paladin).
+ *
+ * <p>Recommended Fighting Styles: when {@code fightingStyleDue} and the PC has a WoW class
+ * specialization that recommends some (e.g. a Retribution paladin → {@code "Great Weapon
+ * Fighting"}), {@code recommendedFightingStyles} lists those names — always a subset of
+ * {@code fightingStyleOptions}. Advisory only; otherwise an empty list.
  */
 public record LevelUpPreview(
         int currentLevel,
@@ -45,8 +51,26 @@ public record LevelUpPreview(
         int newSpellsKnown,
         boolean fightingStyleDue,
         List<String> fightingStyleOptions,
-        String recommendedSubclass
+        String recommendedSubclass,
+        List<String> recommendedFightingStyles
 ) {
+    /** Convenience constructor with no recommended Fighting Styles. */
+    public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
+                          int newHpMax, int currentProfBonus, int newProfBonus,
+                          Map<Integer, Integer> currentSpellSlots, Map<Integer, Integer> newSpellSlots,
+                          boolean subclassDue, List<String> subclassOptions, boolean asiDue,
+                          List<String> featOptions, List<FeatureGain> featuresGained,
+                          int currentCantripsKnown, int newCantripsKnown,
+                          int currentSpellsKnown, int newSpellsKnown,
+                          boolean fightingStyleDue, List<String> fightingStyleOptions,
+                          String recommendedSubclass) {
+        this(currentLevel, newLevel, hitDie, conModifier, hpGained, newHpMax, currentProfBonus,
+                newProfBonus, currentSpellSlots, newSpellSlots, subclassDue, subclassOptions, asiDue,
+                featOptions, featuresGained, currentCantripsKnown, newCantripsKnown,
+                currentSpellsKnown, newSpellsKnown, fightingStyleDue, fightingStyleOptions,
+                recommendedSubclass, List.of());
+    }
+
     /** Convenience constructor for a preview with no Fighting Style choice due. */
     public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
                           int newHpMax, int currentProfBonus, int newProfBonus,

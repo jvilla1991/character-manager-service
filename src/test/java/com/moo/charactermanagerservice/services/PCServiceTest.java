@@ -1528,4 +1528,110 @@ class PCServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
+
+    // --- WoW Paladin (paladin + Holy/Protection/Retribution) ---
+
+    @Test
+    void addPC_acceptsEachPaladinSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Holy", "Protection", "Retribution")) {
+            PC paladin = new PC();
+            paladin.setClazz("paladin");
+            paladin.setSpecialization(spec);
+
+            PC saved = pcService.addPC(paladin);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_deathKnightCannotTakeHoly_andWowPaladinCannotTakeFrost() {
+        PC dk = new PC();
+        dk.setClazz("paladin");
+        dk.setSubclass("Oath of the Ebon Blade");
+        dk.setSpecialization("Holy");
+        assertThatThrownBy(() -> pcService.addPC(dk))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        PC paladin = new PC();
+        paladin.setClazz("paladin");
+        paladin.setSpecialization("Frost");
+        assertThatThrownBy(() -> pcService.addPC(paladin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        PC lower = new PC();
+        lower.setClazz("paladin");
+        lower.setSpecialization("holy"); // exact values only
+        assertThatThrownBy(() -> pcService.addPC(lower))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangePaladinSpecialization() {
+        pc.setClazz("paladin");
+        pc.setSubclass("Oath of Devotion");
+        pc.setSpecialization("Protection");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("paladin");
+        incoming.setSubclass("Oath of Devotion");
+        incoming.setSpecialization("Retribution");
+
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Retribution");
+    }
+
+    @Test
+    void updatePC_preservesPaladinSpecialization_whenTheBodyOmitsIt() {
+        pc.setClazz("paladin");
+        pc.setSpecialization("Holy");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("paladin");
+
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Holy");
+    }
+
+    @Test
+    void updatePCAsDm_turningADeathKnightIntoAPaladin_dropsTheRuneSpecialization() {
+        pc.setClazz("paladin");
+        pc.setSubclass("Oath of the Ebon Blade");
+        pc.setSpecialization("Frost");
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("paladin");
+        incoming.setSubclass("Oath of Devotion"); // specialization omitted
+
+        assertThat(pcService.updatePCAsDm(incoming, null, dmId).getSpecialization()).isNull();
+    }
+
+    @Test
+    void updatePCAsDm_acceptsPaladinSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC paladin = new PC();
+        paladin.setId(1L);
+        paladin.setClazz("paladin");
+        paladin.setSpecialization("Protection");
+        assertThat(pcService.updatePCAsDm(paladin, null, dmId).getSpecialization()).isEqualTo("Protection");
+    }
 }
