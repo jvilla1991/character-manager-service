@@ -150,4 +150,26 @@ class ClassFeaturesTest {
         assertThat(ClassFeatures.progression("Fighter", "Rune Knight", null))
                 .isEqualTo(ClassFeatures.progression("Fighter", null, null));
     }
+
+    @Test
+    void wowMonkMysticBrews_hasFeaturesAtEachMonkSubclassLevel() {
+        List<FeatureProgressionEntry> entries = ClassFeatures
+                .progression("Monk", ClassProgression.WARRIOR_OF_MYSTIC_BREWS, "Brewmaster").stream()
+                .filter(FeatureProgressionEntry::subclass)
+                .toList();
+        assertThat(entries.stream().map(FeatureProgressionEntry::level).collect(Collectors.toSet()))
+                .isEqualTo(SUBCLASS_LEVELS.get("monk"));
+        assertThat(entries.stream().map(FeatureProgressionEntry::name).toList()).containsExactly(
+                "Bonus Proficiencies", "Drunken Technique", "Tipsy Sway", "Mystic Brew", "Wizened Brewer",
+                "Master Brewer", "Intoxicated Frenzy");
+        assertThat(entries).allSatisfy(e -> {
+            assertThat(e.name()).isNotBlank();
+            assertThat(e.desc()).isNotBlank();
+        });
+        assertThat(ClassProgression.subclassesFor("monk", "Windwalker"))
+                .containsAll(ClassProgression.subclassesFor("monk"))
+                .contains(ClassProgression.WARRIOR_OF_MYSTIC_BREWS);
+        assertThat(ClassProgression.subclassesFor("monk", null))
+                .doesNotContain(ClassProgression.WARRIOR_OF_MYSTIC_BREWS);
+    }
 }

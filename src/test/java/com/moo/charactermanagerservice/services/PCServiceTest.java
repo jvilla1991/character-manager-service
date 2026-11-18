@@ -2504,4 +2504,87 @@ class PCServiceTest {
         wizard.setSpecialization("Arcane");
         assertThat(pcService.updatePCAsDm(wizard, null, dmId).getSpecialization()).isEqualTo("Arcane");
     }
+
+    // --- WoW Monk (monk + Brewmaster/Mistweaver/Windwalker) ---
+
+    @Test
+    void addPC_acceptsEachMonkSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Brewmaster", "Mistweaver", "Windwalker")) {
+            PC monk = new PC();
+            monk.setClazz("monk");
+            monk.setSpecialization(spec);
+
+            PC saved = pcService.addPC(monk);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidMonkSpecialization_andMonkSpecsOnOtherClasses() {
+        for (String bad : List.of("brewmaster", "Arcane", "Holy", "Outlaw", "Restoration")) {
+            PC monk = new PC();
+            monk.setClazz("monk");
+            monk.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(monk))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("druid", "rogue", "wizard", "fighter")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Brewmaster");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeMonkSpecialization() {
+        pc.setClazz("monk");
+        pc.setSubclass("Warrior of Mystic Brews");
+        pc.setSpecialization("Brewmaster");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("monk");
+        incoming.setSubclass("Warrior of Mystic Brews");
+        incoming.setSpecialization("Windwalker");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Windwalker");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidMonkSpecialization() {
+        pc.setClazz("monk");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("monk");
+        incoming.setSpecialization("Frost");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsMonkSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC monk = new PC();
+        monk.setId(1L);
+        monk.setClazz("monk");
+        monk.setSpecialization("Mistweaver");
+        assertThat(pcService.updatePCAsDm(monk, null, dmId).getSpecialization()).isEqualTo("Mistweaver");
+    }
 }
