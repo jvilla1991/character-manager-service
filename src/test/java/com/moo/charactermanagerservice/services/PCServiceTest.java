@@ -2076,4 +2076,143 @@ class PCServiceTest {
         cleric.setSpecialization("Holy");
         assertThat(pcService.updatePCAsDm(cleric, null, dmId).getSpecialization()).isEqualTo("Holy");
     }
+
+    // --- WoW Evoker (sorcerer + Augmentation/Devastation/Preservation; requires Draconic Sorcery) ---
+
+    private static PC sorcererBody(String subclass, String spec) {
+        PC s = new PC();
+        s.setClazz("sorcerer");
+        s.setSubclass(subclass);
+        s.setSpecialization(spec);
+        return s;
+    }
+
+    @Test
+    void addPC_acceptsEachEvokerSpecialization_onDraconicSorcery() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Augmentation", "Devastation", "Preservation")) {
+            PC saved = pcService.addPC(sorcererBody("Draconic Sorcery", spec));
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isEqualTo("Draconic Sorcery");
+        }
+        // Case-insensitive subclass match, like the rest of the subclass checks.
+        assertThat(pcService.addPC(sorcererBody("draconic sorcery", "Devastation")).getSpecialization())
+                .isEqualTo("Devastation");
+    }
+
+    @Test
+    void addPC_rejectsEvokerSpecialization_withoutDraconicSorcery() {
+        for (String subclass : java.util.Arrays.asList("Aberrant Sorcery", "Clockwork Sorcery", "Wild Magic Sorcery", null)) {
+            PC body = sorcererBody(subclass, "Devastation");
+            assertThatThrownBy(() -> pcService.addPC(body))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void addPC_baseSorcerer_mayHaveAnySubclass() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String subclass : List.of("Aberrant Sorcery", "Clockwork Sorcery", "Draconic Sorcery", "Wild Magic Sorcery")) {
+            PC saved = pcService.addPC(sorcererBody(subclass, null));
+            assertThat(saved.getSubclass()).isEqualTo(subclass);
+            assertThat(saved.getSpecialization()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidEvokerSpecialization_andEvokerSpecsOnOtherClasses() {
+        for (String bad : List.of("devastation", "Destruction", "Fire", "Holy", "Frost")) {
+            PC body = sorcererBody("Draconic Sorcery", bad);
+            assertThatThrownBy(() -> pcService.addPC(body))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("wizard", "warlock", "druid", "paladin")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Devastation");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeEvokerSpecialization() {
+        pc.setClazz("sorcerer");
+        pc.setSubclass("Draconic Sorcery");
+        pc.setSpecialization("Devastation");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = sorcererBody("Draconic Sorcery", "Preservation");
+        incoming.setId(1L);
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Preservation");
+    }
+
+    @Test
+    void updatePC_rejectsEvokerSpecialization_onAnotherSubclass() {
+        pc.setClazz("sorcerer");
+        pc.setSubclass("Wild Magic Sorcery");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = sorcererBody("Wild Magic Sorcery", "Augmentation");
+        incoming.setId(1L);
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePC_evokerCannotSwitchSubclass_evenWhenTheBodyOmitsTheSpecialization() {
+        pc.setClazz("sorcerer");
+        pc.setSubclass("Draconic Sorcery");
+        pc.setSpecialization("Devastation");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        // The stored specialization is carried over, so the subclass change is still an Evoker's.
+        PC incoming = sorcererBody("Aberrant Sorcery", null);
+        incoming.setId(1L);
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePC_preservesEvokerSpecialization_whenTheBodyOmitsIt() {
+        pc.setClazz("sorcerer");
+        pc.setSubclass("Draconic Sorcery");
+        pc.setSpecialization("Augmentation");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = sorcererBody("Draconic Sorcery", null);
+        incoming.setId(1L);
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Augmentation");
+    }
+
+    @Test
+    void updatePCAsDm_acceptsEvokerOnDraconicSorcery_andRejectsItElsewhere() {
+        pc.setClazz("sorcerer");
+        pc.setSubclass("Draconic Sorcery");
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC ok = sorcererBody("Draconic Sorcery", "Preservation");
+        ok.setId(1L);
+        assertThat(pcService.updatePCAsDm(ok, null, dmId).getSpecialization()).isEqualTo("Preservation");
+
+        PC bad = sorcererBody("Clockwork Sorcery", "Preservation");
+        bad.setId(1L);
+        assertThatThrownBy(() -> pcService.updatePCAsDm(bad, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
 }
