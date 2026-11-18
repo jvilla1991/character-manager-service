@@ -5,6 +5,7 @@ import com.moo.charactermanagerservice.dto.FeatureProgressionEntry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,7 +20,8 @@ import java.util.Set;
  * catalog subclasses (one {@code <Class>Subclasses} file per class, purely additive) and the World
  * of Warcraft module's hero and WoW-only subclasses (some of which also replace generic
  * Paladin/Ranger features), plus — via {@link #featuresAt(String, String, String, int)} — the
- * generic features a World of Warcraft class variant swaps for its own (the WoW Shaman's Totems).
+ * features a World of Warcraft class variant swaps in or adds (the WoW Shaman's Totems, the WoW
+ * Evoker's Evoker Spells, a Beast Mastery hunter's Pet Specialization).
  * Level-1 features are excluded (granted at character creation), as are Ability Score
  * Improvements (handled by the ASI/feat choice). Descriptions are concise summaries — see the
  * 2024 Player's Handbook (or the relevant module) for full text.
@@ -535,19 +537,37 @@ public final class ClassFeatures {
         return f;
     }
 
-    // ── Variant feature overrides ──────────────────────────────────────────────
-    // Generic class features that a World of Warcraft class variant swaps for its own, keyed by
-    // class. Unlike subclass features these depend on the SPECIALIZATION: they apply to every
-    // member whose specialization is one of the class's WoW specializations (see
-    // ClassProgression#isClassSpecialization), whatever its subclass. Today: the WoW Shaman
-    // (barbarian + Elemental/Enhancement/Restoration) gains Totems instead of Primal Knowledge.
+    // ── Variant features ───────────────────────────────────────────────────────
+    // Features a World of Warcraft class variant gains on top of (or in place of) the ordinary ones,
+    // keyed by class. Unlike subclass features these depend on the SPECIALIZATION: they apply to
+    // every member whose specialization is one of the class's WoW specializations (see
+    // ClassProgression#isClassSpecialization), whatever its subclass. Each entry names the feature
+    // it replaces: when that is a generic class feature at the level it is swapped in place (the WoW
+    // Shaman's Totems for Primal Knowledge); otherwise the entry is ADDED among the class features
+    // and a subclass feature of that name, if any, is dropped (the WoW Evoker's Evoker Spells for
+    // Draconic Sorcery's Draconic Spells). A null name is a pure addition. An entry may also be
+    // limited to some of the class's specializations (the WoW Hunter's Pet Specialization replaces
+    // Roving only for Beast Mastery); an unrestricted entry applies to every specialization.
 
-    /** One variant swap: at {@code level}, the generic feature {@code replaces} becomes {@code with}. */
-    private record VariantOverride(int level, String replaces, FeatureGain with) {}
+    /**
+     * One variant feature: at {@code level}, {@code gain} replaces the feature named
+     * {@code replaces} (generic or subclass), or is simply added when there is none. {@code onlyFor}
+     * lists the specializations it applies to (exact names); empty means every WoW specialization of
+     * the class.
+     */
+    private record VariantFeature(int level, String replaces, FeatureGain gain, Set<String> onlyFor) {
+        VariantFeature(int level, String replaces, FeatureGain gain) {
+            this(level, replaces, gain, Set.of());
+        }
 
-    /** class (lower-case) -> its WoW variant's feature swaps. */
-    private static final Map<String, List<VariantOverride>> VARIANT_FEATURE_OVERRIDES = Map.of(
-            "barbarian", List.of(new VariantOverride(3, "Primal Knowledge",
+        boolean appliesTo(String specialization) {
+            return onlyFor.isEmpty() || onlyFor.contains(specialization);
+        }
+    }
+
+    /** class (lower-case) -> its WoW variant's features. */
+    private static final Map<String, List<VariantFeature>> VARIANT_FEATURES = Map.of(
+            "barbarian", List.of(new VariantFeature(3, "Primal Knowledge",
                     f("Totems", "Replaces Primal Knowledge. As a Bonus Action, you plant a Small totem (AC 10, 1 HP) in an "
                             + "unoccupied space within 10 feet of you. It lasts for 1 minute, until it is destroyed, or until "
                             + "you plant another. When you plant it, choose one effect; at the end of each of your turns the "
@@ -558,28 +578,33 @@ public final class ClassFeatures {
                             + "can't choose it again until you finish a Long Rest unless you expend a use of your Rage. Tremor: "
                             + "allies in the Emanation have Immunity to the Charmed and Frightened conditions until the end of "
                             + "your next turn, and those conditions already on them are suppressed. Wind Rush: allies in the "
-                            + "Emanation gain a 10-foot bonus to their Speed until the end of your next turn.")))
+                            + "Emanation gain a 10-foot bonus to their Speed until the end of your next turn."))),
+            // The Evoker is always a Draconic Sorcery sorcerer, so Evoker Spells always stands in
+            // for that subclass's Draconic Spells.
+            "sorcerer", List.of(new VariantFeature(3, "Draconic Spells",
+                    f("Evoker Spells", "Replaces Draconic Spells. You always have certain spells prepared once you reach "
+                            + "the listed Sorcerer levels on the Evoker Spells table: every spell in the All column, plus "
+                            + "those in the column for your specialization."))),
+            // Marksmanship and Survival hunters keep Roving.
+            "ranger", List.of(new VariantFeature(6, "Roving",
+                    f("Pet Specialization", "Replaces Roving. While your Primal Companion beast is within 60 feet of "
+                            + "you, you gain a benefit based on its pet family's specialization. Cunning: you and your "
+                            + "beast gain a 10-foot bonus to your Speed, and once per Long Rest the beast can take its "
+                            + "action to cast Freedom of Movement, without components, on itself and on you if you are in "
+                            + "range. Ferocity: when your beast is Bloodied and hits with its Beast's Strike, you and it "
+                            + "each regain Hit Points equal to your Wisdom modifier, and once per Long Rest it can cast "
+                            + "Haste on itself and you. Tenacity: your Hit Point maximum increases by 6, plus 1 more each "
+                            + "time you gain a Ranger level, and your beast's Hit Point maximum increases by your Ranger "
+                            + "level; once per Long Rest it can cast Stoneskin on itself and you."),
+                    Set.of("Beast Mastery")))
     );
 
-    /**
-     * The generic class features at a level after applying the class's WoW variant swaps — only
-     * when {@code specialization} marks the character as that class's WoW variant. Otherwise (null
-     * specialization, a hero-subclass specialization, or a class with no swaps) the generic list.
-     */
-    private static List<FeatureGain> variantFeaturesAt(String clazz, String specialization, int level) {
-        List<FeatureGain> generic = featuresAt(clazz, level);
-        if (clazz == null || !ClassProgression.isClassSpecialization(clazz, specialization)) return generic;
-        List<VariantOverride> overrides = VARIANT_FEATURE_OVERRIDES.getOrDefault(clazz.trim().toLowerCase(), List.of());
-        if (overrides.isEmpty()) return generic;
-        List<FeatureGain> result = new ArrayList<>(generic.size());
-        for (FeatureGain g : generic) {
-            FeatureGain swapped = g;
-            for (VariantOverride o : overrides) {
-                if (o.level() == level && o.replaces().equals(g.name())) swapped = o.with();
-            }
-            result.add(swapped);
-        }
-        return List.copyOf(result);
+    /** The class's WoW variant features at a level — only when the specialization marks that variant. */
+    private static List<VariantFeature> variantFeaturesAt(String clazz, String specialization, int level) {
+        if (clazz == null || !ClassProgression.isClassSpecialization(clazz, specialization)) return List.of();
+        return VARIANT_FEATURES.getOrDefault(clazz.trim().toLowerCase(), List.of()).stream()
+                .filter(v -> v.level() == level && v.appliesTo(specialization))
+                .toList();
     }
 
     /**
@@ -594,10 +619,11 @@ public final class ClassFeatures {
 
     /**
      * Features gained at a level by a class with the given subclass and specialization: the
-     * generic class features with the class's WoW variant swaps applied (when the specialization
+     * generic class features with the class's WoW variant features applied (when the specialization
      * is one of the class's WoW specializations — e.g. a WoW Shaman's Totems in place of Primal
-     * Knowledge), minus any the subclass replaces at that level, followed by the subclass's own
-     * features.
+     * Knowledge, or a WoW Evoker's Evoker Spells), minus any the subclass replaces at that level,
+     * followed by the subclass's own features (less any a variant feature replaces — e.g. the
+     * Evoker's Draconic Spells).
      */
     public static List<FeatureGain> featuresAt(String clazz, String subclass, String specialization, int level) {
         return taggedFeaturesAt(clazz, subclass, specialization, level).stream()
@@ -608,19 +634,36 @@ public final class ClassFeatures {
     /** The features at one level, each tagged with whether the subclass (rather than the class) grants it. */
     private static List<FeatureProgressionEntry> taggedFeaturesAt(String clazz, String subclass,
                                                                   String specialization, int level) {
-        List<FeatureGain> generic = variantFeaturesAt(clazz, specialization, level);
+        // Class features: the generic list with the WoW variant's swaps applied in place, then the
+        // variant features that replaced no generic feature.
+        List<VariantFeature> variants = variantFeaturesAt(clazz, specialization, level);
+        List<VariantFeature> unmatched = new ArrayList<>(variants);
+        List<FeatureGain> classFeatures = new ArrayList<>();
+        for (FeatureGain g : featuresAt(clazz, level)) {
+            VariantFeature swap = variants.stream()
+                    .filter(v -> g.name().equals(v.replaces())).findFirst().orElse(null);
+            classFeatures.add(swap == null ? g : swap.gain());
+            if (swap != null) unmatched.remove(swap);
+        }
+        Set<String> supersededSubclassFeatures = new HashSet<>();
+        for (VariantFeature v : unmatched) {
+            classFeatures.add(v.gain());
+            if (v.replaces() != null) supersededSubclassFeatures.add(v.replaces());
+        }
+
         SubclassGains gains = (clazz == null || subclass == null) ? null : SUBCLASS_FEATURES
                 .getOrDefault(clazz.trim().toLowerCase(), Map.of())
                 .getOrDefault(subclass.trim().toLowerCase(), Map.of())
                 .get(level);
         List<FeatureProgressionEntry> result = new ArrayList<>();
-        for (FeatureGain g : generic) {
+        for (FeatureGain g : classFeatures) {
             if (gains == null || !gains.replaces().contains(g.name())) {
                 result.add(new FeatureProgressionEntry(level, g.name(), g.desc(), false));
             }
         }
         if (gains != null) {
             for (FeatureGain g : gains.adds()) {
+                if (supersededSubclassFeatures.contains(g.name())) continue;
                 result.add(new FeatureProgressionEntry(level, g.name(), g.desc(), true));
             }
         }

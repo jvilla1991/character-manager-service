@@ -21,8 +21,11 @@ import java.util.Optional;
  *   <li>WoW class variants with no subclass lock — e.g. the WoW Druid (clazz {@code druid}, any
  *       normal circle), the WoW Paladin (clazz {@code paladin}, Holy/Protection/Retribution), the
  *       WoW Rogue (clazz {@code rogue}, Assassination/Outlaw/Subtlety), the WoW Shaman (clazz
- *       {@code barbarian}, Elemental/Enhancement/Restoration) and the WoW Priest (clazz
- *       {@code cleric}, Discipline/Holy/Shadow) —
+ *       {@code barbarian}, Elemental/Enhancement/Restoration), the WoW Priest (clazz
+ *       {@code cleric}, Discipline/Holy/Shadow) and the WoW Evoker (clazz {@code sorcerer},
+ *       Augmentation/Devastation/Preservation, which additionally REQUIRES the Draconic Sorcery
+ *       subclass) and the WoW Hunter (clazz {@code ranger}, Beast Mastery/Marksmanship/Survival,
+ *       whose Beast Master companion may carry a {@code petFamily}) —
  *       whose {@code specialization} is drawn from the class's list. A druid or paladin with no
  *       specialization is a base-game one. A paladin with the Ebon Blade hero subclass is a Death
  *       Knight: the hero subclass's list wins, so it can't take "Holy" (nor a WoW paladin "Frost").</li>
@@ -68,6 +71,44 @@ final class HeroClassRules {
                     "'" + subclass.trim() + "' is not available to " + pc.getClazz());
         }
         validateSpecialization(pc.getClazz(), subclass, pc.getSpecialization());
+        validateRequiredSubclass(pc.getClazz(), subclass, pc.getSpecialization());
+        validatePetFamily(pc.getClazz(), subclass, pc.getSpecialization(), pc.getPetFamily());
+    }
+
+    /**
+     * A pet family may be null; a non-null one is allowed only on a WoW Hunter (ranger with a
+     * Beast Mastery/Marksmanship/Survival specialization — never a Demon Hunter) whose subclass is
+     * Beast Master, and must be exactly (case-sensitively) one of
+     * {@link ClassProgression#PET_FAMILIES}. Anything else is a 400.
+     */
+    static void validatePetFamily(String clazz, String subclass, String specialization, String petFamily) {
+        if (petFamily == null) return;
+        if (!ClassProgression.petFamilyAllowed(clazz, subclass, specialization)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A pet family can only be set on a World of Warcraft Hunter whose subclass is "
+                            + ClassProgression.BEAST_MASTER);
+        }
+        if (!ClassProgression.isPetFamily(petFamily)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "'" + petFamily + "' is not a valid pet family (expected one of "
+                            + String.join(", ", ClassProgression.PET_FAMILIES) + ")");
+        }
+    }
+
+    /**
+     * A WoW variant that REQUIRES a subclass (e.g. the Evoker: a sorcerer with Augmentation/
+     * Devastation/Preservation must be a Draconic Sorcery sorcerer) may not have any other subclass
+     * or none at all. A base-game member (null specialization) and every variant without a required
+     * subclass are unaffected. Assumes the specialization itself has been validated.
+     */
+    static void validateRequiredSubclass(String clazz, String subclass, String specialization) {
+        String required = ClassProgression.requiredSubclass(clazz, specialization);
+        if (required == null) return;
+        if (subclass == null || !required.equalsIgnoreCase(subclass.trim())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A " + specialization + " " + clazz.trim().toLowerCase() + " must have the subclass '"
+                            + required + "'");
+        }
     }
 
     /**

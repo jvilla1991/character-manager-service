@@ -307,6 +307,12 @@ public final class ClassProgression {
     /** The WoW Priest's Shadow domain (cleric), offered only to WoW clerics. */
     public static final String SHADOW_DOMAIN = "Shadow Domain";
 
+    /** The PHB ranger subclass whose Primal Companion a WoW Hunter may give a pet family. */
+    public static final String BEAST_MASTER = "Beast Master";
+
+    /** The PHB sorcerer subclass every WoW Evoker must have (see {@link ClassSpecializations#requiredSubclass}). */
+    public static final String DRACONIC_SORCERY = "Draconic Sorcery";
+
     /**
      * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
      * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
@@ -323,11 +329,15 @@ public final class ClassProgression {
      * Selectable subclass names at the level-up subclass choice for a class + specialization: the
      * class's {@link #subclassesFor(String) catalog}, plus its WoW-only subclasses when the
      * specialization marks the character as that class's WoW variant (see
-     * {@link #isClassSpecialization}). Hero subclasses are never included.
+     * {@link #isClassSpecialization}). When that variant requires a subclass (e.g. the Evoker's
+     * Draconic Sorcery — see {@link #requiredSubclass}) only that subclass is offered. Hero
+     * subclasses are never included.
      */
     public static List<String> subclassesFor(String clazz, String specialization) {
         List<String> base = subclassesFor(clazz);
         if (!isClassSpecialization(clazz, specialization)) return base;
+        String required = requiredSubclass(clazz, specialization);
+        if (required != null) return List.of(required);
         List<String> wowOnly = WOW_ONLY_SUBCLASSES.getOrDefault(clazz.trim().toLowerCase(), List.of());
         if (wowOnly.isEmpty()) return base;
         List<String> all = new java.util.ArrayList<>(base);
@@ -406,7 +416,15 @@ public final class ClassProgression {
     // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
     // Destruction) adds only the specialization: no WoW-only patron and no feature overrides. The
     // WoW Priest — a cleric with Discipline/Holy/Shadow — unlocks the Discipline Domain and the
-    // Shadow Domain at its level-3 choice, with no feature overrides.
+    // Shadow Domain at its level-3 choice, with no feature overrides. The WoW Evoker — a sorcerer
+    // with Augmentation/Devastation/Preservation — is the first variant that REQUIRES a subclass:
+    // it must be a Draconic Sorcery sorcerer (see ClassSpecializations#requiredSubclass), and it
+    // gains Evoker Spells in place of Draconic Spells (see ClassFeatures' variant features). The WoW
+    // Hunter — a ranger with Beast Mastery/Marksmanship/Survival and no hero subclass — may take any
+    // ranger subclass; a Beast Mastery hunter gains Pet Specialization in place of Roving, and a
+    // hunter whose subclass is Beast Master may record its companion's pet family (see
+    // PET_FAMILIES). A ranger with the Demon Hunter hero subclass keeps the hero subclass's
+    // Devourer/Havoc/Vengeance list instead.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -419,16 +437,28 @@ public final class ClassProgression {
      * @param recommendedFightingStyles specialization → the Fighting Style options it recommends at
      *                               the class's Fighting Style choice (advisory only, never enforced;
      *                               empty for classes without that choice)
+     * @param requiredSubclass       the subclass every member of this WoW variant MUST have (e.g. the
+     *                               Evoker's Draconic Sorcery), enforced on create, update and
+     *                               level-up; {@code null} when the variant may take any subclass. A
+     *                               base-game member (specialization null) is never restricted.
      */
     public record ClassSpecializations(String baseClass, List<String> specializations,
                                        boolean respecOnLevelUp,
                                        Map<String, String> recommendedSubclasses,
-                                       Map<String, List<String>> recommendedFightingStyles) {
+                                       Map<String, List<String>> recommendedFightingStyles,
+                                       String requiredSubclass) {
 
-        /** A class whose specializations recommend no Fighting Style. */
+        /** A class whose specializations recommend no Fighting Style and require no subclass. */
         public ClassSpecializations(String baseClass, List<String> specializations, boolean respecOnLevelUp,
                                     Map<String, String> recommendedSubclasses) {
-            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, Map.of());
+            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, Map.of(), null);
+        }
+
+        /** A class whose specializations require no subclass. */
+        public ClassSpecializations(String baseClass, List<String> specializations, boolean respecOnLevelUp,
+                                    Map<String, String> recommendedSubclasses,
+                                    Map<String, List<String>> recommendedFightingStyles) {
+            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, recommendedFightingStyles, null);
         }
     }
 
@@ -473,6 +503,24 @@ public final class ClassProgression {
                     Map.of("Assassination", "Assassin",
                             "Outlaw", SWASHBUCKLER,
                             "Subtlety", "Soulknife")),
+            // WoW Hunter. A Demon Hunter (ranger + Demon Hunter) is NOT covered by this entry: its
+            // hero subclass's own list (Devourer/Havoc/Vengeance) always wins. The ranger's Fighting
+            // Style is due at level 2, so these styles show in the level-up preview.
+            new ClassSpecializations("ranger", List.of("Beast Mastery", "Marksmanship", "Survival"), true,
+                    Map.of("Beast Mastery", BEAST_MASTER,
+                            "Marksmanship", "Hunter",
+                            "Survival", BEAST_MASTER),
+                    Map.of("Beast Mastery", List.of("Archery"),
+                            "Marksmanship", List.of("Archery"),
+                            "Survival", List.of("Great Weapon Fighting"))),
+            // WoW Evoker. Every Evoker is a Draconic Sorcery sorcerer (required, not just
+            // recommended); sorcerers pick their subclass at level 1 (creation), so the level-up
+            // preview never has a subclass due. No Fighting Style choice.
+            new ClassSpecializations("sorcerer", List.of("Augmentation", "Devastation", "Preservation"), true,
+                    Map.of("Augmentation", DRACONIC_SORCERY,
+                            "Devastation", DRACONIC_SORCERY,
+                            "Preservation", DRACONIC_SORCERY),
+                    Map.of(), DRACONIC_SORCERY),
             // WoW Warlock. No WoW-only patron and no Fighting Style choice. Warlocks pick their
             // patron at level 1 (creation), so the level-up preview never has a subclass due; the
             // recommendations are kept for consistency with the other variants.
@@ -513,6 +561,16 @@ public final class ClassProgression {
     }
 
     /**
+     * The subclass a class specialization REQUIRES (e.g. any Evoker sorcerer → Draconic Sorcery), or
+     * null when the specialization is not one of the class's WoW specializations or its variant may
+     * take any subclass. A base-game member (null specialization) is never restricted.
+     */
+    public static String requiredSubclass(String clazz, String specialization) {
+        if (!isClassSpecialization(clazz, specialization)) return null;
+        return classSpecializations(clazz).map(ClassSpecializations::requiredSubclass).orElse(null);
+    }
+
+    /**
      * True when the specialization is one of the class's WoW {@link ClassSpecializations} values
      * (exact match) — i.e. the character is that class's World of Warcraft variant. False for a
      * null specialization and for hero-subclass specializations (e.g. a Death Knight's "Frost").
@@ -522,6 +580,37 @@ public final class ClassProgression {
         return classSpecializations(clazz)
                 .map(s -> s.specializations().contains(specialization))
                 .orElse(false);
+    }
+
+    // ── Hunter pet families (World of Warcraft tabletop module) ─────────────────
+    // A WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival) whose subclass is Beast Master may
+    // record the pet family of its Primal Companion (pc.pet_family, V51). The family decides which
+    // pet specialization (Cunning/Ferocity/Tenacity) a Beast Mastery hunter's Pet Specialization
+    // feature uses; that mapping is presentation and lives in the frontend.
+
+    /** The exact pet family names a WoW Hunter's beast may have (matched case-sensitively). */
+    public static final List<String> PET_FAMILIES = List.of(
+            "Basilisk", "Bat", "Bear", "Beetle", "Bird of Prey", "Blood Beast", "Boar", "Camel",
+            "Carrion Bird", "Cat", "Courser", "Crab", "Crocolisk", "Direhorn", "Dolphin", "Dragonhawk",
+            "Feathermane", "Fox", "Frenzy", "Gorilla", "Gruffhorn", "Hopper", "Hound", "Hydra", "Hyena",
+            "Lizard", "Mammoth", "Mechanized Animal", "Monkey", "Moth", "Oxen", "Raptor", "Ray",
+            "Riverbeast", "Rodent", "Scalehide", "Scorpid", "Serpent", "Shark", "Spider", "Stag",
+            "Tallstrider", "Threshadon", "Turtle", "Wasp", "Waterfowl", "Wolf");
+
+    /** True when the name is exactly one of {@link #PET_FAMILIES}. */
+    public static boolean isPetFamily(String name) {
+        return name != null && PET_FAMILIES.contains(name);
+    }
+
+    /**
+     * Whether a PC may record a pet family: only a WoW Hunter (a ranger whose specialization is one
+     * of the ranger's {@link ClassSpecializations} values — never a Demon Hunter) whose subclass is
+     * {@value #BEAST_MASTER} (case-insensitive).
+     */
+    public static boolean petFamilyAllowed(String clazz, String subclass, String specialization) {
+        return clazz != null && "ranger".equals(clazz.trim().toLowerCase())
+                && isClassSpecialization(clazz, specialization)
+                && subclass != null && BEAST_MASTER.equalsIgnoreCase(subclass.trim());
     }
 
     /** True when the subclass is the Demon Hunter hero subclass (case-insensitive). */

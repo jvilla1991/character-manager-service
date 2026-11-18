@@ -119,12 +119,22 @@ public class PCService {
      * character is still of that class and has no hero subclass — but only a stored value that is
      * one of that class's specializations is kept (so e.g. a Death Knight's "Frost" is dropped,
      * not carried, when the DM turns it into an ordinary paladin).
+     *
+     * <p>The WoW Hunter's pet family (V51) follows the same rule: a body carrying a NULL
+     * {@code petFamily} keeps the stored one while the character is still a WoW Hunter with the
+     * Beast Master subclass, and drops it otherwise (so leaving Beast Master never 400s on a stale
+     * family).
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         boolean carriesSpecialization = ClassProgression.isHeroSubclass(incoming.getSubclass())
                 || ClassProgression.isClassSpecialization(incoming.getClazz(), existing.getSpecialization());
         if (incoming.getSpecialization() == null && carriesSpecialization) {
             incoming.setSpecialization(existing.getSpecialization());
+        }
+        // Runs after the specialization carry-over, so a body omitting both keeps both.
+        if (incoming.getPetFamily() == null && ClassProgression.petFamilyAllowed(
+                incoming.getClazz(), incoming.getSubclass(), incoming.getSpecialization())) {
+            incoming.setPetFamily(existing.getPetFamily());
         }
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
