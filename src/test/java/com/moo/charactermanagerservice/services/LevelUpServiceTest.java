@@ -1359,9 +1359,10 @@ class LevelUpServiceTest {
         assertThat(names(service.preview(holyPaladin(6)).featuresGained())).containsExactly("Lightbringer's Aura");
         assertThat(names(service.preview(holyPaladin(14)).featuresGained())).containsExactly("Infusion of Light");
         assertThat(names(service.preview(holyPaladin(19)).featuresGained())).containsExactly("Holy Deliverance");
-        // Generic paladin features at those levels are kept alongside (none at 3/7/15/20 today).
+        // Generic paladin features at those levels are kept alongside (none at 3/7/15/20 today),
+        // and a PHB paladin gets its own oath's feature there instead.
         assertThat(names(service.preview(holyPaladin(5)).featuresGained())).containsExactly("Aura of Protection");
-        assertThat(names(service.preview(paladin(6)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(paladin(6)).featuresGained())).containsExactly("Aura of Devotion");
 
         PC l3 = wowPaladin(2, "Holy");
         service.applyLevelUp(l3, OATH_OF_THE_HOLY);
@@ -1634,12 +1635,13 @@ class LevelUpServiceTest {
         assertThat(names(service.preview(swashbuckler(8)).featuresGained())).containsExactly("Panache");
         assertThat(names(service.preview(swashbuckler(12)).featuresGained())).containsExactly("Dashing Strikes");
         assertThat(names(service.preview(swashbuckler(16)).featuresGained())).containsExactly("Master Duelist");
-        // Generic rogue features at other levels are unaffected, and a PHB rogue gains nothing at 9/13/17.
+        // Generic rogue features at other levels are unaffected, and a PHB rogue (a Thief here)
+        // gains its own archetype's features at 9/13/17, never the Swashbuckler's.
         assertThat(names(service.preview(swashbuckler(4)).featuresGained()))
                 .containsExactly("Cunning Strike", "Uncanny Dodge");
-        assertThat(names(service.preview(rogue(8)).featuresGained())).isEmpty();
-        assertThat(names(service.preview(rogue(12)).featuresGained())).isEmpty();
-        assertThat(names(service.preview(rogue(16)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(rogue(8)).featuresGained())).containsExactly("Supreme Sneak");
+        assertThat(names(service.preview(rogue(12)).featuresGained())).containsExactly("Use Magic Device");
+        assertThat(names(service.preview(rogue(16)).featuresGained())).containsExactly("Thief's Reflexes");
 
         PC l17 = swashbuckler(16);
         service.applyLevelUp(l17);
@@ -1945,7 +1947,9 @@ class LevelUpServiceTest {
                 .containsExactly("Reckless Attack", "Danger Sense");
         assertThat(names(service.preview(wowBarbarian(4, "Enhancement")).featuresGained()))
                 .containsExactly("Extra Attack", "Fast Movement");
-        assertThat(names(service.preview(wowBarbarian(5, "Restoration")).featuresGained())).isEmpty();
+        // Level 6 has no generic barbarian feature: only the path's own (a Berserker here).
+        assertThat(names(service.preview(wowBarbarian(5, "Restoration")).featuresGained()))
+                .containsExactly("Mindless Rage");
     }
 
     @Test
@@ -1961,10 +1965,10 @@ class LevelUpServiceTest {
                 .containsExactly("Primordial Bond");
         assertThat(names(service.preview(shamanOnPath(13, PATH_OF_THE_ELEMENTS, "Elemental")).featuresGained()))
                 .containsExactly("Elemental Overload");
-        // A PHB-path barbarian gains nothing at 6/10/14.
-        assertThat(names(service.preview(barbarian(5)).featuresGained())).isEmpty();
-        assertThat(names(service.preview(barbarian(9)).featuresGained())).isEmpty();
-        assertThat(names(service.preview(barbarian(13)).featuresGained())).isEmpty();
+        // A PHB-path barbarian (a Berserker here) gains its own path's features at 6/10/14.
+        assertThat(names(service.preview(barbarian(5)).featuresGained())).containsExactly("Mindless Rage");
+        assertThat(names(service.preview(barbarian(9)).featuresGained())).containsExactly("Retaliation");
+        assertThat(names(service.preview(barbarian(13)).featuresGained())).containsExactly("Intimidating Presence");
     }
 
     @Test
