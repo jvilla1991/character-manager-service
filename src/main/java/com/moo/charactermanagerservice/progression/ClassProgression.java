@@ -338,6 +338,52 @@ public final class ClassProgression {
                 .orElse(false);
     }
 
+    // ── Class specializations (World of Warcraft variants of a base class) ──────
+    // Unlike a hero subclass, a WoW class variant does NOT lock the subclass: e.g. the WoW Druid is
+    // the ordinary druid class plus a specialization (Balance/Feral/Guardian/Restoration) that only
+    // guides choices — its subclass is still picked normally at level 3 from SUBCLASS_CATALOG. A
+    // druid whose specialization is null is a base-game druid. The specialization is persisted in
+    // the same pc.specialization column the hero subclasses use.
+
+    /**
+     * WoW specializations available to a base class that has no hero subclass.
+     *
+     * @param baseClass              the class (lower-case)
+     * @param specializations        allowed specialization values (exact, case-sensitive)
+     * @param respecOnLevelUp        whether a level-up may change an already-chosen specialization
+     * @param recommendedSubclasses  specialization → the subclass it recommends (advisory only,
+     *                               never enforced)
+     */
+    public record ClassSpecializations(String baseClass, List<String> specializations,
+                                       boolean respecOnLevelUp,
+                                       Map<String, String> recommendedSubclasses) {}
+
+    private static final List<ClassSpecializations> CLASS_SPECIALIZATIONS = List.of(
+            new ClassSpecializations("druid", List.of("Balance", "Feral", "Guardian", "Restoration"), true,
+                    Map.of("Balance", "Circle of the Stars",
+                            "Feral", "Circle of the Moon",
+                            "Guardian", "Circle of the Moon",
+                            "Restoration", "Circle of the Land"))
+    );
+
+    /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */
+    public static Optional<ClassSpecializations> classSpecializations(String clazz) {
+        if (clazz == null) return Optional.empty();
+        String c = clazz.trim().toLowerCase();
+        return CLASS_SPECIALIZATIONS.stream().filter(s -> s.baseClass().equals(c)).findFirst();
+    }
+
+    /**
+     * The subclass a class specialization recommends (e.g. a Balance druid → Circle of the Stars),
+     * or null when the class has no specializations or the value is not one of them.
+     */
+    public static String recommendedSubclass(String clazz, String specialization) {
+        if (specialization == null) return null;
+        return classSpecializations(clazz)
+                .map(s -> s.recommendedSubclasses().get(specialization))
+                .orElse(null);
+    }
+
     /** True when the subclass is the Demon Hunter hero subclass (case-insensitive). */
     public static boolean isDemonHunter(String subclass) {
         return subclass != null && DEMON_HUNTER.equalsIgnoreCase(subclass.trim());

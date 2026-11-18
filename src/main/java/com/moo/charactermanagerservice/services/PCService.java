@@ -112,10 +112,14 @@ public class PCService {
      * <p>The hero-class specialization (V46, formerly the V45 rune) follows the
      * survival/exhaustion rule while the character is still a hero subclass: a body carrying a
      * NULL specialization (e.g. one built without the field) keeps the stored one. It is changed
-     * by sending a value (or via level-up, where the subclass allows it).
+     * by sending a value (or via level-up, where the subclass allows it). The same applies to a
+     * World of Warcraft class specialization (e.g. a WoW druid's Balance/Feral/...) while the
+     * character is still of that class and has no hero subclass.
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
-        if (incoming.getSpecialization() == null && ClassProgression.isHeroSubclass(incoming.getSubclass())) {
+        boolean carriesSpecialization = ClassProgression.isHeroSubclass(incoming.getSubclass())
+                || ClassProgression.classSpecializations(incoming.getClazz()).isPresent();
+        if (incoming.getSpecialization() == null && carriesSpecialization) {
             incoming.setSpecialization(existing.getSpecialization());
         }
         if (incoming.getSurvival() == null) {

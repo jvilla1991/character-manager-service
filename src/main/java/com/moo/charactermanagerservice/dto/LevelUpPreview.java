@@ -17,6 +17,11 @@ import java.util.Map;
  * Style level (Paladin/Ranger 2), and {@code fightingStyleOptions} then lists the selectable
  * names, sorted (the Fighting Style feats, plus {@code "Void Warrior"} for a Demon Hunter);
  * otherwise false and empty. The choice is optional in the request.
+ *
+ * <p>Recommended subclass: when {@code subclassDue} and the PC has a World of Warcraft class
+ * specialization (e.g. a Balance druid), {@code recommendedSubclass} names the option that
+ * specialization recommends (e.g. {@code "Circle of the Stars"}) so the SPA can highlight it;
+ * advisory only, never enforced. Otherwise null.
  */
 public record LevelUpPreview(
         int currentLevel,
@@ -39,7 +44,8 @@ public record LevelUpPreview(
         int currentSpellsKnown,
         int newSpellsKnown,
         boolean fightingStyleDue,
-        List<String> fightingStyleOptions
+        List<String> fightingStyleOptions,
+        String recommendedSubclass
 ) {
     /** Convenience constructor for a preview with no Fighting Style choice due. */
     public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
@@ -52,6 +58,6 @@ public record LevelUpPreview(
         this(currentLevel, newLevel, hitDie, conModifier, hpGained, newHpMax, currentProfBonus,
                 newProfBonus, currentSpellSlots, newSpellSlots, subclassDue, subclassOptions, asiDue,
                 featOptions, featuresGained, currentCantripsKnown, newCantripsKnown,
-                currentSpellsKnown, newSpellsKnown, false, List.of());
+                currentSpellsKnown, newSpellsKnown, false, List.of(), null);
     }
 }

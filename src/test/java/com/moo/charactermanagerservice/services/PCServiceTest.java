@@ -1409,4 +1409,123 @@ class PCServiceTest {
 
         verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, "Void Warrior");
     }
+
+    // --- WoW Druid (druid + class specialization, no subclass lock) ---
+
+    @Test
+    void addPC_acceptsEachDruidSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Balance", "Feral", "Guardian", "Restoration")) {
+            PC druid = new PC();
+            druid.setClazz("druid");
+            druid.setSpecialization(spec);
+
+            PC saved = pcService.addPC(druid);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_acceptsBaseGameDruid_withoutSpecialization() {
+        pc.setClazz("Druid");
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.addPC(pc).getSpecialization()).isNull();
+    }
+
+    @Test
+    void addPC_rejectsInvalidDruidSpecialization() {
+        for (String bad : List.of("balance", "Havoc", "Blood", "Shadow")) {
+            PC druid = new PC();
+            druid.setClazz("druid");
+            druid.setSpecialization(bad);
+
+            assertThatThrownBy(() -> pcService.addPC(druid))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void addPC_rejectsDruidSpecialization_onClassWithoutWowVariant() {
+        pc.setClazz("fighter");
+        pc.setSpecialization("Balance");
+
+        assertThatThrownBy(() -> pcService.addPC(pc))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeDruidSpecialization() {
+        pc.setClazz("druid");
+        pc.setSubclass("Circle of the Moon");
+        pc.setSpecialization("Feral");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("druid");
+        incoming.setSubclass("Circle of the Moon");
+        incoming.setSpecialization("Guardian");
+
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Guardian");
+    }
+
+    @Test
+    void updatePC_preservesDruidSpecialization_whenTheBodyOmitsIt() {
+        pc.setClazz("druid");
+        pc.setSpecialization("Restoration");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("druid"); // specialization null — built without the field
+
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Restoration");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidDruidSpecialization() {
+        pc.setClazz("druid");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("druid");
+        incoming.setSpecialization("Frost");
+
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsDruidSpecialization_andRejectsItOnFighter() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC druid = new PC();
+        druid.setId(1L);
+        druid.setClazz("druid");
+        druid.setSpecialization("Balance");
+        assertThat(pcService.updatePCAsDm(druid, null, dmId).getSpecialization()).isEqualTo("Balance");
+
+        PC fighter = new PC();
+        fighter.setId(1L);
+        fighter.setClazz("fighter");
+        fighter.setSpecialization("Balance");
+        assertThatThrownBy(() -> pcService.updatePCAsDm(fighter, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
 }
