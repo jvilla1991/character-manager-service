@@ -19,8 +19,9 @@ import java.util.Optional;
  *       {@value ClassProgression#DEMON_HUNTER}) — whose {@code specialization} is drawn from the
  *       hero subclass's own list;</li>
  *   <li>WoW class variants with no subclass lock — e.g. the WoW Druid (clazz {@code druid}, any
- *       normal circle), the WoW Paladin (clazz {@code paladin}, Holy/Protection/Retribution) and the
- *       WoW Rogue (clazz {@code rogue}, Assassination/Outlaw/Subtlety) —
+ *       normal circle), the WoW Paladin (clazz {@code paladin}, Holy/Protection/Retribution), the
+ *       WoW Rogue (clazz {@code rogue}, Assassination/Outlaw/Subtlety) and the WoW Shaman (clazz
+ *       {@code barbarian}, Elemental/Enhancement/Restoration) —
  *       whose {@code specialization} is drawn from the class's list. A druid or paladin with no
  *       specialization is a base-game one. A paladin with the Ebon Blade hero subclass is a Death
  *       Knight: the hero subclass's list wins, so it can't take "Holy" (nor a WoW paladin "Frost").</li>
