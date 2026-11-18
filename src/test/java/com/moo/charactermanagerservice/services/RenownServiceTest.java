@@ -131,6 +131,41 @@ class RenownServiceTest {
         verify(scores).save(argThat(s -> s.getPcId() == 1L && s.getFactionId() == 10L && s.getScore() == 1));
     }
 
+    @Test void savesABatchWithOneLogEntry() {
+        when(factions.findById(10L)).thenReturn(Optional.of(faction(10, null)));
+        when(factions.findById(11L)).thenReturn(Optional.of(faction(11, 10L)));
+        when(factions.findById(12L)).thenReturn(Optional.of(faction(12, null)));
+        PcRenown maxed = new PcRenown(); maxed.setPcId(1L); maxed.setFactionId(12L); maxed.setScore(100);
+        PcRenown eleven = new PcRenown(); eleven.setPcId(1L); eleven.setFactionId(11L); eleven.setScore(-3);
+        when(scores.findByPcIdAndFactionId(1L, 10L)).thenReturn(Optional.empty());
+        when(scores.findByPcIdAndFactionId(1L, 11L)).thenReturn(Optional.of(eleven));
+        when(scores.findByPcIdAndFactionId(1L, 12L)).thenReturn(Optional.of(maxed));
+
+        service.saveAll(1L, List.of(new RenownChange(10L, 5), new RenownChange(11L, -2),
+                new RenownChange(12L, 4)), dm);
+
+        verify(scores).save(argThat(s -> s.getFactionId() == 10L && s.getScore() == 5));
+        verify(scores).save(argThat(s -> s.getFactionId() == 11L && s.getScore() == -5));
+        verify(scores, times(2)).save(any()); // the already-maxed score did not move
+        verify(log).log(1L, PcActivityType.DM_EDIT,
+                "Renown changed: Guild 10 +5 (now 5); Guild 11 −2 (now -5)", dm);
+        verifyNoMoreInteractions(log);
+    }
+
+    @Test void batchRejectsPlayersEmptyAndMalformedInput() {
+        assertThatThrownBy(() -> service.saveAll(1L, List.of(new RenownChange(10L, 1)), owner))
+                .isInstanceOf(ResponseStatusException.class);
+        List<List<RenownChange>> bad = Arrays.asList(null, List.of(),
+                List.of(new RenownChange(null, 1)), List.of(new RenownChange(10L, null)),
+                List.of(new RenownChange(10L, 201)),
+                List.of(new RenownChange(10L, 1), new RenownChange(10L, 2)));
+        for (List<RenownChange> changes : bad) {
+            assertThatThrownBy(() -> service.saveAll(1L, changes, dm))
+                    .isInstanceOf(ResponseStatusException.class);
+        }
+        verifyNoInteractions(scores, log);
+    }
+
     @Test void rejectsForeignFactionAdjustment() {
         CampaignFaction other = faction(10, null); other.setCampaignId(8L);
         when(factions.findById(10L)).thenReturn(Optional.of(other));

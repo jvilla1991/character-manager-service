@@ -27,6 +27,13 @@ public class RenownController {
                 .body(service.create(pcId, request, ((User) authentication.getPrincipal()).getUuid()));
     }
 
+    /** DM saves a whole batch of score changes at once — one activity-log entry. */
+    @PatchMapping
+    public List<RenownView> saveAll(@PathVariable Long pcId, @RequestBody List<RenownChange> changes,
+                                    Authentication authentication) {
+        return service.saveAll(pcId, changes, ((User) authentication.getPrincipal()).getUuid());
+    }
+
     @PatchMapping("/{factionId}")
     public RenownView adjust(@PathVariable Long pcId, @PathVariable Long factionId,
                              @RequestBody RenownAdjustment request, Authentication authentication) {
