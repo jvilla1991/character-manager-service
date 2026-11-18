@@ -16,7 +16,9 @@ import java.util.Set;
  * <p>Scope: the generic class features each class gains at levels 2–20, plus — via
  * {@link #featuresAt(String, String, int)} — the features of subclasses modeled here (currently
  * the Oath of the Ebon Blade and Demon Hunter hero subclasses, which also replace some generic
- * Paladin/Ranger features). Level-1 features are excluded (granted at character creation), as are Ability Score
+ * Paladin/Ranger features), plus — via {@link #featuresAt(String, String, String, int)} — the
+ * generic features a World of Warcraft class variant swaps for its own (the WoW Shaman's Totems).
+ * Level-1 features are excluded (granted at character creation), as are Ability Score
  * Improvements (handled by the ASI/feat choice). Descriptions are concise summaries — see the
  * 2024 Player's Handbook (or the relevant module) for full text.
  */
@@ -236,8 +238,9 @@ public final class ClassFeatures {
 
     // ── Subclass features ──────────────────────────────────────────────────────
     // Only subclasses whose level-up features are modeled server-side appear here (today: the
-    // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, and the WoW
-    // Rogue's Swashbuckler). Each level entry may REPLACE generic class features by name
+    // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, the WoW
+    // Rogue's Swashbuckler, and the WoW Shaman's Path of the Elements and Path of the Spiritual
+    // Guardian). Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -257,12 +260,75 @@ public final class ClassFeatures {
 
     /** class (lower-case) -> subclass (lower-case) -> level -> gains. */
     private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = Map.of(
+            "barbarian", Map.of(
+                    ClassProgression.PATH_OF_THE_ELEMENTS.toLowerCase(), pathOfTheElements(),
+                    ClassProgression.PATH_OF_THE_SPIRITUAL_GUARDIAN.toLowerCase(), pathOfTheSpiritualGuardian()),
             "paladin", Map.of(
                     ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade(),
                     ClassProgression.OATH_OF_THE_HOLY.toLowerCase(), oathOfTheHoly()),
             "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter()),
             "rogue", Map.of(ClassProgression.SWASHBUCKLER.toLowerCase(), swashbuckler())
     );
+
+    /**
+     * Path of the Elements, the WoW Shaman's Elemental path (barbarian; offered only to WoW
+     * barbarians). Purely additive: the generic Barbarian table has no subclass placeholders.
+     */
+    private static Map<Integer, SubclassGains> pathOfTheElements() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Raging Elements", "When you enter your Rage, pick one of the options below; while the Rage lasts you can "
+                        + "take a Bonus Action to use that option again or switch to another. Save DC = 8 + your Constitution "
+                        + "modifier + your Proficiency Bonus. Icefury: roll d8s equal to your Rage Damage bonus and make a melee "
+                        + "or ranged spell attack (Constitution is your casting ability) against a creature within 30 feet, dealing "
+                        + "that much Cold damage on a hit; the next Fire damage it takes before the end of your next turn gains "
+                        + "an extra 1d10. Lava Burst: a creature within 30 feet makes a Dexterity save, taking Fire damage equal "
+                        + "to d4s equal to your Rage Damage bonus on a failure or half as much on a success; on a failure, the "
+                        + "next Lightning damage it takes before the end of your next turn gains an extra 1d8. Lightning Bolt: a "
+                        + "creature within 30 feet makes a Dexterity save, taking Lightning damage equal to d6s equal to your Rage "
+                        + "Damage bonus on a failure or half as much on a success; on a failure, the next Cold damage it takes "
+                        + "before the end of your next turn gains an extra 1d6.")));
+        f.put(6, adds(
+                f("Echo of the Elements", "You know the Elementalism cantrip. You can also expend one use of your Rage to cast "
+                        + "Daylight, Water Walk, or Wind Wall; Wisdom is your spellcasting ability for these spells.")));
+        f.put(10, adds(
+                f("Primordial Bond", "While your Rage is active, you have Resistance to Cold, Fire, and Lightning damage.")));
+        f.put(14, adds(
+                f("Elemental Overload", "Your Raging Elements options grow stronger. Icefury: hit or miss, the target subtracts "
+                        + "half the number you rolled (round down) from its next damage roll made before the start of your next "
+                        + "turn. Lava Burst: whether or not it succeeds on the save, the target and each enemy within 10 feet of "
+                        + "it start burning. Lightning Bolt: whether or not it succeeds on the save, the lightning leaps to a "
+                        + "second target of your choice within 30 feet of the first, which makes a Dexterity save, taking the "
+                        + "full damage on a failure or half as much on a success.")));
+        return f;
+    }
+
+    /**
+     * Path of the Spiritual Guardian, the WoW Shaman's Enhancement path (barbarian; offered only to
+     * WoW barbarians). Purely additive.
+     */
+    private static Map<Integer, SubclassGains> pathOfTheSpiritualGuardian() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Spiritual Protectors", "While your Rage is active, whenever you hit a creature with a weapon or an Unarmed "
+                        + "Strike, choose one effect. Distract: until the start of your next turn, the target has Disadvantage "
+                        + "on attack rolls against anyone other than you or another Barbarian with this feature. Hinder: you "
+                        + "also apply the Slow mastery property, in addition to the weapon's own mastery property. Strike: the "
+                        + "hit deals an extra 1d4 Cold, Fire, or Lightning damage (your choice).")));
+        f.put(6, adds(
+                f("Spirit Shield", "While your Rage is active, when a creature you can see within 30 feet of you takes damage, "
+                        + "you can take a Reaction to reduce that damage by d6s equal to your Rage Damage bonus.")));
+        f.put(10, adds(
+                f("Consult the Spirits", "You can cast Augury or Clairvoyance without a spell slot or Material components; when "
+                        + "you cast Clairvoyance, an invisible guardian spirit appears as its sensor. Wisdom is your spellcasting "
+                        + "ability for these spells. Once you use this feature, you can't do so again until you finish a Short "
+                        + "or Long Rest.")));
+        f.put(14, adds(
+                f("Spirits' Fury", "Once per turn, when you make a melee weapon attack roll as part of the Attack action and "
+                        + "the d20 shows 18, 19, or 20, you can make one additional attack with the same weapon as part of that "
+                        + "action.")));
+        return f;
+    }
 
     /**
      * Swashbuckler, the WoW Rogue's own level-3 archetype (offered only to WoW rogues). Purely
@@ -369,13 +435,72 @@ public final class ClassFeatures {
         return f;
     }
 
+    // ── Variant feature overrides ──────────────────────────────────────────────
+    // Generic class features that a World of Warcraft class variant swaps for its own, keyed by
+    // class. Unlike subclass features these depend on the SPECIALIZATION: they apply to every
+    // member whose specialization is one of the class's WoW specializations (see
+    // ClassProgression#isClassSpecialization), whatever its subclass. Today: the WoW Shaman
+    // (barbarian + Elemental/Enhancement/Restoration) gains Totems instead of Primal Knowledge.
+
+    /** One variant swap: at {@code level}, the generic feature {@code replaces} becomes {@code with}. */
+    private record VariantOverride(int level, String replaces, FeatureGain with) {}
+
+    /** class (lower-case) -> its WoW variant's feature swaps. */
+    private static final Map<String, List<VariantOverride>> VARIANT_FEATURE_OVERRIDES = Map.of(
+            "barbarian", List.of(new VariantOverride(3, "Primal Knowledge",
+                    f("Totems", "Replaces Primal Knowledge. As a Bonus Action, you plant a Small totem (AC 10, 1 HP) in an "
+                            + "unoccupied space within 10 feet of you. It lasts for 1 minute, until it is destroyed, or until "
+                            + "you plant another. When you plant it, choose one effect; at the end of each of your turns the "
+                            + "totem pulses that effect through a 30-foot Emanation. Earthbind: enemies in the Emanation have "
+                            + "their Speed reduced by 10 feet until the end of your next turn. Primal Knowledge: allies in the "
+                            + "Emanation can use Strength instead of the usual ability for Acrobatics, Intimidation, Perception, "
+                            + "Stealth, or Survival checks until the end of your next turn; once you choose this effect, you "
+                            + "can't choose it again until you finish a Long Rest unless you expend a use of your Rage. Tremor: "
+                            + "allies in the Emanation have Immunity to the Charmed and Frightened conditions until the end of "
+                            + "your next turn, and those conditions already on them are suppressed. Wind Rush: allies in the "
+                            + "Emanation gain a 10-foot bonus to their Speed until the end of your next turn.")))
+    );
+
+    /**
+     * The generic class features at a level after applying the class's WoW variant swaps — only
+     * when {@code specialization} marks the character as that class's WoW variant. Otherwise (null
+     * specialization, a hero-subclass specialization, or a class with no swaps) the generic list.
+     */
+    private static List<FeatureGain> variantFeaturesAt(String clazz, String specialization, int level) {
+        List<FeatureGain> generic = featuresAt(clazz, level);
+        if (clazz == null || !ClassProgression.isClassSpecialization(clazz, specialization)) return generic;
+        List<VariantOverride> overrides = VARIANT_FEATURE_OVERRIDES.getOrDefault(clazz.trim().toLowerCase(), List.of());
+        if (overrides.isEmpty()) return generic;
+        List<FeatureGain> result = new ArrayList<>(generic.size());
+        for (FeatureGain g : generic) {
+            FeatureGain swapped = g;
+            for (VariantOverride o : overrides) {
+                if (o.level() == level && o.replaces().equals(g.name())) swapped = o.with();
+            }
+            result.add(swapped);
+        }
+        return List.copyOf(result);
+    }
+
     /**
      * Features gained at a level by a class with the given subclass: the generic class features,
      * minus any the subclass replaces at that level, followed by the subclass's own features.
-     * A null/unknown subclass (or one with no modeled features) yields the generic list.
+     * A null/unknown subclass (or one with no modeled features) yields the generic list. Ignores
+     * WoW variant feature swaps — see {@link #featuresAt(String, String, String, int)}.
      */
     public static List<FeatureGain> featuresAt(String clazz, String subclass, int level) {
-        List<FeatureGain> generic = featuresAt(clazz, level);
+        return featuresAt(clazz, subclass, null, level);
+    }
+
+    /**
+     * Features gained at a level by a class with the given subclass and specialization: the
+     * generic class features with the class's WoW variant swaps applied (when the specialization
+     * is one of the class's WoW specializations — e.g. a WoW Shaman's Totems in place of Primal
+     * Knowledge), minus any the subclass replaces at that level, followed by the subclass's own
+     * features.
+     */
+    public static List<FeatureGain> featuresAt(String clazz, String subclass, String specialization, int level) {
+        List<FeatureGain> generic = variantFeaturesAt(clazz, specialization, level);
         if (clazz == null || subclass == null) return generic;
         SubclassGains gains = SUBCLASS_FEATURES
                 .getOrDefault(clazz.trim().toLowerCase(), Map.of())

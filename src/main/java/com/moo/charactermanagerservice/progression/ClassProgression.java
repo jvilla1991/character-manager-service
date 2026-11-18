@@ -237,6 +237,8 @@ public final class ClassProgression {
 
     /** Valid subclass names per class (2024 PHB, plus Twilight Domain from Tasha's). */
     private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.ofEntries(
+            // The WoW Shaman's two paths are offered on top of these to WoW barbarians only — see
+            // WOW_ONLY_SUBCLASSES.
             Map.entry("barbarian", List.of(
                     "Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot")),
             Map.entry("bard", List.of(
@@ -291,12 +293,19 @@ public final class ClassProgression {
     /** The WoW Rogue's Outlaw archetype, offered only to WoW rogues. */
     public static final String SWASHBUCKLER = "Swashbuckler";
 
+    /** The WoW Shaman's Elemental path (barbarian), offered only to WoW barbarians. */
+    public static final String PATH_OF_THE_ELEMENTS = "Path of the Elements";
+
+    /** The WoW Shaman's Enhancement path (barbarian), offered only to WoW barbarians. */
+    public static final String PATH_OF_THE_SPIRITUAL_GUARDIAN = "Path of the Spiritual Guardian";
+
     /**
      * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
      * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
      * values. A base-game member (specialization null) never sees these.
      */
     private static final Map<String, List<String>> WOW_ONLY_SUBCLASSES = Map.of(
+            "barbarian", List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN),
             "paladin", List.of(OATH_OF_THE_HOLY),
             "rogue", List.of(SWASHBUCKLER)
     );
@@ -381,7 +390,11 @@ public final class ClassProgression {
     // (Holy/Protection/Retribution) works the same way, except that it also unlocks a WoW-only
     // subclass (Oath of the Holy) at its level-3 choice; a paladin with the Ebon Blade hero
     // subclass is a Death Knight and keeps the hero subclass's list instead. The WoW Rogue
-    // (Assassination/Outlaw/Subtlety) likewise unlocks the Swashbuckler at its level-3 choice.
+    // (Assassination/Outlaw/Subtlety) likewise unlocks the Swashbuckler at its level-3 choice, and
+    // the WoW Shaman — a barbarian with Elemental/Enhancement/Restoration — unlocks the Path of the
+    // Elements and the Path of the Spiritual Guardian. The Shaman is also the first variant whose
+    // specialization swaps a generic class feature (Totems for Primal Knowledge) — see
+    // ClassFeatures' variant feature overrides.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -408,6 +421,11 @@ public final class ClassProgression {
     }
 
     private static final List<ClassSpecializations> CLASS_SPECIALIZATIONS = List.of(
+            // WoW Shaman. Barbarians have no Fighting Style choice, so no recommended styles.
+            new ClassSpecializations("barbarian", List.of("Elemental", "Enhancement", "Restoration"), true,
+                    Map.of("Elemental", PATH_OF_THE_ELEMENTS,
+                            "Enhancement", PATH_OF_THE_SPIRITUAL_GUARDIAN,
+                            "Restoration", "Path of the World Tree")),
             new ClassSpecializations("druid", List.of("Balance", "Feral", "Guardian", "Restoration"), true,
                     Map.of("Balance", "Circle of the Stars",
                             "Feral", "Circle of the Moon",

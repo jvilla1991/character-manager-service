@@ -1647,4 +1647,233 @@ class LevelUpServiceTest {
         service.applyLevelUp(l9);
         assertThat(l9.getFeatures()).contains("Goad").contains("Awe");
     }
+
+    // --- WoW Shaman (barbarian + Elemental/Enhancement/Restoration, two WoW-only paths, Totems) ---
+
+    private static final String PATH_OF_THE_ELEMENTS = "Path of the Elements";
+    private static final String PATH_OF_THE_SPIRITUAL_GUARDIAN = "Path of the Spiritual Guardian";
+    private static final List<String> SHAMAN_SPECS = List.of("Elemental", "Enhancement", "Restoration");
+    private static final List<String> PHB_BARBARIAN_SUBCLASSES =
+            List.of("Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot");
+
+    private static PC barbarian(int level) {
+        PC b = pc("Barbarian", level, 14, 10 * level, 10 * level);
+        if (level >= 3) b.setSubclass("Path of the Berserker");
+        return b;
+    }
+
+    private static PC wowBarbarian(int level, String spec) {
+        PC b = barbarian(level);
+        b.setSpecialization(spec);
+        return b;
+    }
+
+    private static PC shamanOnPath(int level, String path, String spec) {
+        PC b = pc("Barbarian", level, 14, 10 * level, 10 * level);
+        b.setSubclass(path);
+        b.setSpecialization(spec);
+        return b;
+    }
+
+    @Test
+    void applyLevelUp_barbarian_acceptsEachShamanSpecialization_andRejectsOthers() {
+        for (String spec : SHAMAN_SPECS) {
+            PC b = barbarian(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(b, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(b.getSpecialization()).isEqualTo(spec);
+            assertThat(b.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("elemental", "Enhance", "Holy", "Frost", "Outlaw", "Balance")) {
+            PC b = wowBarbarian(5, "Elemental");
+            assertThatThrownBy(() -> service.applyLevelUp(b, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(b.getSpecialization()).isEqualTo("Elemental");
+            assertThat(b.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowBarbarian_mayRespec() {
+        PC b = wowBarbarian(5, "Elemental");
+        service.applyLevelUp(b, null, null, null, null, HpMode.AVERAGE, "Restoration");
+        assertThat(b.getSpecialization()).isEqualTo("Restoration");
+    }
+
+    @Test
+    void preview_shamanPaths_offeredOnlyToWowBarbarians() {
+        LevelUpPreview base = service.preview(barbarian(2)); // 2 -> 3, no specialization
+        assertThat(base.subclassDue()).isTrue();
+        assertThat(base.subclassOptions()).containsExactlyElementsOf(PHB_BARBARIAN_SUBCLASSES);
+
+        for (String spec : SHAMAN_SPECS) {
+            assertThat(service.preview(wowBarbarian(2, spec)).subclassOptions())
+                    .containsAll(PHB_BARBARIAN_SUBCLASSES)
+                    .contains(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN)
+                    .doesNotContain(SWASHBUCKLER, OATH_OF_THE_HOLY)
+                    .hasSize(PHB_BARBARIAN_SUBCLASSES.size() + 2);
+        }
+
+        // Other WoW classes don't get them.
+        assertThat(service.preview(wowRogue(2, "Outlaw")).subclassOptions())
+                .doesNotContain(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN);
+        assertThat(service.preview(wowPaladin(2, "Holy")).subclassOptions())
+                .doesNotContain(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN);
+        PC d = druid(2);
+        d.setSpecialization("Restoration");
+        assertThat(service.preview(d).subclassOptions())
+                .doesNotContain(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN);
+    }
+
+    @Test
+    void applyLevelUp_shamanPaths_acceptedForWowBarbarian() {
+        for (String path : List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN)) {
+            PC b = wowBarbarian(2, "Enhancement");
+            service.applyLevelUp(b, path);
+            assertThat(b.getSubclass()).isEqualTo(path);
+            assertThat(b.getLevel()).isEqualTo((short) 3);
+        }
+    }
+
+    @Test
+    void applyLevelUp_shamanPath_acceptedWhenTheSameRequestSetsTheSpecialization() {
+        PC b = barbarian(2);
+        service.applyLevelUp(b, PATH_OF_THE_ELEMENTS, null, null, null, HpMode.AVERAGE, "Elemental");
+        assertThat(b.getSubclass()).isEqualTo(PATH_OF_THE_ELEMENTS);
+        assertThat(b.getSpecialization()).isEqualTo("Elemental");
+        // The specialization set in this request also makes it a Shaman for this level's features.
+        assertThat(b.getFeatures()).contains("\"name\":\"Totems\"").doesNotContain("\"name\":\"Primal Knowledge\"");
+    }
+
+    @Test
+    void applyLevelUp_shamanPaths_rejectedForBaseBarbarian_andOtherWowClasses() {
+        for (String path : List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN)) {
+            PC b = barbarian(2);
+            assertThatThrownBy(() -> service.applyLevelUp(b, path))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(b.getSubclass()).isNull();
+            assertThat(b.getLevel()).isEqualTo((short) 2);
+
+            PC r = wowRogue(2, "Outlaw");
+            assertThatThrownBy(() -> service.applyLevelUp(r, path))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        // And a WoW barbarian can't take another class's WoW-only subclass.
+        PC wb = wowBarbarian(2, "Elemental");
+        assertThatThrownBy(() -> service.applyLevelUp(wb, SWASHBUCKLER))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void preview_wowBarbarian_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Elemental", PATH_OF_THE_ELEMENTS},
+                {"Enhancement", PATH_OF_THE_SPIRITUAL_GUARDIAN},
+                {"Restoration", "Path of the World Tree"},
+        };
+        for (String[] c : cases) {
+            LevelUpPreview p = service.preview(wowBarbarian(2, c[0]));
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        assertThat(service.preview(barbarian(2)).recommendedSubclass()).isNull();
+        assertThat(service.preview(wowBarbarian(4, "Elemental")).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void totems_replacePrimalKnowledgeAtLevel3_forEveryShamanSpecAndSubclass() {
+        // Preview at 2 -> 3 (subclass not chosen yet).
+        for (String spec : SHAMAN_SPECS) {
+            assertThat(names(service.preview(wowBarbarian(2, spec)).featuresGained())).containsExactly("Totems");
+        }
+        // Applied with every subclass a WoW barbarian can take.
+        List<String> paths = List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN,
+                "Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot");
+        for (String spec : SHAMAN_SPECS) {
+            for (String path : paths) {
+                PC b = wowBarbarian(2, spec);
+                service.applyLevelUp(b, path);
+                assertThat(b.getFeatures()).as(spec + " / " + path)
+                        .contains("\"name\":\"Totems\"")
+                        .contains("Earthbind").contains("Tremor").contains("Wind Rush")
+                        .doesNotContain("\"name\":\"Primal Knowledge\"");
+            }
+        }
+        // A base barbarian still gets Primal Knowledge.
+        assertThat(names(service.preview(barbarian(2)).featuresGained())).containsExactly("Primal Knowledge");
+        PC base = barbarian(2);
+        service.applyLevelUp(base, "Path of the Berserker");
+        assertThat(base.getFeatures()).contains("\"name\":\"Primal Knowledge\"").doesNotContain("Totems");
+    }
+
+    @Test
+    void totems_onlyAtLevel3_andGenericBarbarianFeaturesOtherwiseUnchanged() {
+        assertThat(names(service.preview(wowBarbarian(1, "Elemental")).featuresGained()))
+                .containsExactly("Reckless Attack", "Danger Sense");
+        assertThat(names(service.preview(wowBarbarian(4, "Enhancement")).featuresGained()))
+                .containsExactly("Extra Attack", "Fast Movement");
+        assertThat(names(service.preview(wowBarbarian(5, "Restoration")).featuresGained())).isEmpty();
+    }
+
+    @Test
+    void pathOfTheElements_addsFeaturesAt3_6_10_14() {
+        PC l3 = wowBarbarian(2, "Elemental");
+        service.applyLevelUp(l3, PATH_OF_THE_ELEMENTS);
+        assertThat(l3.getFeatures()).contains("\"name\":\"Raging Elements\"")
+                .contains("Icefury").contains("Lava Burst").contains("Lightning Bolt");
+
+        assertThat(names(service.preview(shamanOnPath(5, PATH_OF_THE_ELEMENTS, "Elemental")).featuresGained()))
+                .containsExactly("Echo of the Elements");
+        assertThat(names(service.preview(shamanOnPath(9, PATH_OF_THE_ELEMENTS, "Elemental")).featuresGained()))
+                .containsExactly("Primordial Bond");
+        assertThat(names(service.preview(shamanOnPath(13, PATH_OF_THE_ELEMENTS, "Elemental")).featuresGained()))
+                .containsExactly("Elemental Overload");
+        // A PHB-path barbarian gains nothing at 6/10/14.
+        assertThat(names(service.preview(barbarian(5)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(barbarian(9)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(barbarian(13)).featuresGained())).isEmpty();
+    }
+
+    @Test
+    void pathOfTheSpiritualGuardian_addsFeaturesAt3_6_10_14() {
+        PC l3 = wowBarbarian(2, "Enhancement");
+        service.applyLevelUp(l3, PATH_OF_THE_SPIRITUAL_GUARDIAN);
+        assertThat(l3.getFeatures()).contains("\"name\":\"Spiritual Protectors\"")
+                .contains("Distract").contains("Hinder").contains("Strike");
+
+        assertThat(names(service.preview(shamanOnPath(5, PATH_OF_THE_SPIRITUAL_GUARDIAN, "Enhancement")).featuresGained()))
+                .containsExactly("Spirit Shield");
+        assertThat(names(service.preview(shamanOnPath(9, PATH_OF_THE_SPIRITUAL_GUARDIAN, "Enhancement")).featuresGained()))
+                .containsExactly("Consult the Spirits");
+        assertThat(names(service.preview(shamanOnPath(13, PATH_OF_THE_SPIRITUAL_GUARDIAN, "Enhancement")).featuresGained()))
+                .containsExactly("Spirits' Fury");
+
+        PC l14 = shamanOnPath(13, PATH_OF_THE_SPIRITUAL_GUARDIAN, "Enhancement");
+        service.applyLevelUp(l14);
+        assertThat(l14.getFeatures()).contains("\"name\":\"Spirits' Fury\"");
+    }
+
+    @Test
+    void variantFeatureSwap_doesNotAffectOtherClasses() {
+        // Other WoW variants keep their generic level-3 features; a Death Knight's spec is not a class spec.
+        assertThat(names(service.preview(wowRogue(2, "Subtlety")).featuresGained())).containsExactly("Steady Aim");
+        PC d = druid(2);
+        d.setSpecialization("Restoration");
+        assertThat(names(service.preview(d).featuresGained()))
+                .containsExactlyElementsOf(names(service.preview(druid(2)).featuresGained()));
+        assertThat(names(service.preview(wowPaladin(1, "Holy")).featuresGained()))
+                .containsExactly("Fighting Style", "Divine Smite");
+        // The specialization-less overload still yields the generic barbarian list.
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("barbarian", PATH_OF_THE_ELEMENTS, 3)))
+                .containsExactly("Primal Knowledge", "Raging Elements");
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("barbarian", PATH_OF_THE_ELEMENTS, "Elemental", 3)))
+                .containsExactly("Totems", "Raging Elements");
+    }
 }
