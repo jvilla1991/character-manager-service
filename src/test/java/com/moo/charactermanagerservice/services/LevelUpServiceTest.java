@@ -1491,4 +1491,160 @@ class LevelUpServiceTest {
         d.setSpecialization("Feral");
         assertThat(service.preview(d).recommendedFightingStyles()).isEmpty();
     }
+
+    // --- WoW Rogue (rogue + Assassination/Outlaw/Subtlety, Swashbuckler) ---
+
+    private static final String SWASHBUCKLER = "Swashbuckler";
+    private static final List<String> ROGUE_SPECS = List.of("Assassination", "Outlaw", "Subtlety");
+    private static final List<String> PHB_ROGUE_SUBCLASSES =
+            List.of("Arcane Trickster", "Assassin", "Soulknife", "Thief");
+
+    private static PC rogue(int level) {
+        PC r = pc("Rogue", level, 14, 8 * level, 8 * level);
+        if (level >= 3) r.setSubclass("Thief");
+        return r;
+    }
+
+    private static PC wowRogue(int level, String spec) {
+        PC r = rogue(level);
+        r.setSpecialization(spec);
+        return r;
+    }
+
+    private static PC swashbuckler(int level) {
+        PC r = pc("Rogue", level, 14, 8 * level, 8 * level);
+        r.setSubclass(SWASHBUCKLER);
+        r.setSpecialization("Outlaw");
+        return r;
+    }
+
+    @Test
+    void applyLevelUp_rogue_acceptsEachWowSpecialization_andRejectsOthers() {
+        for (String spec : ROGUE_SPECS) {
+            PC r = rogue(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(r.getSpecialization()).isEqualTo(spec);
+            assertThat(r.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("outlaw", "Combat", "Holy", "Frost")) {
+            PC r = wowRogue(5, "Outlaw");
+            assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(r.getSpecialization()).isEqualTo("Outlaw");
+            assertThat(r.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowRogue_mayRespec() {
+        PC r = wowRogue(5, "Assassination");
+        service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, "Subtlety");
+        assertThat(r.getSpecialization()).isEqualTo("Subtlety");
+    }
+
+    @Test
+    void preview_swashbuckler_offeredOnlyToWowRogues() {
+        LevelUpPreview base = service.preview(rogue(2)); // 2 -> 3, no specialization
+        assertThat(base.subclassDue()).isTrue();
+        assertThat(base.subclassOptions()).containsExactlyElementsOf(PHB_ROGUE_SUBCLASSES);
+
+        for (String spec : ROGUE_SPECS) {
+            assertThat(service.preview(wowRogue(2, spec)).subclassOptions())
+                    .containsAll(PHB_ROGUE_SUBCLASSES).contains(SWASHBUCKLER)
+                    .doesNotContain(OATH_OF_THE_HOLY);
+        }
+
+        // Other WoW classes don't get it.
+        assertThat(service.preview(wowPaladin(2, "Holy")).subclassOptions()).doesNotContain(SWASHBUCKLER);
+        PC d = druid(2);
+        d.setSpecialization("Feral");
+        assertThat(service.preview(d).subclassOptions()).doesNotContain(SWASHBUCKLER);
+    }
+
+    @Test
+    void applyLevelUp_swashbuckler_acceptedForWowRogue_andGrantsLevel3Features() {
+        PC r = wowRogue(2, "Subtlety");
+        service.applyLevelUp(r, SWASHBUCKLER);
+        assertThat(r.getSubclass()).isEqualTo(SWASHBUCKLER);
+        assertThat(r.getLevel()).isEqualTo((short) 3);
+        assertThat(r.getFeatures()).contains("\"name\":\"Steady Aim\"")
+                .contains("\"name\":\"Fancy Footwork\"")
+                .contains("\"name\":\"Rakish Audacity\"");
+    }
+
+    @Test
+    void applyLevelUp_swashbuckler_acceptedWhenTheSameRequestSetsTheSpecialization() {
+        PC r = rogue(2);
+        service.applyLevelUp(r, SWASHBUCKLER, null, null, null, HpMode.AVERAGE, "Outlaw");
+        assertThat(r.getSubclass()).isEqualTo(SWASHBUCKLER);
+        assertThat(r.getSpecialization()).isEqualTo("Outlaw");
+    }
+
+    @Test
+    void applyLevelUp_swashbuckler_rejectedForBaseRogue_andOtherWowClasses() {
+        PC r = rogue(2);
+        assertThatThrownBy(() -> service.applyLevelUp(r, SWASHBUCKLER))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(r.getSubclass()).isNull();
+        assertThat(r.getLevel()).isEqualTo((short) 2);
+
+        PC p = wowPaladin(2, "Retribution");
+        assertThatThrownBy(() -> service.applyLevelUp(p, SWASHBUCKLER))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        // And a WoW rogue can't take the paladin's WoW-only oath.
+        PC wr = wowRogue(2, "Outlaw");
+        assertThatThrownBy(() -> service.applyLevelUp(wr, OATH_OF_THE_HOLY))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_wowRogue_stillMayPickAPhbSubclass() {
+        PC r = wowRogue(2, "Outlaw");
+        service.applyLevelUp(r, "Thief");
+        assertThat(r.getSubclass()).isEqualTo("Thief"); // recommendation is not enforced
+    }
+
+    @Test
+    void preview_wowRogue_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Assassination", "Assassin"},
+                {"Outlaw", SWASHBUCKLER},
+                {"Subtlety", "Soulknife"},
+        };
+        for (String[] c : cases) {
+            LevelUpPreview p = service.preview(wowRogue(2, c[0]));
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        assertThat(service.preview(rogue(2)).recommendedSubclass()).isNull();
+        assertThat(service.preview(wowRogue(4, "Outlaw")).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void swashbuckler_addsFeaturesAt3_9_13_17() {
+        assertThat(names(service.preview(swashbuckler(8)).featuresGained())).containsExactly("Panache");
+        assertThat(names(service.preview(swashbuckler(12)).featuresGained())).containsExactly("Dashing Strikes");
+        assertThat(names(service.preview(swashbuckler(16)).featuresGained())).containsExactly("Master Duelist");
+        // Generic rogue features at other levels are unaffected, and a PHB rogue gains nothing at 9/13/17.
+        assertThat(names(service.preview(swashbuckler(4)).featuresGained()))
+                .containsExactly("Cunning Strike", "Uncanny Dodge");
+        assertThat(names(service.preview(rogue(8)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(rogue(12)).featuresGained())).isEmpty();
+        assertThat(names(service.preview(rogue(16)).featuresGained())).isEmpty();
+
+        PC l17 = swashbuckler(16);
+        service.applyLevelUp(l17);
+        assertThat(l17.getFeatures()).contains("\"name\":\"Master Duelist\"").contains("Sneak Attack");
+
+        PC l9 = swashbuckler(8);
+        service.applyLevelUp(l9);
+        assertThat(l9.getFeatures()).contains("Goad").contains("Awe");
+    }
 }

@@ -236,7 +236,8 @@ public final class ClassFeatures {
 
     // ── Subclass features ──────────────────────────────────────────────────────
     // Only subclasses whose level-up features are modeled server-side appear here (today: the
-    // Death Knight and Demon Hunter hero subclasses, and the WoW Paladin's Oath of the Holy). Each level entry may REPLACE generic class features by name
+    // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, and the WoW
+    // Rogue's Swashbuckler). Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -259,8 +260,36 @@ public final class ClassFeatures {
             "paladin", Map.of(
                     ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade(),
                     ClassProgression.OATH_OF_THE_HOLY.toLowerCase(), oathOfTheHoly()),
-            "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter())
+            "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter()),
+            "rogue", Map.of(ClassProgression.SWASHBUCKLER.toLowerCase(), swashbuckler())
     );
+
+    /**
+     * Swashbuckler, the WoW Rogue's own level-3 archetype (offered only to WoW rogues). Purely
+     * additive: the generic Rogue table has no subclass placeholders at these levels.
+     */
+    private static Map<Integer, SubclassGains> swashbuckler() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Fancy Footwork", "Once you make a melee attack roll against a creature on your turn, that creature can't make "
+                        + "Opportunity Attacks against you for the rest of the turn."),
+                f("Rakish Audacity", "You add your Charisma modifier to your Initiative rolls. You can also deal Sneak Attack damage "
+                        + "without Advantage when the target is within 5 feet of you, no other creature is within 5 feet of you, "
+                        + "and you don't have Disadvantage on the roll; all other Sneak Attack rules still apply.")));
+        f.put(9, adds(
+                f("Panache", "You gain two new Cunning Strike options. Goad (cost 1d6): the target makes a Wisdom save or, until the end "
+                        + "of its next turn, has Disadvantage on attack rolls against anyone but you and can't make Opportunity Attacks "
+                        + "against anyone but you. Awe (cost 3d6): each creature of your choice within 30 feet makes a Wisdom save or is "
+                        + "Charmed until the end of your next turn.")));
+        f.put(13, adds(
+                f("Dashing Strikes", "You gain two more Cunning Strike options. Invigorate (cost 2d6): a creature you can see within "
+                        + "30 feet adds 1d6 to its attack rolls and saving throws until the end of its next turn. Parrying Stance "
+                        + "(cost 2d6): roll 1d6 and add the result to your AC until the start of your next turn.")));
+        f.put(17, adds(
+                f("Master Duelist", "Immediately after you deal Sneak Attack damage, you can make one more attack against the same "
+                        + "target, provided you're within 5 feet of it and no other creature is within 5 feet of you.")));
+        return f;
+    }
 
     /**
      * Oath of the Ebon Blade (Death Knight, World of Warcraft tabletop module). Level 1's Death

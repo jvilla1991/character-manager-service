@@ -257,6 +257,7 @@ public final class ClassProgression {
             // Demon Hunter is likewise a creation-only hero subclass, absent from this list.
             Map.entry("ranger", List.of(
                     "Beast Master", "Fey Wanderer", "Gloom Stalker", "Hunter")),
+            // Swashbuckler is offered on top of these to WoW rogues only — see WOW_ONLY_SUBCLASSES.
             Map.entry("rogue", List.of(
                     "Arcane Trickster", "Assassin", "Soulknife", "Thief")),
             Map.entry("wizard", List.of(
@@ -287,13 +288,17 @@ public final class ClassProgression {
     /** The WoW Paladin's own oath (World of Warcraft tabletop module), offered only to WoW paladins. */
     public static final String OATH_OF_THE_HOLY = "Oath of the Holy";
 
+    /** The WoW Rogue's Outlaw archetype, offered only to WoW rogues. */
+    public static final String SWASHBUCKLER = "Swashbuckler";
+
     /**
      * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
      * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
      * values. A base-game member (specialization null) never sees these.
      */
     private static final Map<String, List<String>> WOW_ONLY_SUBCLASSES = Map.of(
-            "paladin", List.of(OATH_OF_THE_HOLY)
+            "paladin", List.of(OATH_OF_THE_HOLY),
+            "rogue", List.of(SWASHBUCKLER)
     );
 
     /**
@@ -375,7 +380,8 @@ public final class ClassProgression {
     // the same pc.specialization column the hero subclasses use. The WoW Paladin
     // (Holy/Protection/Retribution) works the same way, except that it also unlocks a WoW-only
     // subclass (Oath of the Holy) at its level-3 choice; a paladin with the Ebon Blade hero
-    // subclass is a Death Knight and keeps the hero subclass's list instead.
+    // subclass is a Death Knight and keeps the hero subclass's list instead. The WoW Rogue
+    // (Assassination/Outlaw/Subtlety) likewise unlocks the Swashbuckler at its level-3 choice.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -415,7 +421,12 @@ public final class ClassProgression {
                             "Retribution", "Oath of Vengeance"),
                     Map.of("Holy", List.of("Blessed Warrior"),
                             "Protection", List.of("Interception", "Protection"),
-                            "Retribution", List.of("Great Weapon Fighting")))
+                            "Retribution", List.of("Great Weapon Fighting"))),
+            // WoW Rogue. Rogues have no Fighting Style choice, so no recommended styles.
+            new ClassSpecializations("rogue", List.of("Assassination", "Outlaw", "Subtlety"), true,
+                    Map.of("Assassination", "Assassin",
+                            "Outlaw", SWASHBUCKLER,
+                            "Subtlety", "Soulknife"))
     );
 
     /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */
