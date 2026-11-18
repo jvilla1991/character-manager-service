@@ -243,6 +243,8 @@ public final class ClassProgression {
                     "Path of the Berserker", "Path of the Wild Heart", "Path of the World Tree", "Path of the Zealot")),
             Map.entry("bard", List.of(
                     "College of Dance", "College of Glamour", "College of Lore", "College of Valor")),
+            // The WoW Priest's Discipline and Shadow Domains are offered on top of these to WoW
+            // clerics only — see WOW_ONLY_SUBCLASSES.
             Map.entry("cleric", List.of(
                     "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain")),
             Map.entry("druid", List.of(
@@ -299,6 +301,12 @@ public final class ClassProgression {
     /** The WoW Shaman's Enhancement path (barbarian), offered only to WoW barbarians. */
     public static final String PATH_OF_THE_SPIRITUAL_GUARDIAN = "Path of the Spiritual Guardian";
 
+    /** The WoW Priest's Discipline domain (cleric), offered only to WoW clerics. */
+    public static final String DISCIPLINE_DOMAIN = "Discipline Domain";
+
+    /** The WoW Priest's Shadow domain (cleric), offered only to WoW clerics. */
+    public static final String SHADOW_DOMAIN = "Shadow Domain";
+
     /**
      * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
      * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
@@ -306,6 +314,7 @@ public final class ClassProgression {
      */
     private static final Map<String, List<String>> WOW_ONLY_SUBCLASSES = Map.of(
             "barbarian", List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN),
+            "cleric", List.of(DISCIPLINE_DOMAIN, SHADOW_DOMAIN),
             "paladin", List.of(OATH_OF_THE_HOLY),
             "rogue", List.of(SWASHBUCKLER)
     );
@@ -395,7 +404,9 @@ public final class ClassProgression {
     // Elements and the Path of the Spiritual Guardian. The Shaman is also the first variant whose
     // specialization swaps a generic class feature (Totems for Primal Knowledge) — see
     // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
-    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides.
+    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides. The
+    // WoW Priest — a cleric with Discipline/Holy/Shadow — unlocks the Discipline Domain and the
+    // Shadow Domain at its level-3 choice, with no feature overrides.
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -427,6 +438,12 @@ public final class ClassProgression {
                     Map.of("Elemental", PATH_OF_THE_ELEMENTS,
                             "Enhancement", PATH_OF_THE_SPIRITUAL_GUARDIAN,
                             "Restoration", "Path of the World Tree")),
+            // WoW Priest. Clerics have no Fighting Style choice, so no recommended styles. Holy
+            // recommends the PHB Life Domain; Discipline and Shadow recommend their WoW-only domains.
+            new ClassSpecializations("cleric", List.of("Discipline", "Holy", "Shadow"), true,
+                    Map.of("Discipline", DISCIPLINE_DOMAIN,
+                            "Holy", "Life Domain",
+                            "Shadow", SHADOW_DOMAIN)),
             new ClassSpecializations("druid", List.of("Balance", "Feral", "Guardian", "Restoration"), true,
                     Map.of("Balance", "Circle of the Stars",
                             "Feral", "Circle of the Moon",
