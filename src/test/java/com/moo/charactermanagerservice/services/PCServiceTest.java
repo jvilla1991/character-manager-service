@@ -177,6 +177,18 @@ class PCServiceTest {
         verify(pcRepository, never()).save(any());
     }
 
+    @Test
+    void updatePC_convertsLegacyCoinsFromAnOlderClient() {
+        // A tab opened before the three-coin release still sends ep/pp keys.
+        pc.setCoins("{\"cp\":1,\"sp\":2,\"ep\":2,\"gp\":3,\"pp\":4}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.updatePC(pc, ownerId);
+
+        assertThat(pc.getCoins()).isEqualTo("{\"cp\":1,\"sp\":12,\"gp\":43}");
+    }
+
     // --- survival preservation (an update omitting it must not wipe it) ---
 
     @Test
