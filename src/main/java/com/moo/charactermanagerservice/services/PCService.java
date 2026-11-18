@@ -62,6 +62,7 @@ public class PCService {
         // subclass and must be one of that subclass's values.
         HeroClassRules.validate(pc);
         pc.setLevel((short) 1);
+        pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         return pcRepository.saveAndFlush(pc);
     }
 
@@ -86,6 +87,7 @@ public class PCService {
         preserveServerOwnedColumns(pc, existing);
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
+        pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         return pcRepository.save(pc);
     }
 
@@ -177,6 +179,7 @@ public class PCService {
         incoming.setCampaignId(existing.getCampaignId());
         preserveServerOwnedColumns(incoming, existing);
         HeroClassRules.validate(incoming);
+        incoming.setCoins(CoinPurse.normalizeJson(incoming.getCoins()));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
         return saved;

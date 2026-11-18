@@ -7,14 +7,14 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
-/** The coin-denomination change-making math behind purchases. */
+/** The three-coin (cp/sp/gp) change-making math behind purchases, sales and loot. */
 class CoinPurseTest {
 
     @Test
-    void toCopper_sumsAllDenominations() {
-        Map<String, Object> purse = Map.of("cp", 5, "sp", 4, "ep", 1, "gp", 2, "pp", 3);
-        // 5 + 40 + 50 + 200 + 3000
-        assertThat(CoinPurse.toCopper(purse)).isEqualTo(3295L);
+    void toCopper_sumsCopperSilverGold() {
+        Map<String, Object> purse = Map.of("cp", 5, "sp", 4, "gp", 2);
+        // 5 + 40 + 200
+        assertThat(CoinPurse.toCopper(purse)).isEqualTo(245L);
     }
 
     @Test
@@ -24,35 +24,24 @@ class CoinPurseTest {
     }
 
     @Test
-    void fromCopper_mintsGoldSilverCopperOnly_neverPlatinumOrElectrum() {
-        Map<String, Integer> coins = CoinPurse.fromCopper(1234L); // 12gp 3sp 4cp — the sheet shows no pp
-        assertThat(coins).containsEntry("pp", 0).containsEntry("gp", 12)
-                .containsEntry("sp", 3).containsEntry("cp", 4).containsEntry("ep", 0);
+    void fromCopper_mintsExactlyCopperSilverGold() {
+        Map<String, Integer> coins = CoinPurse.fromCopper(1234L);
+        assertThat(coins).containsOnlyKeys("cp", "sp", "gp")
+                .containsEntry("gp", 12).containsEntry("sp", 3).containsEntry("cp", 4);
     }
 
     @Test
-    void deduct_makesChangeAcrossDenominations() {
-        // Pay 15 gp from a single platinum-heavy purse and get change back.
-        Map<String, Object> purse = Map.of("pp", 2); // 2000 cp
-        Map<String, Integer> after = CoinPurse.deduct(purse, 1500L); // longsword
-        // 500 cp remainder = 5 gp
-        assertThat(after).containsEntry("pp", 0).containsEntry("gp", 5)
-                .containsEntry("sp", 0).containsEntry("cp", 0).containsEntry("ep", 0);
+    void deduct_makesChangeInGoldSilverCopper() {
+        Map<String, Object> purse = Map.of("gp", 20);
+        Map<String, Integer> after = CoinPurse.deduct(purse, 1525L); // 15 gp 2 sp 5 cp
+        assertThat(after).containsOnlyKeys("cp", "sp", "gp")
+                .containsEntry("gp", 4).containsEntry("sp", 7).containsEntry("cp", 5);
     }
 
     @Test
-    void deduct_foldsElectrumIntoChange() {
-        Map<String, Object> purse = Map.of("ep", 3); // 150 cp
-        Map<String, Integer> after = CoinPurse.deduct(purse, 50L); // 100 cp left = 1 gp
-        assertThat(after).containsEntry("gp", 1).containsEntry("ep", 0);
-    }
-
-    @Test
-    void add_foldsHeldPlatinumIntoGold() {
-        // A purse that already held platinum (from before the gold-only rule)
-        // comes back as gold the sheet can show: 2 pp + 5 gp + 60 gp = 85 gp.
-        Map<String, Integer> after = CoinPurse.add(Map.of("pp", 2, "gp", 5), 6000L);
-        assertThat(after).containsEntry("gp", 85).containsEntry("pp", 0);
+    void add_paysOutInGold() {
+        Map<String, Integer> after = CoinPurse.add(Map.of("gp", 5), 6000L); // 5 gp + 60 gp
+        assertThat(after).containsOnlyKeys("cp", "sp", "gp").containsEntry("gp", 65);
     }
 
     @Test
@@ -67,6 +56,28 @@ class CoinPurseTest {
     void deduct_allowsExactSpend_toZero() {
         Map<String, Object> purse = Map.of("gp", 15);
         assertThat(CoinPurse.deduct(purse, 1500L)).containsEntry("gp", 0).containsEntry("cp", 0);
+    }
+
+    // --- normalizeJson (a save from an older client) ---
+
+    @Test
+    void normalizeJson_convertsLegacyCoins_keepingTheValue() {
+        String out = CoinPurse.normalizeJson("{\"cp\":3,\"sp\":4,\"ep\":2,\"gp\":5,\"pp\":6}");
+        assertThat(out).isEqualTo("{\"cp\":3,\"sp\":14,\"gp\":65}"); // 2 ep = 10 sp, 6 pp = 60 gp
+    }
+
+    @Test
+    void normalizeJson_dropsZeroLegacyKeys() {
+        assertThat(CoinPurse.normalizeJson("{\"cp\":0,\"sp\":0,\"ep\":0,\"gp\":7,\"pp\":0}"))
+                .isEqualTo("{\"cp\":0,\"sp\":0,\"gp\":7}");
+    }
+
+    @Test
+    void normalizeJson_leavesThreeCoinBlankAndUnreadablePursesAlone() {
+        assertThat(CoinPurse.normalizeJson("{\"cp\":1,\"sp\":2,\"gp\":3}")).isEqualTo("{\"cp\":1,\"sp\":2,\"gp\":3}");
+        assertThat(CoinPurse.normalizeJson(null)).isNull();
+        assertThat(CoinPurse.normalizeJson("")).isEmpty();
+        assertThat(CoinPurse.normalizeJson("not json")).isEqualTo("not json");
     }
 
     // --- format (activity log display) ---

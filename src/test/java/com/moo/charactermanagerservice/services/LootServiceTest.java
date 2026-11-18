@@ -538,7 +538,7 @@ class LootServiceTest {
         assertThat(view).isNull(); // distributed — the pool is gone
         verify(lootRepository).delete(pool);
         assertThat(thessaly.getInventory()).contains("longsword");
-        assertThat(thessaly.getCoins()).contains("\"gp\":31").contains("\"pp\":0"); // 1 gp + 30 gp, all gold
+        assertThat(thessaly.getCoins()).contains("\"gp\":31").doesNotContain("pp"); // 1 gp + 30 gp, all gold
         assertThat(brakka.getInventory()).contains("Potion of Healing").contains("\"qty\":2");
         verify(activityLogService).log(7L, PcActivityType.LOOT,
                 "Received from the party split: Longsword, 30 gp", playerId);

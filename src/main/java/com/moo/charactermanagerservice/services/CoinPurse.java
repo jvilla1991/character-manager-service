@@ -1,5 +1,8 @@
 package com.moo.charactermanagerservice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -7,45 +10,41 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Coin-denomination math for purchases, sales and loot payouts. Wealth is
- * summed in copper and every settlement is "spend with change-making": add or
- * deduct the amount, then re-mint the whole purse. Change is minted in
- * gp/sp/cp ONLY — the character sheet's purse shows just those three coins
- * (electrum and platinum left the display on 2026-11-13), so minting platinum
- * made gold vanish from view. Any electrum or platinum the character held is
- * folded into gold/silver as part of the settlement (V49 folded what was
- * already stored).
+ * Coin-denomination math for purchases, sales and loot payouts. The game uses
+ * three coins — copper, silver and gold (1 gp = 10 sp = 100 cp) — and a purse
+ * is the JSON object {@code {cp, sp, gp}}. Wealth is summed in copper and
+ * every settlement is "spend with change-making": add or deduct the amount,
+ * then re-mint the whole purse into gp/sp/cp.
  *
- * <p>Copper values (1 gp = 100 cp): cp=1, sp=10, ep=50, gp=100, pp=1000 — the
- * same rates the frontend coin-purse uses.
+ * <p>Electrum and platinum are not part of the game (removed from the sheet
+ * on 2026-11-13, from minting by V49, from stored purses by V50).
+ * {@link #normalizeJson} is the one place that still knows them: it converts
+ * a purse sent by an older client so they can never be stored again.
  */
 final class CoinPurse {
 
     private CoinPurse() {}
 
-    private static final int CP = 1, SP = 10, EP = 50, GP = 100, PP = 1000;
+    private static final int CP = 1, SP = 10, GP = 100;
 
-    /** Total wealth of a {cp,sp,ep,gp,pp} purse, in copper. Null/missing keys = 0. */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** Total wealth of a {cp,sp,gp} purse, in copper. Null/missing keys = 0. */
     static long toCopper(Map<String, ?> coins) {
         if (coins == null) return 0L;
         return n(coins, "cp") * CP
                 + n(coins, "sp") * SP
-                + n(coins, "ep") * EP
-                + n(coins, "gp") * GP
-                + n(coins, "pp") * PP;
+                + n(coins, "gp") * GP;
     }
 
-    /** Distribute a copper amount greedily into gp/sp/cp (ep and pp always 0 — never minted). */
+    /** Distribute a copper amount greedily into {cp, sp, gp}. */
     static Map<String, Integer> fromCopper(long copper) {
         Map<String, Integer> out = new LinkedHashMap<>();
-        out.put("cp", 0);
-        out.put("sp", 0);
-        out.put("ep", 0); // never minted as change
-        out.put("gp", 0);
-        out.put("pp", 0); // never minted as change — the sheet doesn't show it
-        out.put("gp", (int) (copper / GP)); copper %= GP;
-        out.put("sp", (int) (copper / SP)); copper %= SP;
+        int gp = (int) (copper / GP); copper %= GP;
+        int sp = (int) (copper / SP); copper %= SP;
         out.put("cp", (int) copper);
+        out.put("sp", sp);
+        out.put("gp", gp);
         return out;
     }
 
@@ -61,9 +60,38 @@ final class CoinPurse {
         return fromCopper(total - priceCp);
     }
 
-    /** Add {@code gainCp} (a sale payout) to the purse and return the new purse. */
+    /** Add {@code gainCp} (a sale or loot payout) to the purse and return the new purse. */
     static Map<String, Integer> add(Map<String, ?> coins, long gainCp) {
         return fromCopper(toCopper(coins) + gainCp);
+    }
+
+    /**
+     * Normalize a purse a client is saving onto a character. An older client
+     * (a tab opened before the three-coin release) still sends {@code ep} and
+     * {@code pp}: they are converted — 1 ep = 5 sp, 1 pp = 10 gp, value kept —
+     * and the purse is rewritten as {@code {cp, sp, gp}}. Anything else (no
+     * legacy keys, blank, or unreadable JSON) is returned unchanged, so a save
+     * can never lose coins it doesn't understand.
+     */
+    static String normalizeJson(String coinsJson) {
+        if (coinsJson == null || coinsJson.isBlank()) return coinsJson;
+        Map<String, Object> coins;
+        try {
+            coins = MAPPER.readValue(coinsJson, new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            return coinsJson;
+        }
+        if (coins == null || !(coins.containsKey("ep") || coins.containsKey("pp"))) return coinsJson;
+
+        Map<String, Long> out = new LinkedHashMap<>();
+        out.put("cp", n(coins, "cp"));
+        out.put("sp", n(coins, "sp") + 5 * n(coins, "ep"));
+        out.put("gp", n(coins, "gp") + 10 * n(coins, "pp"));
+        try {
+            return MAPPER.writeValueAsString(out);
+        } catch (JsonProcessingException e) {
+            return coinsJson;
+        }
     }
 
     private static long n(Map<String, ?> m, String key) {
@@ -74,8 +102,8 @@ final class CoinPurse {
     /**
      * Render a copper amount as a human-readable denomination string for the
      * activity log, e.g. {@code 150 -> "1 gp 5 sp"}, {@code 0 -> "0 cp"}.
-     * Greedy gp/sp/cp, mirroring {@link #fromCopper} (no electrum or platinum);
-     * zero-value denominations are omitted except when the whole amount is 0.
+     * Greedy gp/sp/cp, mirroring {@link #fromCopper}; zero-value denominations
+     * are omitted except when the whole amount is 0.
      */
     static String format(long cp) {
         if (cp <= 0) return "0 cp";
