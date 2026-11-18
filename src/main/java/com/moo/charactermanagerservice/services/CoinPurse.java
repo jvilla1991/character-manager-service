@@ -7,11 +7,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Coin-denomination math for purchases. Wealth is summed in copper and a
- * purchase is "spend with change-making": deduct the price from the total, then
- * re-mint the remainder into denominations. Change is returned in pp/gp/sp/cp —
- * electrum is never minted (it's the oddball coin), so any electrum the buyer
- * held is folded into its gp-equivalent as part of the settlement.
+ * Coin-denomination math for purchases, sales and loot payouts. Wealth is
+ * summed in copper and every settlement is "spend with change-making": add or
+ * deduct the amount, then re-mint the whole purse. Change is minted in
+ * gp/sp/cp ONLY — the character sheet's purse shows just those three coins
+ * (electrum and platinum left the display on 2026-11-13), so minting platinum
+ * made gold vanish from view. Any electrum or platinum the character held is
+ * folded into gold/silver as part of the settlement (V49 folded what was
+ * already stored).
  *
  * <p>Copper values (1 gp = 100 cp): cp=1, sp=10, ep=50, gp=100, pp=1000 — the
  * same rates the frontend coin-purse uses.
@@ -32,15 +35,14 @@ final class CoinPurse {
                 + n(coins, "pp") * PP;
     }
 
-    /** Distribute a copper amount greedily into pp/gp/sp/cp (ep always 0). */
+    /** Distribute a copper amount greedily into gp/sp/cp (ep and pp always 0 — never minted). */
     static Map<String, Integer> fromCopper(long copper) {
         Map<String, Integer> out = new LinkedHashMap<>();
         out.put("cp", 0);
         out.put("sp", 0);
         out.put("ep", 0); // never minted as change
         out.put("gp", 0);
-        out.put("pp", 0);
-        out.put("pp", (int) (copper / PP)); copper %= PP;
+        out.put("pp", 0); // never minted as change — the sheet doesn't show it
         out.put("gp", (int) (copper / GP)); copper %= GP;
         out.put("sp", (int) (copper / SP)); copper %= SP;
         out.put("cp", (int) copper);
@@ -72,18 +74,16 @@ final class CoinPurse {
     /**
      * Render a copper amount as a human-readable denomination string for the
      * activity log, e.g. {@code 150 -> "1 gp 5 sp"}, {@code 0 -> "0 cp"}.
-     * Greedy pp/gp/sp/cp (electrum is never minted, mirrors {@link #fromCopper});
+     * Greedy gp/sp/cp, mirroring {@link #fromCopper} (no electrum or platinum);
      * zero-value denominations are omitted except when the whole amount is 0.
      */
     static String format(long cp) {
         if (cp <= 0) return "0 cp";
-        long pp = cp / PP; cp %= PP;
         long gp = cp / GP; cp %= GP;
         long sp = cp / SP; cp %= SP;
         long remaining = cp;
 
         StringBuilder sb = new StringBuilder();
-        if (pp > 0) sb.append(pp).append(" pp ");
         if (gp > 0) sb.append(gp).append(" gp ");
         if (sp > 0) sb.append(sp).append(" sp ");
         if (remaining > 0) sb.append(remaining).append(" cp ");
