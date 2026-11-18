@@ -242,8 +242,8 @@ public final class ClassFeatures {
     // Every subclass a character can have. The catalog subclasses (2024 PHB plus Twilight Domain)
     // live in one <Class>Subclasses file per class; the World of Warcraft module's subclasses (the
     // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, the WoW
-    // Rogue's Swashbuckler, and the WoW Shaman's Path of the Elements and Path of the Spiritual
-    // Guardian) are defined below. Each level entry may REPLACE generic class features by name
+    // Rogue's Swashbuckler, the WoW Shaman's Path of the Elements and Path of the Spiritual
+    // Guardian, and the WoW Priest's Discipline and Shadow Domains) are defined below. Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. An unknown subclass gets the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -284,6 +284,8 @@ public final class ClassFeatures {
         // generic features.
         addSubclass(m, "barbarian", ClassProgression.PATH_OF_THE_ELEMENTS, pathOfTheElements());
         addSubclass(m, "barbarian", ClassProgression.PATH_OF_THE_SPIRITUAL_GUARDIAN, pathOfTheSpiritualGuardian());
+        addSubclass(m, "cleric", ClassProgression.DISCIPLINE_DOMAIN, disciplineDomain());
+        addSubclass(m, "cleric", ClassProgression.SHADOW_DOMAIN, shadowDomain());
         addSubclass(m, "paladin", ClassProgression.EBON_BLADE, ebonBlade());
         addSubclass(m, "paladin", ClassProgression.OATH_OF_THE_HOLY, oathOfTheHoly());
         addSubclass(m, "ranger", ClassProgression.DEMON_HUNTER, demonHunter());
@@ -363,6 +365,68 @@ public final class ClassFeatures {
                 f("Spirits' Fury", "Once per turn, when you make a melee weapon attack roll as part of the Attack action and "
                         + "the d20 shows 18, 19, or 20, you can make one additional attack with the same weapon as part of that "
                         + "action.")));
+        return f;
+    }
+
+    /**
+     * Discipline Domain, the WoW Priest's Discipline domain (cleric; offered only to WoW clerics).
+     * Purely additive: the generic Cleric table has no subclass placeholders.
+     */
+    private static Map<Integer, SubclassGains> disciplineDomain() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Discipline Spells", "You always have these spells prepared once you reach the listed Cleric level: "
+                        + "3rd — Arcane Vigor, Guiding Bolt, Magic Weapon, Shield of Faith; "
+                        + "5th — Prayer of Mending, Protection from Energy; "
+                        + "7th — Guardian of Faith, Stoneskin; "
+                        + "9th — Circle of Power, Destructive Wave."),
+                f("Holy Bolt", "As a Bonus Action, spend one use of your Channel Divinity to make a ranged spell attack "
+                        + "against a creature within 60 feet. On a hit it takes 2d10 + your Wisdom modifier Radiant damage, "
+                        + "and a creature you can see within 60 feet regains 1d10 + your Wisdom modifier Hit Points."),
+                f("Atonement", "When a level 1+ spell you cast restores Hit Points, every creature it heals is blessed "
+                        + "until the end of your next turn. Whenever you deal damage with a spell cast using a spell slot, "
+                        + "each blessed creature regains extra Hit Points equal to that slot's level.")));
+        f.put(6, adds(
+                f("Luminous Barrier", "As a Bonus Action, spend one use of your Channel Divinity: each creature currently "
+                        + "blessed by your Atonement gains Temporary Hit Points equal to your Cleric level plus your Wisdom "
+                        + "modifier, and has Resistance to all damage for as long as those Temporary Hit Points last.")));
+        f.put(17, adds(
+                f("Ultimate Penitence", "Your Holy Bolt gains two options. Ascending Step: before making the attack roll, "
+                        + "you can teleport up to 30 feet to an unoccupied space you can see. Ascending Volley: as part of the "
+                        + "same Bonus Action, expend a spell slot to fire additional bolts equal to the slot's level, aimed at "
+                        + "one creature or split among several, each with its own attack roll.")));
+        return f;
+    }
+
+    /**
+     * Shadow Domain, the WoW Priest's Shadow domain (cleric; offered only to WoW clerics). Purely
+     * additive.
+     */
+    private static Map<Integer, SubclassGains> shadowDomain() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Shadow Spells", "You always have these spells prepared once you reach the listed Cleric level: "
+                        + "3rd — Crown of Madness, Dissonant Whispers, Mind Spike, Shadow Word: Pain; "
+                        + "5th — Summon Undead, Vampiric Touch; "
+                        + "7th — Evard's Black Tentacles, Psychic Horror; "
+                        + "9th — Dominate Person, Void Eruption."),
+                f("Shadowform", "As a Bonus Action, spend one use of your Channel Divinity to take on a shadowy form for "
+                        + "1 minute. Shadow Stealth: while in Dim Light or Darkness, you can take the Hide action as a Bonus "
+                        + "Action. Void Empowerment: when a spell you cast with a spell slot deals Psychic or Necrotic damage, "
+                        + "add 1d6 to one of its damage rolls. The form ends early if you dismiss it, are Incapacitated, or "
+                        + "deal Radiant damage with a spell."),
+                f("Devouring Plague", "When a creature you can see within 30 feet fails a saving throw, you can deal it "
+                        + "1d10 Necrotic damage and regain Hit Points equal to the damage dealt. You can do this a number of "
+                        + "times equal to your Wisdom modifier (minimum 1), regaining all uses on a Long Rest.")));
+        f.put(6, adds(
+                f("Dispersion", "When an attack roll hits you, you can take a Reaction to disperse: until the end of your "
+                        + "next turn you have Resistance to all damage (including the triggering hit), can't take actions, "
+                        + "Bonus Actions, or Reactions, and have a Fly Speed of 40 feet. When it ends, you can spend up to "
+                        + "half your Hit Point Dice as if finishing a Short Rest. Once used, you can't do so again until you "
+                        + "finish a Short or Long Rest.")));
+        f.put(17, adds(
+                f("Vampiric Embrace", "While your Shadowform is active, whenever you roll its extra 1d6, a creature of your "
+                        + "choice within 30 feet regains Hit Points equal to the number rolled.")));
         return f;
     }
 

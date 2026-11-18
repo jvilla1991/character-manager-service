@@ -2109,4 +2109,250 @@ class LevelUpServiceTest {
         assertThat(com.moo.charactermanagerservice.progression.ClassProgression
                 .isClassSpecialization("sorcerer", "Destruction")).isFalse();
     }
+
+    // --- WoW Priest (cleric + Discipline/Holy/Shadow, two WoW-only domains, no overrides) ---
+
+    private static final String DISCIPLINE_DOMAIN = "Discipline Domain";
+    private static final String SHADOW_DOMAIN = "Shadow Domain";
+    private static final List<String> PRIEST_SPECS = List.of("Discipline", "Holy", "Shadow");
+    private static final List<String> PHB_CLERIC_SUBCLASSES =
+            List.of("Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain");
+
+    private static PC cleric(int level) {
+        PC c = pc("Cleric", level, 14, 8 * level, 8 * level);
+        if (level >= 3) c.setSubclass("Life Domain");
+        return c;
+    }
+
+    private static PC wowCleric(int level, String spec) {
+        PC c = cleric(level);
+        c.setSpecialization(spec);
+        return c;
+    }
+
+    private static PC priestInDomain(int level, String domain, String spec) {
+        PC c = pc("Cleric", level, 14, 8 * level, 8 * level);
+        c.setSubclass(domain);
+        c.setSpecialization(spec);
+        return c;
+    }
+
+    @Test
+    void applyLevelUp_cleric_acceptsEachPriestSpecialization_andRejectsOthers() {
+        for (String spec : PRIEST_SPECS) {
+            PC c = cleric(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(c, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(c.getSpecialization()).isEqualTo(spec);
+            assertThat(c.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("holy", "Protection", "Elemental", "Frost", "Outlaw", "Restoration")) {
+            PC c = wowCleric(5, "Holy");
+            assertThatThrownBy(() -> service.applyLevelUp(c, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(c.getSpecialization()).isEqualTo("Holy");
+            assertThat(c.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowCleric_mayRespec() {
+        PC c = wowCleric(5, "Discipline");
+        service.applyLevelUp(c, null, null, null, null, HpMode.AVERAGE, "Shadow");
+        assertThat(c.getSpecialization()).isEqualTo("Shadow");
+        assertThat(c.getSubclass()).isEqualTo("Life Domain");
+    }
+
+    @Test
+    void applyLevelUp_priestSpecialization_rejectedOnOtherClasses() {
+        for (String spec : List.of("Discipline", "Shadow")) {
+            PC r = rogue(5);
+            assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, spec))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(r.getSpecialization()).isNull();
+        }
+        PC d = druid(5);
+        assertThatThrownBy(() -> service.applyLevelUp(d, null, null, null, null, HpMode.AVERAGE, "Discipline"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void preview_priestDomains_offeredOnlyToWowClerics() {
+        LevelUpPreview base = service.preview(cleric(2)); // 2 -> 3, no specialization
+        assertThat(base.subclassDue()).isTrue();
+        assertThat(base.subclassOptions()).containsExactlyElementsOf(PHB_CLERIC_SUBCLASSES);
+
+        for (String spec : PRIEST_SPECS) {
+            assertThat(service.preview(wowCleric(2, spec)).subclassOptions())
+                    .containsAll(PHB_CLERIC_SUBCLASSES)
+                    .contains(DISCIPLINE_DOMAIN, SHADOW_DOMAIN)
+                    .doesNotContain(SWASHBUCKLER, OATH_OF_THE_HOLY, PATH_OF_THE_ELEMENTS)
+                    .hasSize(PHB_CLERIC_SUBCLASSES.size() + 2);
+        }
+
+        // Other WoW classes don't get them.
+        assertThat(service.preview(wowPaladin(2, "Holy")).subclassOptions())
+                .doesNotContain(DISCIPLINE_DOMAIN, SHADOW_DOMAIN);
+        assertThat(service.preview(wowRogue(2, "Subtlety")).subclassOptions())
+                .doesNotContain(DISCIPLINE_DOMAIN, SHADOW_DOMAIN);
+        assertThat(service.preview(wowBarbarian(2, "Restoration")).subclassOptions())
+                .doesNotContain(DISCIPLINE_DOMAIN, SHADOW_DOMAIN);
+    }
+
+    @Test
+    void applyLevelUp_priestDomains_acceptedForWowCleric() {
+        for (String spec : PRIEST_SPECS) {
+            for (String domain : List.of(DISCIPLINE_DOMAIN, SHADOW_DOMAIN)) {
+                PC c = wowCleric(2, spec);
+                service.applyLevelUp(c, domain);
+                assertThat(c.getSubclass()).isEqualTo(domain);
+                assertThat(c.getLevel()).isEqualTo((short) 3);
+            }
+        }
+    }
+
+    @Test
+    void applyLevelUp_priestDomain_acceptedWhenTheSameRequestSetsTheSpecialization() {
+        PC c = cleric(2);
+        service.applyLevelUp(c, SHADOW_DOMAIN, null, null, null, HpMode.AVERAGE, "Shadow");
+        assertThat(c.getSubclass()).isEqualTo(SHADOW_DOMAIN);
+        assertThat(c.getSpecialization()).isEqualTo("Shadow");
+    }
+
+    @Test
+    void applyLevelUp_priestDomains_rejectedForBaseCleric_otherClasses_andOffLevel() {
+        for (String domain : List.of(DISCIPLINE_DOMAIN, SHADOW_DOMAIN)) {
+            PC c = cleric(2);
+            assertThatThrownBy(() -> service.applyLevelUp(c, domain))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(c.getSubclass()).isNull();
+            assertThat(c.getLevel()).isEqualTo((short) 2);
+
+            PC p = wowPaladin(2, "Holy");
+            assertThatThrownBy(() -> service.applyLevelUp(p, domain))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            PC b = wowBarbarian(2, "Elemental");
+            assertThatThrownBy(() -> service.applyLevelUp(b, domain))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+            // Only at the level-3 choice: a WoW cleric past it can't pick one.
+            PC late = pc("Cleric", 4, 14, 32, 32);
+            late.setSpecialization("Shadow");
+            assertThatThrownBy(() -> service.applyLevelUp(late, domain))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        // And a WoW cleric can't take another class's WoW-only subclass.
+        PC wc = wowCleric(2, "Holy");
+        assertThatThrownBy(() -> service.applyLevelUp(wc, OATH_OF_THE_HOLY))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void preview_wowCleric_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Discipline", DISCIPLINE_DOMAIN},
+                {"Holy", "Life Domain"},
+                {"Shadow", SHADOW_DOMAIN},
+        };
+        for (String[] c : cases) {
+            LevelUpPreview p = service.preview(wowCleric(2, c[0]));
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        assertThat(service.preview(cleric(2)).recommendedSubclass()).isNull();
+        assertThat(service.preview(wowCleric(4, "Shadow")).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void classProgression_priestLookups_returnExactNames() {
+        assertThat(ClassProgression.recommendedSubclass("cleric", "Discipline")).isEqualTo("Discipline Domain");
+        assertThat(ClassProgression.recommendedSubclass("Cleric", "Holy")).isEqualTo("Life Domain");
+        assertThat(ClassProgression.recommendedSubclass("cleric", "Shadow")).isEqualTo("Shadow Domain");
+        assertThat(ClassProgression.recommendedSubclass("cleric", "holy")).isNull();
+        assertThat(ClassProgression.recommendedSubclass("cleric", null)).isNull();
+        assertThat(ClassProgression.recommendedFightingStyles("cleric", "Holy")).isEmpty();
+        assertThat(ClassProgression.subclassesFor("cleric")).contains("Life Domain")
+                .doesNotContain(DISCIPLINE_DOMAIN, SHADOW_DOMAIN);
+        assertThat(ClassProgression.classSpecializations("cleric")).get()
+                .satisfies(s -> {
+                    assertThat(s.specializations()).containsExactlyElementsOf(PRIEST_SPECS);
+                    assertThat(s.respecOnLevelUp()).isTrue();
+                });
+        assertThat(ClassProgression.isClassSpecialization("cleric", "Holy")).isTrue();
+        assertThat(ClassProgression.isClassSpecialization("cleric", "Protection")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("druid", "Shadow")).isFalse();
+
+        // Other variants unchanged, including the paladin's same-named "Holy".
+        assertThat(ClassProgression.recommendedSubclass("paladin", "Holy")).isEqualTo(OATH_OF_THE_HOLY);
+        assertThat(ClassProgression.recommendedFightingStyles("paladin", "Holy")).containsExactly("Blessed Warrior");
+        assertThat(ClassProgression.recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
+        assertThat(ClassProgression.recommendedSubclass("druid", "Balance")).isEqualTo("Circle of the Stars");
+        assertThat(ClassProgression.recommendedSubclass("barbarian", "Elemental")).isEqualTo(PATH_OF_THE_ELEMENTS);
+        assertThat(ClassProgression.recommendedSubclass("fighter", "Arms")).isEqualTo("Battle Master");
+        assertThat(ClassProgression.recommendedSubclass("warlock", "Affliction")).isEqualTo("Great Old One Patron");
+    }
+
+    @Test
+    void disciplineDomain_addsFeaturesAt3_6_17() {
+        PC l3 = wowCleric(2, "Discipline");
+        service.applyLevelUp(l3, DISCIPLINE_DOMAIN);
+        assertThat(l3.getFeatures()).contains("\"name\":\"Discipline Spells\"")
+                .contains("\"name\":\"Holy Bolt\"").contains("\"name\":\"Atonement\"")
+                .contains("Prayer of Mending").contains("Destructive Wave");
+
+        assertThat(names(service.preview(priestInDomain(5, DISCIPLINE_DOMAIN, "Discipline")).featuresGained()))
+                .containsExactly("Luminous Barrier");
+        assertThat(names(service.preview(priestInDomain(16, DISCIPLINE_DOMAIN, "Discipline")).featuresGained()))
+                .containsExactly("Ultimate Penitence");
+
+        PC l17 = priestInDomain(16, DISCIPLINE_DOMAIN, "Holy");
+        service.applyLevelUp(l17);
+        assertThat(l17.getFeatures()).contains("\"name\":\"Ultimate Penitence\"")
+                .contains("Ascending Step").contains("Ascending Volley");
+    }
+
+    @Test
+    void shadowDomain_addsFeaturesAt3_6_17() {
+        PC l3 = wowCleric(2, "Shadow");
+        service.applyLevelUp(l3, SHADOW_DOMAIN);
+        assertThat(l3.getFeatures()).contains("\"name\":\"Shadow Spells\"")
+                .contains("\"name\":\"Shadowform\"").contains("\"name\":\"Devouring Plague\"")
+                .contains("Shadow Word: Pain").contains("Void Eruption")
+                .contains("Shadow Stealth").contains("Void Empowerment");
+
+        assertThat(names(service.preview(priestInDomain(5, SHADOW_DOMAIN, "Shadow")).featuresGained()))
+                .containsExactly("Dispersion");
+        assertThat(names(service.preview(priestInDomain(16, SHADOW_DOMAIN, "Shadow")).featuresGained()))
+                .containsExactly("Vampiric Embrace");
+
+        PC l6 = priestInDomain(5, SHADOW_DOMAIN, "Shadow");
+        service.applyLevelUp(l6);
+        assertThat(l6.getFeatures()).contains("\"name\":\"Dispersion\"");
+    }
+
+    @Test
+    void wowCleric_addsNoFeatureOverrides_andPhbDomainsUnchanged() {
+        for (int level : List.of(1, 2, 4, 5, 6, 9, 13, 16, 19)) {
+            assertThat(names(service.preview(wowCleric(level, "Holy")).featuresGained()))
+                    .as("level %d", level)
+                    .containsExactlyElementsOf(names(service.preview(cleric(level)).featuresGained()));
+        }
+        // A Life Domain cleric keeps its own features at 6 and 17.
+        assertThat(names(service.preview(cleric(5)).featuresGained())).containsExactly("Blessed Healer");
+        assertThat(names(service.preview(cleric(16)).featuresGained())).containsExactly("Supreme Healing");
+        // The specialization-aware overload adds nothing for a cleric.
+        assertThat(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("cleric", SHADOW_DOMAIN, "Shadow", 3))
+                .isEqualTo(com.moo.charactermanagerservice.progression.ClassFeatures
+                        .featuresAt("cleric", SHADOW_DOMAIN, 3));
+    }
 }
