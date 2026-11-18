@@ -1715,4 +1715,87 @@ class PCServiceTest {
         rogue.setSpecialization("Assassination");
         assertThat(pcService.updatePCAsDm(rogue, null, dmId).getSpecialization()).isEqualTo("Assassination");
     }
+
+    // --- WoW Shaman (barbarian + Elemental/Enhancement/Restoration) ---
+
+    @Test
+    void addPC_acceptsEachShamanSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Elemental", "Enhancement", "Restoration")) {
+            PC barbarian = new PC();
+            barbarian.setClazz("barbarian");
+            barbarian.setSpecialization(spec);
+
+            PC saved = pcService.addPC(barbarian);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidShamanSpecialization_andShamanSpecsOnOtherClasses() {
+        for (String bad : List.of("elemental", "Enhance", "Holy", "Outlaw", "Frost")) {
+            PC barbarian = new PC();
+            barbarian.setClazz("barbarian");
+            barbarian.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(barbarian))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("rogue", "paladin", "fighter")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Elemental");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeShamanSpecialization() {
+        pc.setClazz("barbarian");
+        pc.setSubclass("Path of the Elements");
+        pc.setSpecialization("Elemental");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("barbarian");
+        incoming.setSubclass("Path of the Elements");
+        incoming.setSpecialization("Enhancement");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Enhancement");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidShamanSpecialization() {
+        pc.setClazz("barbarian");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("barbarian");
+        incoming.setSpecialization("Holy");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsShamanSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC barbarian = new PC();
+        barbarian.setId(1L);
+        barbarian.setClazz("barbarian");
+        barbarian.setSpecialization("Restoration");
+        assertThat(pcService.updatePCAsDm(barbarian, null, dmId).getSpecialization()).isEqualTo("Restoration");
+    }
 }

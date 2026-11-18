@@ -98,7 +98,7 @@ public class LevelUpService {
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
                 asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
-                ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), newLevel),
+                ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
                 ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
@@ -403,9 +403,13 @@ public class LevelUpService {
         pc.setFeatures(jsonColumns.write(features));
     }
 
-    /** Append the class features (if any) gained at the new level to the PC's features list. */
+    /**
+     * Append the class features (if any) gained at the new level to the PC's features list. Uses the
+     * PC's (already-updated) specialization, so a WoW variant's feature swaps apply (e.g. a WoW
+     * Shaman gains Totems instead of Primal Knowledge).
+     */
     private void grantClassFeatures(PC pc, int newLevel) {
-        List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), newLevel);
+        List<FeatureGain> gained = ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel);
         if (gained.isEmpty()) return;
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
         String source = pc.getClazz() + " " + newLevel;
