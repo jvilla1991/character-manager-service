@@ -432,6 +432,16 @@ public final class ClassProgression {
                             "Feral", "Circle of the Moon",
                             "Guardian", "Circle of the Moon",
                             "Restoration", "Circle of the Land")),
+            // WoW Warrior. The fighter's Fighting Style is a level-1 choice made at creation (never
+            // due on level-up), so the preview's recommended styles are normally empty; the data is
+            // kept for consistency with the paladin.
+            new ClassSpecializations("fighter", List.of("Arms", "Fury", "Protection"), true,
+                    Map.of("Arms", "Battle Master",
+                            "Fury", "Champion",
+                            "Protection", "Battle Master"),
+                    Map.of("Arms", List.of("Great Weapon Fighting"),
+                            "Fury", List.of("Two-Weapon Fighting"),
+                            "Protection", List.of("Interception", "Protection"))),
             // WoW Paladin. A Death Knight (paladin + Oath of the Ebon Blade) is NOT covered by this
             // entry: its hero subclass's own list (Blood/Frost/Unholy) always wins.
             new ClassSpecializations("paladin", List.of("Holy", "Protection", "Retribution"), true,
