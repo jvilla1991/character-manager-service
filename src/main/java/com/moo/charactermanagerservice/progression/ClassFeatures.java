@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.progression;
 
 import com.moo.charactermanagerservice.dto.FeatureGain;
+import com.moo.charactermanagerservice.dto.FeatureProgressionEntry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,8 +15,9 @@ import java.util.Set;
  * both live here, unlike feats whose descriptions are presentation).
  *
  * <p>Scope: the generic class features each class gains at levels 2–20, plus — via
- * {@link #featuresAt(String, String, int)} — the features of subclasses modeled here (currently
- * the Oath of the Ebon Blade and Demon Hunter hero subclasses, which also replace some generic
+ * {@link #featuresAt(String, String, int)} — the features of every subclass a character can have: the
+ * catalog subclasses (one {@code <Class>Subclasses} file per class, purely additive) and the World
+ * of Warcraft module's hero and WoW-only subclasses (some of which also replace generic
  * Paladin/Ranger features), plus — via {@link #featuresAt(String, String, String, int)} — the
  * generic features a World of Warcraft class variant swaps for its own (the WoW Shaman's Totems).
  * Level-1 features are excluded (granted at character creation), as are Ability Score
@@ -237,11 +239,12 @@ public final class ClassFeatures {
     }
 
     // ── Subclass features ──────────────────────────────────────────────────────
-    // Only subclasses whose level-up features are modeled server-side appear here (today: the
+    // Every subclass a character can have. The catalog subclasses (2024 PHB plus Twilight Domain)
+    // live in one <Class>Subclasses file per class; the World of Warcraft module's subclasses (the
     // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, the WoW
     // Rogue's Swashbuckler, and the WoW Shaman's Path of the Elements and Path of the Spiritual
-    // Guardian). Each level entry may REPLACE generic class features by name
-    // and/or ADD new ones. Subclasses without an entry get the generic features unchanged.
+    // Guardian) are defined below. Each level entry may REPLACE generic class features by name
+    // and/or ADD new ones. An unknown subclass gets the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
     private record SubclassGains(Set<String> replaces, List<FeatureGain> adds) {}
@@ -259,16 +262,49 @@ public final class ClassFeatures {
     }
 
     /** class (lower-case) -> subclass (lower-case) -> level -> gains. */
-    private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = Map.of(
-            "barbarian", Map.of(
-                    ClassProgression.PATH_OF_THE_ELEMENTS.toLowerCase(), pathOfTheElements(),
-                    ClassProgression.PATH_OF_THE_SPIRITUAL_GUARDIAN.toLowerCase(), pathOfTheSpiritualGuardian()),
-            "paladin", Map.of(
-                    ClassProgression.EBON_BLADE.toLowerCase(), ebonBlade(),
-                    ClassProgression.OATH_OF_THE_HOLY.toLowerCase(), oathOfTheHoly()),
-            "ranger", Map.of(ClassProgression.DEMON_HUNTER.toLowerCase(), demonHunter()),
-            "rogue", Map.of(ClassProgression.SWASHBUCKLER.toLowerCase(), swashbuckler())
-    );
+    private static final Map<String, Map<String, Map<Integer, SubclassGains>>> SUBCLASS_FEATURES = buildSubclassFeatures();
+
+    private static Map<String, Map<String, Map<Integer, SubclassGains>>> buildSubclassFeatures() {
+        Map<String, Map<String, Map<Integer, SubclassGains>>> m = new HashMap<>();
+        // The subclasses every member of a class can pick (ClassProgression's subclass catalog).
+        // Purely additive: the generic class tables carry no subclass placeholders.
+        addCatalogSubclasses(m, "barbarian", BarbarianSubclasses.all());
+        addCatalogSubclasses(m, "bard", BardSubclasses.all());
+        addCatalogSubclasses(m, "cleric", ClericSubclasses.all());
+        addCatalogSubclasses(m, "druid", DruidSubclasses.all());
+        addCatalogSubclasses(m, "fighter", FighterSubclasses.all());
+        addCatalogSubclasses(m, "monk", MonkSubclasses.all());
+        addCatalogSubclasses(m, "paladin", PaladinSubclasses.all());
+        addCatalogSubclasses(m, "ranger", RangerSubclasses.all());
+        addCatalogSubclasses(m, "rogue", RogueSubclasses.all());
+        addCatalogSubclasses(m, "sorcerer", SorcererSubclasses.all());
+        addCatalogSubclasses(m, "warlock", WarlockSubclasses.all());
+        addCatalogSubclasses(m, "wizard", WizardSubclasses.all());
+        // World of Warcraft module subclasses (hero and WoW-only); these may also REPLACE
+        // generic features.
+        addSubclass(m, "barbarian", ClassProgression.PATH_OF_THE_ELEMENTS, pathOfTheElements());
+        addSubclass(m, "barbarian", ClassProgression.PATH_OF_THE_SPIRITUAL_GUARDIAN, pathOfTheSpiritualGuardian());
+        addSubclass(m, "paladin", ClassProgression.EBON_BLADE, ebonBlade());
+        addSubclass(m, "paladin", ClassProgression.OATH_OF_THE_HOLY, oathOfTheHoly());
+        addSubclass(m, "ranger", ClassProgression.DEMON_HUNTER, demonHunter());
+        addSubclass(m, "rogue", ClassProgression.SWASHBUCKLER, swashbuckler());
+        return m;
+    }
+
+    private static void addSubclass(Map<String, Map<String, Map<Integer, SubclassGains>>> m,
+                                    String clazz, String subclass, Map<Integer, SubclassGains> byLevel) {
+        m.computeIfAbsent(clazz, k -> new HashMap<>()).put(subclass.toLowerCase(), byLevel);
+    }
+
+    /** Registers a class's catalog subclasses (name -> level -> features), all purely additive. */
+    private static void addCatalogSubclasses(Map<String, Map<String, Map<Integer, SubclassGains>>> m,
+                                             String clazz, Map<String, Map<Integer, List<FeatureGain>>> subclasses) {
+        subclasses.forEach((subclass, byLevel) -> {
+            Map<Integer, SubclassGains> gains = new HashMap<>();
+            byLevel.forEach((level, features) -> gains.put(level, new SubclassGains(Set.of(), features)));
+            addSubclass(m, clazz, subclass, gains);
+        });
+    }
 
     /**
      * Path of the Elements, the WoW Shaman's Elemental path (barbarian; offered only to WoW
@@ -500,18 +536,47 @@ public final class ClassFeatures {
      * features.
      */
     public static List<FeatureGain> featuresAt(String clazz, String subclass, String specialization, int level) {
+        return taggedFeaturesAt(clazz, subclass, specialization, level).stream()
+                .map(e -> new FeatureGain(e.name(), e.desc()))
+                .toList();
+    }
+
+    /** The features at one level, each tagged with whether the subclass (rather than the class) grants it. */
+    private static List<FeatureProgressionEntry> taggedFeaturesAt(String clazz, String subclass,
+                                                                  String specialization, int level) {
         List<FeatureGain> generic = variantFeaturesAt(clazz, specialization, level);
-        if (clazz == null || subclass == null) return generic;
-        SubclassGains gains = SUBCLASS_FEATURES
+        SubclassGains gains = (clazz == null || subclass == null) ? null : SUBCLASS_FEATURES
                 .getOrDefault(clazz.trim().toLowerCase(), Map.of())
                 .getOrDefault(subclass.trim().toLowerCase(), Map.of())
                 .get(level);
-        if (gains == null) return generic;
-        List<FeatureGain> result = new ArrayList<>();
+        List<FeatureProgressionEntry> result = new ArrayList<>();
         for (FeatureGain g : generic) {
-            if (!gains.replaces().contains(g.name())) result.add(g);
+            if (gains == null || !gains.replaces().contains(g.name())) {
+                result.add(new FeatureProgressionEntry(level, g.name(), g.desc(), false));
+            }
         }
-        result.addAll(gains.adds());
-        return List.copyOf(result);
+        if (gains != null) {
+            for (FeatureGain g : gains.adds()) {
+                result.add(new FeatureProgressionEntry(level, g.name(), g.desc(), true));
+            }
+        }
+        return result;
+    }
+
+    /** The highest character level; the progression runs from level 2 up to and including it. */
+    private static final int MAX_LEVEL = 20;
+
+    /**
+     * Every feature a class + subclass + specialization gains from level 2 to level 20, in level
+     * order — exactly what {@link #featuresAt(String, String, String, int)} would grant at each
+     * level-up, flattened into one list so a character sheet can show what is still to come.
+     * A null subclass yields the class's own features only; an unknown class yields an empty list.
+     */
+    public static List<FeatureProgressionEntry> progression(String clazz, String subclass, String specialization) {
+        List<FeatureProgressionEntry> all = new ArrayList<>();
+        for (int level = 2; level <= MAX_LEVEL; level++) {
+            all.addAll(taggedFeaturesAt(clazz, subclass, specialization, level));
+        }
+        return List.copyOf(all);
     }
 }
