@@ -13,9 +13,23 @@ import java.util.*;
 /** Separate grants keep generic character saves from overwriting DM decisions. */
 @Service
 public class PcProfessionService {
-    private static final Set<String> KEYS = Set.of("archaeology", "fishing", "herbalism", "mining", "skinning");
-    private static final Map<String, String> TOOLS = Map.of("herbalism", "Herbalism Kit",
-            "mining", "Mason's Tools", "skinning", "Leatherworker's Tools");
+    private static final Set<String> KEYS = Set.of("archaeology", "fishing", "herbalism", "mining", "skinning",
+            "alchemy", "blacksmithing", "cooking", "enchanting", "engineering", "inscription",
+            "jewelcrafting", "leatherworking", "tailoring");
+    /** A character needs any one of the listed tool proficiencies, not every alternative. */
+    private static final Map<String, Set<String>> TOOLS = Map.ofEntries(
+            Map.entry("herbalism", Set.of("Herbalism Kit")),
+            Map.entry("mining", Set.of("Mason's Tools")),
+            Map.entry("skinning", Set.of("Leatherworker's Tools")),
+            Map.entry("alchemy", Set.of("Alchemist's Supplies", "Herbalism Kit")),
+            Map.entry("blacksmithing", Set.of("Mason's Tools", "Smith's Tools")),
+            Map.entry("cooking", Set.of("Brewer's Supplies", "Cook's Utensils")),
+            Map.entry("enchanting", Set.of("Carpenter's Tools", "Potter's Tools", "Woodcarver's Tools")),
+            Map.entry("engineering", Set.of("Tinker's Tools")),
+            Map.entry("inscription", Set.of("Calligrapher's Supplies", "Cartographer's Tools", "Painter's Supplies")),
+            Map.entry("jewelcrafting", Set.of("Glassblower's Tools", "Jeweler's Tools")),
+            Map.entry("leatherworking", Set.of("Cobbler's Tools", "Leatherworker's Tools")),
+            Map.entry("tailoring", Set.of("Weaver's Tools")));
     private final PCService pcs;
     private final PCRepository pcRepository;
     private final PcProfessionRepository grants;
@@ -60,7 +74,7 @@ public class PcProfessionService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
     }
     private String requireKey(String key) {
-        if (key == null || !KEYS.contains(key)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown gathering profession");
+        if (key == null || !KEYS.contains(key)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown profession");
         return key;
     }
     private boolean eligible(PC pc, String key) {
@@ -72,7 +86,8 @@ public class PcProfessionService {
         try {
             String[] tools = mapper.readValue(pc.getToolProfs(), String[].class);
             return tools != null && Arrays.stream(tools).filter(Objects::nonNull)
-                    .anyMatch(tool -> normalize(tool).equals(normalize(TOOLS.get(key))));
+                    .anyMatch(tool -> TOOLS.get(key).stream()
+                            .anyMatch(required -> normalize(tool).equals(normalize(required))));
         } catch (java.io.IOException | IllegalArgumentException e) { return false; }
     }
     private String normalize(String value) {
