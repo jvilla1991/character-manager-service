@@ -394,7 +394,7 @@ class ShopServiceTest {
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
 
         assertThat(result.totalGainCp()).isEqualTo(750L); // half of 1500 catalog price
         // 500cp (5gp) + 750cp = 1250cp -> re-minted as 1pp 2gp 5sp
@@ -413,7 +413,7 @@ class ShopServiceTest {
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
 
         assertThat(result.totalGainCp()).isEqualTo(500L); // half of the 1000cp paid
         verify(srdItemRepository, never()).findByItemKey(any());
@@ -428,9 +428,42 @@ class ShopServiceTest {
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
 
         assertThat(result.totalGainCp()).isEqualTo(2250L); // half of 1500 * 3
+    }
+
+    @Test
+    void sell_partialQuantity_shrinksTheStack_andPaysForOnlyThoseUnits() {
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"longsword\",\"name\":\"Longsword\",\"category\":\"weapon\",\"qty\":3}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, 2, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(1500L); // half of 1500 * 2
+        assertThat(result.inventory()).singleElement()
+                .satisfies(l -> assertThat(l).containsEntry("qty", 1));
+        verify(activityLogService).log(7L, PcActivityType.SALE, "Sold Longsword ×2 for 15 gp", playerId);
+    }
+
+    @Test
+    void sell_throws400_whenQuantityIsOutsideTheStack() {
+        stubActiveShopWithAttendee();
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":3}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+
+        for (int bad : new int[] {0, -1, 4}) {
+            assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, bad, playerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("Quantity must be between");
+        }
+        verify(pcRepository, never()).save(any());
     }
 
     @Test
@@ -440,23 +473,40 @@ class ShopServiceTest {
                 "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":1,\"status\":\"dropped\"}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
         verify(pcRepository, never()).save(any());
     }
 
     @Test
-    void sell_throws400_whenStandardShopCategoryMismatches() {
-        stubActiveShopWithAttendee(); // shop category is WEAPON
+    void sell_buysAnyCategory_atAStandardShop() {
+        stubActiveShopWithAttendee(); // shop category is WEAPON; the item is armor
         PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
                 "[{\"catalogKey\":\"shield\",\"category\":\"armor\",\"qty\":1,\"unitCostCp\":1000}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        verify(pcRepository, never()).save(any());
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(500L);
+        assertThat(result.inventory()).isEmpty();
+    }
+
+    @Test
+    void sell_pricesStartingEquipment_byItsCatalogName() {
+        stubActiveShopWithAttendee();
+        // A starting-kit line: a name and nothing else — no key, no price paid.
+        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
+                "[{\"name\":\"longsword\",\"category\":\"weapon\",\"qty\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(srdItemRepository.findFirstByNameIgnoreCase("longsword")).thenReturn(Optional.of(longsword()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isEqualTo(750L); // half the 1500cp catalog price
+        assertThat(result.inventory()).isEmpty();
     }
 
     @Test
@@ -474,21 +524,26 @@ class ShopServiceTest {
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
         when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        SellResult result = shopService.sell(1L, 7L, 0, playerId);
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
 
         assertThat(result.totalGainCp()).isEqualTo(500L);
     }
 
     @Test
-    void sell_throws400_whenNoResolvablePrice() {
+    void sell_takesAnUnpricedItemForNothing() {
         stubActiveShopWithAttendee();
-        PC pc = pcOwnedBy(playerId, "{\"gp\":0}",
-                "[{\"name\":\"Mystery Note\",\"category\":\"weapon\",\"qty\":1}]");
+        PC pc = pcOwnedBy(playerId, "{\"gp\":3}",
+                "[{\"name\":\"Mystery Note\",\"category\":\"gear\",\"qty\":1}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(srdItemRepository.findFirstByNameIgnoreCase("Mystery Note")).thenReturn(Optional.empty());
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        SellResult result = shopService.sell(1L, 7L, 0, null, playerId);
+
+        assertThat(result.totalGainCp()).isZero();
+        assertThat(result.coins()).containsEntry("gp", 3);
+        assertThat(result.inventory()).isEmpty();
+        verify(activityLogService).log(7L, PcActivityType.SALE, "Sold Mystery Note for nothing", playerId);
     }
 
     @Test
@@ -497,7 +552,7 @@ class ShopServiceTest {
         PC pc = pcOwnedBy(playerId, "{\"gp\":0}", "[]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
@@ -508,7 +563,7 @@ class ShopServiceTest {
         when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(shop));
         when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
@@ -520,7 +575,7 @@ class ShopServiceTest {
                 "[{\"catalogKey\":\"longsword\",\"category\":\"weapon\",\"qty\":1}]");
         when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
 
-        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, playerId))
+        assertThatThrownBy(() -> shopService.sell(1L, 7L, 0, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
