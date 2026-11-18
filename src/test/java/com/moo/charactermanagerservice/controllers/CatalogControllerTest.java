@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.CatalogItemView;
+import com.moo.charactermanagerservice.dto.FeatureProgressionEntry;
 import com.moo.charactermanagerservice.services.ShopService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -53,5 +54,38 @@ class CatalogControllerTest {
         assertThatThrownBy(() -> catalogController.catalog("POTION"))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void classFeatures_returns200_withTheClassAndSubclassRoadmap() {
+        ResponseEntity<List<FeatureProgressionEntry>> response =
+                catalogController.classFeatures("Paladin", "Oath of Devotion", null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody())
+                .extracting(FeatureProgressionEntry::name)
+                .contains("Aura of Protection", "Sacred Weapon");
+        assertThat(response.getBody())
+                .filteredOn(e -> e.name().equals("Sacred Weapon"))
+                .allSatisfy(e -> {
+                    assertThat(e.level()).isEqualTo(3);
+                    assertThat(e.subclass()).isTrue();
+                });
+    }
+
+    @Test
+    void classFeatures_treatsABlankSubclassAsNone() {
+        assertThat(catalogController.classFeatures("Paladin", "  ", "").getBody())
+                .isNotEmpty()
+                .noneMatch(FeatureProgressionEntry::subclass);
+    }
+
+    @Test
+    void classFeatures_returnsAnEmptyList_forAnUnknownClass() {
+        ResponseEntity<List<FeatureProgressionEntry>> response =
+                catalogController.classFeatures("Artificer", null, null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEmpty();
     }
 }

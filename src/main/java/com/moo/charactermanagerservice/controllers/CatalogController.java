@@ -1,6 +1,8 @@
 package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.CatalogItemView;
+import com.moo.charactermanagerservice.dto.FeatureProgressionEntry;
+import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.services.ShopService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -28,5 +30,24 @@ public class CatalogController {
     @GetMapping("/catalog")
     public ResponseEntity<List<CatalogItemView>> catalog(@RequestParam String category) {
         return ResponseEntity.ok(shopService.catalog(category));
+    }
+
+    /**
+     * The features a class gains from level 2 to level 20, in level order — the same catalog
+     * level-up grants from, so the sheet's "yet to unlock" list can never disagree with it.
+     * {@code subclass} adds that subclass's features (omit it for a character who has not chosen
+     * one yet); {@code specialization} applies a World of Warcraft variant's feature swaps. An
+     * unknown class yields an empty list rather than an error: this is reference data.
+     */
+    @GetMapping("/catalog/class-features")
+    public ResponseEntity<List<FeatureProgressionEntry>> classFeatures(
+            @RequestParam String clazz,
+            @RequestParam(required = false) String subclass,
+            @RequestParam(required = false) String specialization) {
+        return ResponseEntity.ok(ClassFeatures.progression(clazz, blankToNull(subclass), blankToNull(specialization)));
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
     }
 }
