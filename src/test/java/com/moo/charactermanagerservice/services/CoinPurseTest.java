@@ -24,9 +24,9 @@ class CoinPurseTest {
     }
 
     @Test
-    void fromCopper_distributesGreedily_andNeverMintsElectrum() {
-        Map<String, Integer> coins = CoinPurse.fromCopper(1234L); // 1pp 2gp 3sp 4cp
-        assertThat(coins).containsEntry("pp", 1).containsEntry("gp", 2)
+    void fromCopper_mintsGoldSilverCopperOnly_neverPlatinumOrElectrum() {
+        Map<String, Integer> coins = CoinPurse.fromCopper(1234L); // 12gp 3sp 4cp — the sheet shows no pp
+        assertThat(coins).containsEntry("pp", 0).containsEntry("gp", 12)
                 .containsEntry("sp", 3).containsEntry("cp", 4).containsEntry("ep", 0);
     }
 
@@ -45,6 +45,14 @@ class CoinPurseTest {
         Map<String, Object> purse = Map.of("ep", 3); // 150 cp
         Map<String, Integer> after = CoinPurse.deduct(purse, 50L); // 100 cp left = 1 gp
         assertThat(after).containsEntry("gp", 1).containsEntry("ep", 0);
+    }
+
+    @Test
+    void add_foldsHeldPlatinumIntoGold() {
+        // A purse that already held platinum (from before the gold-only rule)
+        // comes back as gold the sheet can show: 2 pp + 5 gp + 60 gp = 85 gp.
+        Map<String, Integer> after = CoinPurse.add(Map.of("pp", 2, "gp", 5), 6000L);
+        assertThat(after).containsEntry("gp", 85).containsEntry("pp", 0);
     }
 
     @Test
@@ -79,8 +87,8 @@ class CoinPurseTest {
     }
 
     @Test
-    void format_platinumGoldAndSilver() {
-        assertThat(CoinPurse.format(1250L)).isEqualTo("1 pp 2 gp 5 sp");
+    void format_largeAmountsStayInGold() {
+        assertThat(CoinPurse.format(1250L)).isEqualTo("12 gp 5 sp");
     }
 
     @Test

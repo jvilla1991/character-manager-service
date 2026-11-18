@@ -538,12 +538,12 @@ class LootServiceTest {
         assertThat(view).isNull(); // distributed — the pool is gone
         verify(lootRepository).delete(pool);
         assertThat(thessaly.getInventory()).contains("longsword");
-        assertThat(thessaly.getCoins()).contains("\"pp\":3").contains("\"gp\":1"); // 1 gp + 30 gp
+        assertThat(thessaly.getCoins()).contains("\"gp\":31").contains("\"pp\":0"); // 1 gp + 30 gp, all gold
         assertThat(brakka.getInventory()).contains("Potion of Healing").contains("\"qty\":2");
         verify(activityLogService).log(7L, PcActivityType.LOOT,
-                "Received from the party split: Longsword, 3 pp", playerId);
+                "Received from the party split: Longsword, 30 gp", playerId);
         verify(activityLogService).log(8L, PcActivityType.LOOT,
-                "Received from the party split: Potion of Healing ×2, 3 pp", playerId);
+                "Received from the party split: Potion of Healing ×2, 30 gp", playerId);
         SessionLootResult result = savedResult();
         assertThat(result.getOutcome()).isEqualTo("APPROVED");
         assertThat(result.getAgreeCount()).isEqualTo(2);
