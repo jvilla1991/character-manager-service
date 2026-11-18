@@ -307,6 +307,9 @@ public final class ClassProgression {
     /** The WoW Priest's Shadow domain (cleric), offered only to WoW clerics. */
     public static final String SHADOW_DOMAIN = "Shadow Domain";
 
+    /** The PHB sorcerer subclass every WoW Evoker must have (see {@link ClassSpecializations#requiredSubclass}). */
+    public static final String DRACONIC_SORCERY = "Draconic Sorcery";
+
     /**
      * Subclasses offered at the level-up subclass choice ONLY to a World of Warcraft variant of the
      * class — i.e. a member whose specialization is one of the class's {@link ClassSpecializations}
@@ -323,11 +326,15 @@ public final class ClassProgression {
      * Selectable subclass names at the level-up subclass choice for a class + specialization: the
      * class's {@link #subclassesFor(String) catalog}, plus its WoW-only subclasses when the
      * specialization marks the character as that class's WoW variant (see
-     * {@link #isClassSpecialization}). Hero subclasses are never included.
+     * {@link #isClassSpecialization}). When that variant requires a subclass (e.g. the Evoker's
+     * Draconic Sorcery — see {@link #requiredSubclass}) only that subclass is offered. Hero
+     * subclasses are never included.
      */
     public static List<String> subclassesFor(String clazz, String specialization) {
         List<String> base = subclassesFor(clazz);
         if (!isClassSpecialization(clazz, specialization)) return base;
+        String required = requiredSubclass(clazz, specialization);
+        if (required != null) return List.of(required);
         List<String> wowOnly = WOW_ONLY_SUBCLASSES.getOrDefault(clazz.trim().toLowerCase(), List.of());
         if (wowOnly.isEmpty()) return base;
         List<String> all = new java.util.ArrayList<>(base);
@@ -406,7 +413,10 @@ public final class ClassProgression {
     // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
     // Destruction) adds only the specialization: no WoW-only patron and no feature overrides. The
     // WoW Priest — a cleric with Discipline/Holy/Shadow — unlocks the Discipline Domain and the
-    // Shadow Domain at its level-3 choice, with no feature overrides.
+    // Shadow Domain at its level-3 choice, with no feature overrides. The WoW Evoker — a sorcerer
+    // with Augmentation/Devastation/Preservation — is the first variant that REQUIRES a subclass:
+    // it must be a Draconic Sorcery sorcerer (see ClassSpecializations#requiredSubclass), and it
+    // gains Evoker Spells in place of Draconic Spells (see ClassFeatures' variant features).
 
     /**
      * WoW specializations available to a base class that has no hero subclass.
@@ -419,16 +429,28 @@ public final class ClassProgression {
      * @param recommendedFightingStyles specialization → the Fighting Style options it recommends at
      *                               the class's Fighting Style choice (advisory only, never enforced;
      *                               empty for classes without that choice)
+     * @param requiredSubclass       the subclass every member of this WoW variant MUST have (e.g. the
+     *                               Evoker's Draconic Sorcery), enforced on create, update and
+     *                               level-up; {@code null} when the variant may take any subclass. A
+     *                               base-game member (specialization null) is never restricted.
      */
     public record ClassSpecializations(String baseClass, List<String> specializations,
                                        boolean respecOnLevelUp,
                                        Map<String, String> recommendedSubclasses,
-                                       Map<String, List<String>> recommendedFightingStyles) {
+                                       Map<String, List<String>> recommendedFightingStyles,
+                                       String requiredSubclass) {
 
-        /** A class whose specializations recommend no Fighting Style. */
+        /** A class whose specializations recommend no Fighting Style and require no subclass. */
         public ClassSpecializations(String baseClass, List<String> specializations, boolean respecOnLevelUp,
                                     Map<String, String> recommendedSubclasses) {
-            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, Map.of());
+            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, Map.of(), null);
+        }
+
+        /** A class whose specializations require no subclass. */
+        public ClassSpecializations(String baseClass, List<String> specializations, boolean respecOnLevelUp,
+                                    Map<String, String> recommendedSubclasses,
+                                    Map<String, List<String>> recommendedFightingStyles) {
+            this(baseClass, specializations, respecOnLevelUp, recommendedSubclasses, recommendedFightingStyles, null);
         }
     }
 
@@ -473,6 +495,14 @@ public final class ClassProgression {
                     Map.of("Assassination", "Assassin",
                             "Outlaw", SWASHBUCKLER,
                             "Subtlety", "Soulknife")),
+            // WoW Evoker. Every Evoker is a Draconic Sorcery sorcerer (required, not just
+            // recommended); sorcerers pick their subclass at level 1 (creation), so the level-up
+            // preview never has a subclass due. No Fighting Style choice.
+            new ClassSpecializations("sorcerer", List.of("Augmentation", "Devastation", "Preservation"), true,
+                    Map.of("Augmentation", DRACONIC_SORCERY,
+                            "Devastation", DRACONIC_SORCERY,
+                            "Preservation", DRACONIC_SORCERY),
+                    Map.of(), DRACONIC_SORCERY),
             // WoW Warlock. No WoW-only patron and no Fighting Style choice. Warlocks pick their
             // patron at level 1 (creation), so the level-up preview never has a subclass due; the
             // recommendations are kept for consistency with the other variants.
@@ -510,6 +540,16 @@ public final class ClassProgression {
         return classSpecializations(clazz)
                 .map(s -> s.recommendedFightingStyles().getOrDefault(specialization, List.of()))
                 .orElse(List.of());
+    }
+
+    /**
+     * The subclass a class specialization REQUIRES (e.g. any Evoker sorcerer → Draconic Sorcery), or
+     * null when the specialization is not one of the class's WoW specializations or its variant may
+     * take any subclass. A base-game member (null specialization) is never restricted.
+     */
+    public static String requiredSubclass(String clazz, String specialization) {
+        if (!isClassSpecialization(clazz, specialization)) return null;
+        return classSpecializations(clazz).map(ClassSpecializations::requiredSubclass).orElse(null);
     }
 
     /**

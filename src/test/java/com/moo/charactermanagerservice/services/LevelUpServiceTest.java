@@ -2355,4 +2355,192 @@ class LevelUpServiceTest {
                 .isEqualTo(com.moo.charactermanagerservice.progression.ClassFeatures
                         .featuresAt("cleric", SHADOW_DOMAIN, 3));
     }
+
+    // --- WoW Evoker (sorcerer + Augmentation/Devastation/Preservation; requires Draconic Sorcery) ---
+
+    private static final String DRACONIC_SORCERY = "Draconic Sorcery";
+    private static final List<String> EVOKER_SPECS = List.of("Augmentation", "Devastation", "Preservation");
+
+    private static PC sorcerer(int level, String subclass) {
+        PC s = pc("Sorcerer", level, 14, 6 * level, 6 * level);
+        s.setSubclass(subclass); // sorcerers choose their subclass at level 1
+        return s;
+    }
+
+    private static PC evoker(int level, String spec) {
+        PC s = sorcerer(level, DRACONIC_SORCERY);
+        s.setSpecialization(spec);
+        return s;
+    }
+
+    @Test
+    void applyLevelUp_draconicSorcerer_acceptsEachEvokerSpecialization_andRejectsOthers() {
+        for (String spec : EVOKER_SPECS) {
+            PC s = sorcerer(4, DRACONIC_SORCERY); // 4 -> 5: not an ASI level
+            service.applyLevelUp(s, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(s.getSpecialization()).isEqualTo(spec);
+            assertThat(s.getLevel()).isEqualTo((short) 5);
+        }
+        for (String bad : List.of("devastation", "Destruction", "Holy", "Frost", "Fire", "Balance")) {
+            PC s = evoker(4, "Devastation");
+            assertThatThrownBy(() -> service.applyLevelUp(s, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(s.getSpecialization()).isEqualTo("Devastation");
+            assertThat(s.getLevel()).isEqualTo((short) 4);
+        }
+    }
+
+    @Test
+    void applyLevelUp_evokerSpecialization_requiresDraconicSorcery() {
+        for (String subclass : List.of("Aberrant Sorcery", "Clockwork Sorcery", "Wild Magic Sorcery")) {
+            PC s = sorcerer(4, subclass);
+            assertThatThrownBy(() -> service.applyLevelUp(s, null, null, null, null, HpMode.AVERAGE, "Preservation"))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(s.getSpecialization()).isNull();
+            assertThat(s.getLevel()).isEqualTo((short) 4);
+        }
+        // A sorcerer with no subclass can't become an Evoker either.
+        PC none = sorcerer(4, null);
+        assertThatThrownBy(() -> service.applyLevelUp(none, null, null, null, null, HpMode.AVERAGE, "Augmentation"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        // An (invalid) stored Evoker on the wrong subclass can't level up without fixing it.
+        PC broken = sorcerer(4, "Wild Magic Sorcery");
+        broken.setSpecialization("Devastation");
+        assertThatThrownBy(() -> service.applyLevelUp(broken))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(broken.getLevel()).isEqualTo((short) 4);
+        // Matching is case-insensitive like the rest of the subclass checks.
+        PC lower = sorcerer(4, "draconic sorcery");
+        service.applyLevelUp(lower, null, null, null, null, HpMode.AVERAGE, "Devastation");
+        assertThat(lower.getSpecialization()).isEqualTo("Devastation");
+    }
+
+    @Test
+    void applyLevelUp_baseSorcerer_anySubclass_unaffected() {
+        for (String subclass : List.of("Aberrant Sorcery", "Clockwork Sorcery", DRACONIC_SORCERY, "Wild Magic Sorcery")) {
+            PC s = sorcerer(4, subclass);
+            service.applyLevelUp(s);
+            assertThat(s.getLevel()).isEqualTo((short) 5);
+            assertThat(s.getSpecialization()).isNull();
+        }
+    }
+
+    @Test
+    void applyLevelUp_evoker_mayRespec() {
+        PC s = evoker(4, "Devastation");
+        service.applyLevelUp(s, null, null, null, null, HpMode.AVERAGE, "Preservation");
+        assertThat(s.getSpecialization()).isEqualTo("Preservation");
+        assertThat(s.getSubclass()).isEqualTo(DRACONIC_SORCERY);
+    }
+
+    @Test
+    void classProgression_evokerLookups_returnExactNames() {
+        for (String spec : EVOKER_SPECS) {
+            assertThat(ClassProgression.recommendedSubclass("sorcerer", spec)).isEqualTo(DRACONIC_SORCERY);
+            assertThat(ClassProgression.requiredSubclass("Sorcerer", spec)).isEqualTo(DRACONIC_SORCERY);
+            assertThat(ClassProgression.recommendedFightingStyles("sorcerer", spec)).isEmpty();
+            assertThat(ClassProgression.subclassesFor("sorcerer", spec)).containsExactly(DRACONIC_SORCERY);
+            assertThat(ClassProgression.subclassesFor("sorcerer")).contains(DRACONIC_SORCERY);
+        }
+        assertThat(ClassProgression.classSpecializations("sorcerer")).get()
+                .satisfies(s -> {
+                    assertThat(s.specializations()).containsExactlyElementsOf(EVOKER_SPECS);
+                    assertThat(s.respecOnLevelUp()).isTrue();
+                    assertThat(s.requiredSubclass()).isEqualTo(DRACONIC_SORCERY);
+                });
+        assertThat(ClassProgression.requiredSubclass("sorcerer", null)).isNull();
+        assertThat(ClassProgression.requiredSubclass("sorcerer", "devastation")).isNull();
+        assertThat(ClassProgression.subclassesFor("sorcerer", null)).hasSize(4);
+        // No other variant requires a subclass.
+        for (String[] c : new String[][] {{"barbarian", "Elemental"}, {"cleric", "Holy"}, {"druid", "Balance"},
+                {"fighter", "Arms"}, {"paladin", "Holy"}, {"rogue", "Outlaw"}, {"warlock", "Affliction"}}) {
+            assertThat(ClassProgression.requiredSubclass(c[0], c[1])).as(c[0]).isNull();
+        }
+        assertThat(ClassProgression.isClassSpecialization("sorcerer", "Destruction")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("wizard", "Devastation")).isFalse();
+    }
+
+    @Test
+    void preview_evoker_neverHasASubclassDue() {
+        for (String spec : EVOKER_SPECS) {
+            for (int level : List.of(1, 2, 4)) {
+                LevelUpPreview p = service.preview(evoker(level, spec));
+                assertThat(p.subclassDue()).isFalse();
+                assertThat(p.recommendedSubclass()).isNull();
+                assertThat(p.recommendedFightingStyles()).isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void evokerSpells_replaceDraconicSpellsAtLevel3_forEveryEvokerSpec() {
+        for (String spec : EVOKER_SPECS) {
+            assertThat(names(service.preview(evoker(2, spec)).featuresGained())).as(spec)
+                    .containsExactly("Evoker Spells", "Draconic Resilience");
+            PC s = evoker(2, spec);
+            service.applyLevelUp(s);
+            assertThat(s.getFeatures()).as(spec)
+                    .contains("\"name\":\"Evoker Spells\"")
+                    .contains("\"name\":\"Draconic Resilience\"")
+                    .doesNotContain("\"name\":\"Draconic Spells\"");
+        }
+        // A base Draconic sorcerer keeps Draconic Spells and never gets Evoker Spells.
+        assertThat(names(service.preview(sorcerer(2, DRACONIC_SORCERY)).featuresGained()))
+                .containsExactly("Draconic Resilience", "Draconic Spells");
+        PC base = sorcerer(2, DRACONIC_SORCERY);
+        service.applyLevelUp(base);
+        assertThat(base.getFeatures()).contains("\"name\":\"Draconic Spells\"").doesNotContain("Evoker Spells");
+        // Other base sorcerers are unchanged too.
+        assertThat(names(service.preview(sorcerer(2, "Aberrant Sorcery")).featuresGained()))
+                .doesNotContain("Evoker Spells");
+    }
+
+    @Test
+    void evokerSpells_onlyAtLevel3_andOtherLevelsUnchanged() {
+        for (int level : List.of(1, 4, 5, 6, 9, 13, 17, 19)) {
+            assertThat(names(service.preview(evoker(level, "Augmentation")).featuresGained()))
+                    .as("level %d", level)
+                    .containsExactlyElementsOf(names(service.preview(sorcerer(level, DRACONIC_SORCERY)).featuresGained()));
+        }
+        // The specialization-less overload yields the generic + Draconic list; the catalog
+        // progression for an Evoker shows Evoker Spells instead.
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("sorcerer", DRACONIC_SORCERY, 3)))
+                .containsExactly("Draconic Resilience", "Draconic Spells");
+        assertThat(com.moo.charactermanagerservice.progression.ClassFeatures
+                .progression("sorcerer", DRACONIC_SORCERY, "Preservation"))
+                .filteredOn(e -> e.name().equals("Evoker Spells"))
+                .singleElement()
+                .satisfies(e -> {
+                    assertThat(e.level()).isEqualTo(3);
+                    assertThat(e.subclass()).isFalse();
+                });
+        // Without a subclass (reference data only) Evoker Spells is still listed as the class feature.
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("sorcerer", null, "Devastation", 3)))
+                .containsExactly("Evoker Spells");
+    }
+
+    @Test
+    void evokerVariantFeature_doesNotAffectOtherVariants() {
+        // The Shaman's in-place swap is unchanged.
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("barbarian", PATH_OF_THE_ELEMENTS, "Elemental", 3)))
+                .containsExactly("Totems", "Raging Elements");
+        // Other WoW variants keep their level-3 features exactly.
+        assertThat(names(service.preview(wowWarlock(2, "Destruction")).featuresGained()))
+                .containsExactlyElementsOf(names(service.preview(warlock(2)).featuresGained()));
+        assertThat(names(service.preview(wowRogue(2, "Subtlety")).featuresGained())).containsExactly("Steady Aim");
+        assertThat(names(service.preview(wowCleric(2, "Holy")).featuresGained()))
+                .containsExactlyElementsOf(names(service.preview(cleric(2)).featuresGained()));
+        // A wizard (another arcane caster) is untouched by Evoker spec names.
+        assertThat(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                .featuresAt("wizard", "Evoker", "Devastation", 3)))
+                .containsExactlyElementsOf(names(com.moo.charactermanagerservice.progression.ClassFeatures
+                        .featuresAt("wizard", "Evoker", 3)));
+    }
 }

@@ -192,6 +192,10 @@ public class LevelUpService {
         // A WoW-only subclass (Oath of the Holy) is unlocked by the specialization, so the subclass
         // options use the one this request sets, if any (it is validated just below).
         String effectiveSpecialization = specialization != null ? specialization : pc.getSpecialization();
+        // A WoW variant that requires a subclass (the Evoker's Draconic Sorcery) is checked against
+        // the post-level-up subclass + specialization before anything is mutated.
+        HeroClassRules.validateRequiredSubclass(pc.getClazz(),
+                isBlank(chosenSubclass) ? pc.getSubclass() : chosenSubclass.trim(), effectiveSpecialization);
         applySubclassChoice(pc, newLevel, chosenSubclass, effectiveSpecialization);
         String style = validateFightingStyleChoice(pc, newLevel, fightingStyle);
         applySpecializationChoice(pc, specialization);
