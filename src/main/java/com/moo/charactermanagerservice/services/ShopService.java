@@ -276,9 +276,11 @@ public class ShopService {
     }
 
     /**
-     * Sell the entire stack at inventory position {@code index} back to the
-     * active shop for half its value. Atomic: item removed and coins credited on
-     * the pc row, under the same pessimistic lock as {@link #purchase}.
+     * Sell {@code qty} units of the stack at inventory position {@code index}
+     * back to the active shop for half their value ({@code qty} null = the whole
+     * stack). A partial sale shrinks the stack; selling all of it removes the
+     * line. Atomic: inventory and coins change together on the pc row, under the
+     * same pessimistic lock as {@link #purchase}.
      *
      * <p>Sell price prefers the live catalog price (via the item's catalogKey) so
      * a player can't inflate what they claim to have paid; items with no catalog
@@ -291,7 +293,7 @@ public class ShopService {
      * needed.
      */
     @Transactional
-    public SellResult sell(Long sessionId, Long pcId, Integer index, UUID userId) {
+    public SellResult sell(Long sessionId, Long pcId, Integer index, Integer qty, UUID userId) {
         CombatSession session = findSession(sessionId);
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
@@ -335,13 +337,22 @@ public class ShopService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Item has no resolvable price and can't be sold");
         }
 
-        int qty = entry.get("qty") instanceof Number n ? n.intValue() : 1;
-        long totalGainCp = (baseUnitCp * qty) / 2;
+        int stackQty = entry.get("qty") instanceof Number n ? n.intValue() : 1;
+        int sellQty = qty == null ? stackQty : qty;
+        if (sellQty < 1 || sellQty > stackQty) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Quantity must be between 1 and " + stackQty);
+        }
+        long totalGainCp = (baseUnitCp * sellQty) / 2;
         // Capture the item's name before it's removed — the log message needs it
         // after the entry is gone from the inventory list.
         String itemName = entry.get("name") instanceof String s ? s : "item";
 
-        inventory.remove(index.intValue());
+        if (sellQty < stackQty) {
+            entry.put("qty", stackQty - sellQty);
+        } else {
+            inventory.remove(index.intValue());
+        }
         Map<String, Object> coins = json.parseObject(pc.getCoins());
         Map<String, Integer> newCoins = CoinPurse.add(coins, totalGainCp);
 
@@ -350,7 +361,7 @@ public class ShopService {
         pcRepository.save(pc);
 
         activityLogService.log(pcId, PcActivityType.SALE,
-                "Sold " + itemName + " for " + CoinPurse.format(totalGainCp), userId);
+                "Sold " + itemName + (sellQty > 1 ? " ×" + sellQty : "") + " for " + CoinPurse.format(totalGainCp), userId);
 
         return new SellResult(newCoins, inventory, totalGainCp);
     }
