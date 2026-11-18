@@ -3,7 +3,9 @@ package com.moo.charactermanagerservice.progression;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiPredicate;
 
 /**
  * Selectable feats (D&D 5e 2024) — the feat option at an Ability Score Improvement level.
@@ -24,7 +26,10 @@ import java.util.Set;
  *
  * <p>Also home to the <b>Fighting Style class-feature choice</b> made on level-up at the class's
  * Fighting Style level (Paladin and Ranger at 2; a Fighter's is at level 1, i.e. creation): the
- * Fighting Style feats, plus {@value #VOID_WARRIOR} for a Demon Hunter ranger only.
+ * Fighting Style feats, plus the cantrip Fighting Styles the character qualifies for
+ * ({@value #BLESSED_WARRIOR} for paladins, {@value #DRUIDIC_WARRIOR} for rangers,
+ * {@value #VOID_WARRIOR} for a Demon Hunter ranger only). Cantrip Fighting Styles are never
+ * selectable as feats at an ASI level.
  */
 public final class FeatCatalog {
 
@@ -127,6 +132,56 @@ public final class FeatCatalog {
             + "they count as Ranger spells for you and Wisdom is your spellcasting ability for them. "
             + "Whenever you gain a Ranger level, you can swap one of them for another Warlock cantrip.";
 
+    /** PHB 2024 Paladin alternative to a Fighting Style feat: two Cleric cantrips. */
+    public static final String BLESSED_WARRIOR = "Blessed Warrior";
+
+    /** PHB 2024 Ranger alternative to a Fighting Style feat: two Druid cantrips. */
+    public static final String DRUIDIC_WARRIOR = "Druidic Warrior";
+
+    /** Extra cantrips every cantrip Fighting Style grants — required in the same level-up request. */
+    public static final int CANTRIP_STYLE_CANTRIPS = 2;
+
+    /**
+     * A Fighting Style option taken instead of a Fighting Style feat that grants cantrips.
+     *
+     * @param name          exact option name
+     * @param desc          short summary recorded on the PC's features list
+     * @param eligible      (clazz, subclass) → whether the character may take it
+     * @param extraCantrips cantrips it grants; the level-up request must carry exactly the class's
+     *                      cantrip allowance plus this many (count-only — the server has no spell list)
+     */
+    public record CantripFightingStyle(String name, String desc, BiPredicate<String, String> eligible,
+                                       int extraCantrips) {}
+
+    private static boolean isClass(String clazz, String expected) {
+        return clazz != null && expected.equals(clazz.trim().toLowerCase());
+    }
+
+    private static final List<CantripFightingStyle> CANTRIP_FIGHTING_STYLES = List.of(
+            new CantripFightingStyle(BLESSED_WARRIOR,
+                    "You learn two Cleric cantrips of your choice; they count as Paladin spells for you and "
+                            + "Charisma is your spellcasting ability for them. Whenever you gain a Paladin level, "
+                            + "you can swap one of them for another Cleric cantrip.",
+                    (clazz, subclass) -> isClass(clazz, "paladin"),
+                    CANTRIP_STYLE_CANTRIPS),
+            new CantripFightingStyle(DRUIDIC_WARRIOR,
+                    "You learn two Druid cantrips of your choice; they count as Ranger spells for you and "
+                            + "Wisdom is your spellcasting ability for them. Whenever you gain a Ranger level, "
+                            + "you can swap one of them for another Druid cantrip.",
+                    (clazz, subclass) -> isClass(clazz, "ranger"),
+                    CANTRIP_STYLE_CANTRIPS),
+            new CantripFightingStyle(VOID_WARRIOR, VOID_WARRIOR_DESC,
+                    (clazz, subclass) -> ClassProgression.heroSubclassAllowedFor(subclass, clazz)
+                            && ClassProgression.isDemonHunter(subclass),
+                    VOID_WARRIOR_CANTRIPS)
+    );
+
+    /** The cantrip Fighting Style with exactly this (canonical) name, if it is one. */
+    public static Optional<CantripFightingStyle> cantripFightingStyle(String name) {
+        if (name == null) return Optional.empty();
+        return CANTRIP_FIGHTING_STYLES.stream().filter(s -> s.name().equals(name)).findFirst();
+    }
+
     /** Class -> the level at which its Fighting Style choice is made on level-up. */
     private static final Map<String, Integer> FIGHTING_STYLE_CHOICE_LEVEL = Map.of(
             "paladin", 2,
@@ -142,14 +197,15 @@ public final class FeatCatalog {
 
     /**
      * The Fighting Style options for a character reaching the given (new) level, sorted: empty
-     * unless the choice is due; otherwise the Fighting Style feats, plus {@value #VOID_WARRIOR}
-     * for a ranger with the Demon Hunter hero subclass.
+     * unless the choice is due; otherwise the Fighting Style feats, plus each cantrip Fighting
+     * Style the character is eligible for ({@value #BLESSED_WARRIOR} for paladins,
+     * {@value #DRUIDIC_WARRIOR} for rangers, {@value #VOID_WARRIOR} for a Demon Hunter ranger).
      */
     public static List<String> fightingStyleOptions(String clazz, String subclass, int newLevel) {
         if (!fightingStyleDue(clazz, newLevel)) return List.of();
         List<String> options = new ArrayList<>(FIGHTING_STYLE_FEATS);
-        if (ClassProgression.heroSubclassAllowedFor(subclass, clazz) && ClassProgression.isDemonHunter(subclass)) {
-            options.add(VOID_WARRIOR);
+        for (CantripFightingStyle style : CANTRIP_FIGHTING_STYLES) {
+            if (style.eligible().test(clazz, subclass)) options.add(style.name());
         }
         return options.stream().sorted().toList();
     }

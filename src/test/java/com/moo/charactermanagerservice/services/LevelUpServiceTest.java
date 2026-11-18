@@ -1209,4 +1209,286 @@ class LevelUpServiceTest {
 
         assertThat(service.preview(pc("Cleric", 2, 14, 14, 14)).recommendedSubclass()).isNull();
     }
+
+    // --- WoW Paladin (paladin + Holy/Protection/Retribution, Oath of the Holy) ---
+
+    private static final String OATH_OF_THE_HOLY = "Oath of the Holy";
+    private static final List<String> PALADIN_SPECS = List.of("Holy", "Protection", "Retribution");
+
+    private static PC paladin(int level) {
+        PC p = pc("Paladin", level, 14, 10 * level, 10 * level);
+        if (level >= 3) p.setSubclass("Oath of Devotion");
+        return p;
+    }
+
+    private static PC wowPaladin(int level, String spec) {
+        PC p = paladin(level);
+        p.setSpecialization(spec);
+        return p;
+    }
+
+    private static PC holyPaladin(int level) {
+        PC p = pc("Paladin", level, 14, 10 * level, 10 * level);
+        p.setSubclass(OATH_OF_THE_HOLY);
+        p.setSpecialization("Holy");
+        return p;
+    }
+
+    @Test
+    void applyLevelUp_paladin_acceptsEachWowSpecialization() {
+        for (String spec : PALADIN_SPECS) {
+            PC p = paladin(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(p, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(p.getSpecialization()).isEqualTo(spec);
+            assertThat(p.getLevel()).isEqualTo((short) 6);
+        }
+    }
+
+    @Test
+    void applyLevelUp_wowPaladin_mayRespec() {
+        PC p = wowPaladin(5, "Holy");
+        service.applyLevelUp(p, null, null, null, null, HpMode.AVERAGE, "Retribution");
+        assertThat(p.getSpecialization()).isEqualTo("Retribution");
+    }
+
+    @Test
+    void applyLevelUp_deathKnightCannotTakeHoly_andWowPaladinCannotTakeFrost() {
+        PC dk = deathKnight(5);
+        dk.setSpecialization("Blood");
+        assertThatThrownBy(() -> service.applyLevelUp(dk, null, null, null, null, HpMode.AVERAGE, "Holy"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(dk.getSpecialization()).isEqualTo("Blood");
+
+        PC p = wowPaladin(5, "Protection");
+        assertThatThrownBy(() -> service.applyLevelUp(p, null, null, null, null, HpMode.AVERAGE, "Frost"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(p.getSpecialization()).isEqualTo("Protection");
+    }
+
+    @Test
+    void preview_oathOfTheHoly_offeredOnlyToWowPaladins() {
+        LevelUpPreview base = service.preview(paladin(2)); // 2 -> 3, no specialization
+        assertThat(base.subclassDue()).isTrue();
+        assertThat(base.subclassOptions())
+                .contains("Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance")
+                .doesNotContain(OATH_OF_THE_HOLY);
+
+        for (String spec : PALADIN_SPECS) {
+            LevelUpPreview wow = service.preview(wowPaladin(2, spec));
+            assertThat(wow.subclassOptions())
+                    .contains("Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance",
+                            OATH_OF_THE_HOLY);
+        }
+
+        // A WoW druid doesn't get it either.
+        PC d = druid(2);
+        d.setSpecialization("Restoration");
+        assertThat(service.preview(d).subclassOptions()).doesNotContain(OATH_OF_THE_HOLY);
+    }
+
+    @Test
+    void applyLevelUp_oathOfTheHoly_acceptedForWowPaladin_andGrantsLevel3Features() {
+        PC p = wowPaladin(2, "Protection");
+        service.applyLevelUp(p, "Oath of the Holy");
+        assertThat(p.getSubclass()).isEqualTo(OATH_OF_THE_HOLY);
+        assertThat(p.getLevel()).isEqualTo((short) 3);
+        assertThat(p.getFeatures()).contains("\"name\":\"Oath of the Holy Spells\"")
+                .contains("\"name\":\"Beacon of Light\"");
+    }
+
+    @Test
+    void applyLevelUp_oathOfTheHoly_rejectedForBasePaladin() {
+        PC p = paladin(2);
+        assertThatThrownBy(() -> service.applyLevelUp(p, OATH_OF_THE_HOLY))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(p.getSubclass()).isNull();
+        assertThat(p.getLevel()).isEqualTo((short) 2);
+
+        // Nor for another class with a WoW specialization.
+        PC d = druid(2);
+        d.setSpecialization("Restoration");
+        assertThatThrownBy(() -> service.applyLevelUp(d, OATH_OF_THE_HOLY))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_oathOfTheHoly_acceptedWhenTheSameRequestSetsTheSpecialization() {
+        PC p = paladin(2);
+        service.applyLevelUp(p, OATH_OF_THE_HOLY, null, null, null, HpMode.AVERAGE, "Holy");
+        assertThat(p.getSubclass()).isEqualTo(OATH_OF_THE_HOLY);
+        assertThat(p.getSpecialization()).isEqualTo("Holy");
+
+        PC bad = paladin(2);
+        assertThatThrownBy(() -> service.applyLevelUp(bad, OATH_OF_THE_HOLY, null, null, null, HpMode.AVERAGE, "Frost"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_wowPaladin_stillMayPickAPhbOath() {
+        PC p = wowPaladin(2, "Holy");
+        service.applyLevelUp(p, "Oath of Glory");
+        assertThat(p.getSubclass()).isEqualTo("Oath of Glory"); // recommendation is not enforced
+    }
+
+    @Test
+    void preview_wowPaladin_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Holy", OATH_OF_THE_HOLY},
+                {"Protection", "Oath of Devotion"},
+                {"Retribution", "Oath of Vengeance"},
+        };
+        for (String[] c : cases) {
+            LevelUpPreview p = service.preview(wowPaladin(2, c[0]));
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+        }
+        assertThat(service.preview(paladin(2)).recommendedSubclass()).isNull();
+        assertThat(service.preview(wowPaladin(4, "Holy")).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void oathOfTheHoly_addsFeaturesAt3_7_15_20() {
+        assertThat(names(service.preview(holyPaladin(6)).featuresGained())).containsExactly("Lightbringer's Aura");
+        assertThat(names(service.preview(holyPaladin(14)).featuresGained())).containsExactly("Infusion of Light");
+        assertThat(names(service.preview(holyPaladin(19)).featuresGained())).containsExactly("Holy Deliverance");
+        // Generic paladin features at those levels are kept alongside (none at 3/7/15/20 today).
+        assertThat(names(service.preview(holyPaladin(5)).featuresGained())).containsExactly("Aura of Protection");
+        assertThat(names(service.preview(paladin(6)).featuresGained())).isEmpty();
+
+        PC l3 = wowPaladin(2, "Holy");
+        service.applyLevelUp(l3, OATH_OF_THE_HOLY);
+        assertThat(l3.getFeatures()).contains("Cure Wounds").contains("Mass Cure Wounds").contains("60 feet");
+
+        PC l20 = holyPaladin(19);
+        service.applyLevelUp(l20);
+        assertThat(l20.getFeatures()).contains("\"name\":\"Holy Deliverance\"").contains("sunlight");
+    }
+
+    // Blessed Warrior / Druidic Warrior (cantrip Fighting Styles)
+
+    private static final List<Map<String, Object>> TWO_CANTRIPS =
+            List.of(cantrip("Sacred Flame"), cantrip("Guidance"));
+
+    @Test
+    void preview_cantripFightingStyles_offeredByClass() {
+        assertThat(service.preview(pc("Paladin", 1, 14, 10, 10)).fightingStyleOptions())
+                .contains("Archery", "Blessed Warrior").doesNotContain("Druidic Warrior", "Void Warrior").isSorted();
+        assertThat(service.preview(deathKnight(1)).fightingStyleOptions())
+                .contains("Blessed Warrior").doesNotContain("Druidic Warrior", "Void Warrior");
+        assertThat(service.preview(pc("Ranger", 1, 14, 10, 10)).fightingStyleOptions())
+                .contains("Archery", "Druidic Warrior").doesNotContain("Blessed Warrior", "Void Warrior").isSorted();
+        assertThat(service.preview(demonHunter(1)).fightingStyleOptions())
+                .contains("Druidic Warrior", "Void Warrior").doesNotContain("Blessed Warrior");
+    }
+
+    @Test
+    void applyLevelUp_blessedWarrior_withTwoCantrips_recordsStyleAndSavesCantrips() {
+        PC p = pc("Paladin", 1, 14, 10, 10);
+        service.applyLevelUp(p, null, null, null, TWO_CANTRIPS, HpMode.AVERAGE, null, "blessed warrior");
+        assertThat(p.getLevel()).isEqualTo((short) 2);
+        assertThat(p.getSpells()).contains("Sacred Flame").contains("Guidance");
+        assertThat(p.getFeatures()).contains("\"name\":\"Blessed Warrior\"").contains("Cleric cantrips")
+                .contains("Charisma");
+    }
+
+    @Test
+    void applyLevelUp_druidicWarrior_withTwoCantrips_recordsStyleAndSavesCantrips() {
+        for (PC r : List.of(pc("Ranger", 1, 14, 10, 10), demonHunter(1))) {
+            service.applyLevelUp(r, null, null, null,
+                    List.of(cantrip("Druidcraft"), cantrip("Thorn Whip")), HpMode.AVERAGE, null, "Druidic Warrior");
+            assertThat(r.getLevel()).isEqualTo((short) 2);
+            assertThat(r.getSpells()).contains("Druidcraft").contains("Thorn Whip");
+            assertThat(r.getFeatures()).contains("\"name\":\"Druidic Warrior\"").contains("Druid cantrips")
+                    .contains("Wisdom");
+        }
+    }
+
+    @Test
+    void applyLevelUp_cantripFightingStyles_requireExactlyTwoCantrips() {
+        Object[][] cases = {{"Paladin", "Blessed Warrior"}, {"Ranger", "Druidic Warrior"}};
+        for (Object[] c : cases) {
+            for (List<Map<String, Object>> spells : List.<List<Map<String, Object>>>of(
+                    List.of(),
+                    List.of(cantrip("Sacred Flame")),
+                    List.of(cantrip("Sacred Flame"), cantrip("Guidance"), cantrip("Thaumaturgy")))) {
+                PC p = pc((String) c[0], 1, 14, 10, 10);
+                assertThatThrownBy(() -> service.applyLevelUp(p, null, null, null, spells, HpMode.AVERAGE, null, (String) c[1]))
+                        .isInstanceOf(ResponseStatusException.class)
+                        .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+                assertThat(p.getLevel()).isEqualTo((short) 1);
+            }
+            PC noSpells = pc((String) c[0], 1, 14, 10, 10);
+            assertThatThrownBy(() -> service.applyLevelUp(noSpells, null, null, null, null, HpMode.AVERAGE, null, (String) c[1]))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+    }
+
+    @Test
+    void applyLevelUp_cantripFightingStyles_rejectedForTheOtherClass_andAsFeats() {
+        assertThatThrownBy(() -> service.applyLevelUp(pc("Ranger", 1, 14, 10, 10), null, null, null,
+                TWO_CANTRIPS, HpMode.AVERAGE, null, "Blessed Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.applyLevelUp(pc("Paladin", 1, 14, 10, 10), null, null, null,
+                TWO_CANTRIPS, HpMode.AVERAGE, null, "Druidic Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.applyLevelUp(pc("Fighter", 1, 14, 10, 10), null, null, null,
+                TWO_CANTRIPS, HpMode.AVERAGE, null, "Blessed Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.applyLevelUp(pc("Paladin", 1, 14, 10, 10), null, null, null,
+                TWO_CANTRIPS, HpMode.AVERAGE, null, "Void Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        // Not feats at an ASI level.
+        assertThat(service.preview(paladin(3)).featOptions()).doesNotContain("Blessed Warrior", "Druidic Warrior");
+        assertThatThrownBy(() -> service.applyLevelUp(paladin(3), null, null, "Blessed Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        PC ranger = pc("Ranger", 3, 14, 30, 30);
+        ranger.setSubclass("Hunter");
+        assertThatThrownBy(() -> service.applyLevelUp(ranger, null, null, "Druidic Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // Recommended Fighting Styles per WoW Paladin specialization
+
+    @Test
+    void preview_wowPaladin_recommendsFightingStylesWhenDue() {
+        Map<String, List<String>> cases = Map.of(
+                "Holy", List.of("Blessed Warrior"),
+                "Protection", List.of("Interception", "Protection"),
+                "Retribution", List.of("Great Weapon Fighting"));
+        cases.forEach((spec, expected) -> {
+            PC p = pc("Paladin", 1, 14, 10, 10);
+            p.setSpecialization(spec);
+            LevelUpPreview preview = service.preview(p);
+            assertThat(preview.fightingStyleDue()).isTrue();
+            assertThat(preview.recommendedFightingStyles()).containsExactlyElementsOf(expected);
+            assertThat(preview.fightingStyleOptions()).containsAll(expected);
+        });
+    }
+
+    @Test
+    void preview_noRecommendedFightingStyles_forBasePaladin_otherClasses_orWhenNotDue() {
+        assertThat(service.preview(pc("Paladin", 1, 14, 10, 10)).recommendedFightingStyles()).isEmpty();
+        PC dk = deathKnight(1);
+        dk.setSpecialization("Frost");
+        assertThat(service.preview(dk).recommendedFightingStyles()).isEmpty();
+        assertThat(service.preview(pc("Ranger", 1, 14, 10, 10)).recommendedFightingStyles()).isEmpty();
+        assertThat(service.preview(wowPaladin(2, "Holy")).recommendedFightingStyles()).isEmpty();
+        PC d = druid(1);
+        d.setSpecialization("Feral");
+        assertThat(service.preview(d).recommendedFightingStyles()).isEmpty();
+    }
 }

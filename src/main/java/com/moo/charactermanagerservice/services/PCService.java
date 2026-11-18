@@ -114,11 +114,13 @@ public class PCService {
      * NULL specialization (e.g. one built without the field) keeps the stored one. It is changed
      * by sending a value (or via level-up, where the subclass allows it). The same applies to a
      * World of Warcraft class specialization (e.g. a WoW druid's Balance/Feral/...) while the
-     * character is still of that class and has no hero subclass.
+     * character is still of that class and has no hero subclass — but only a stored value that is
+     * one of that class's specializations is kept (so e.g. a Death Knight's "Frost" is dropped,
+     * not carried, when the DM turns it into an ordinary paladin).
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         boolean carriesSpecialization = ClassProgression.isHeroSubclass(incoming.getSubclass())
-                || ClassProgression.classSpecializations(incoming.getClazz()).isPresent();
+                || ClassProgression.isClassSpecialization(incoming.getClazz(), existing.getSpecialization());
         if (incoming.getSpecialization() == null && carriesSpecialization) {
             incoming.setSpecialization(existing.getSpecialization());
         }
