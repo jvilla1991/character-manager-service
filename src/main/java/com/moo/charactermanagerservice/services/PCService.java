@@ -85,6 +85,12 @@ public class PCService {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
         preserveServerOwnedColumns(pc, existing);
+        // In a campaign the exhaustion level is the DM's to set (updatePCAsDm):
+        // an owner's update keeps the stored level whatever the body says. A
+        // character in no campaign has no DM, so its owner still manages it.
+        if (existing.getCampaignId() != null) {
+            pc.setExhaustion(existing.getExhaustion());
+        }
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));

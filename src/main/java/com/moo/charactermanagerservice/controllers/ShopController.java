@@ -88,6 +88,6 @@ public class ShopController {
                                            Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(shopService.sell(
-                id, request.pcId(), request.index(), user.getUuid()));
+                id, request.pcId(), request.index(), request.qty(), user.getUuid()));
     }
 }
