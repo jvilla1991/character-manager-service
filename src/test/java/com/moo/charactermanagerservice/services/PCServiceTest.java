@@ -1634,4 +1634,85 @@ class PCServiceTest {
         paladin.setSpecialization("Protection");
         assertThat(pcService.updatePCAsDm(paladin, null, dmId).getSpecialization()).isEqualTo("Protection");
     }
+
+    // --- WoW Rogue (rogue + Assassination/Outlaw/Subtlety) ---
+
+    @Test
+    void addPC_acceptsEachRogueSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Assassination", "Outlaw", "Subtlety")) {
+            PC rogue = new PC();
+            rogue.setClazz("rogue");
+            rogue.setSpecialization(spec);
+
+            PC saved = pcService.addPC(rogue);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidRogueSpecialization_andRogueSpecsOnOtherClasses() {
+        for (String bad : List.of("outlaw", "Combat", "Holy", "Havoc")) {
+            PC rogue = new PC();
+            rogue.setClazz("rogue");
+            rogue.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(rogue))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        PC paladin = new PC();
+        paladin.setClazz("paladin");
+        paladin.setSpecialization("Outlaw");
+        assertThatThrownBy(() -> pcService.addPC(paladin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeRogueSpecialization() {
+        pc.setClazz("rogue");
+        pc.setSubclass("Swashbuckler");
+        pc.setSpecialization("Outlaw");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("rogue");
+        incoming.setSubclass("Swashbuckler");
+        incoming.setSpecialization("Subtlety");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Subtlety");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidRogueSpecialization() {
+        pc.setClazz("rogue");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("rogue");
+        incoming.setSpecialization("Frost");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsRogueSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC rogue = new PC();
+        rogue.setId(1L);
+        rogue.setClazz("rogue");
+        rogue.setSpecialization("Assassination");
+        assertThat(pcService.updatePCAsDm(rogue, null, dmId).getSpecialization()).isEqualTo("Assassination");
+    }
 }
