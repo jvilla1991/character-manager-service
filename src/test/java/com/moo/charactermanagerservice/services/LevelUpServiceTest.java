@@ -1114,4 +1114,99 @@ class LevelUpServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
+
+    // --- WoW Druid (druid + class specialization, no subclass lock) ---
+
+    private static PC druid(int level) {
+        PC d = pc("Druid", level, 14, 8 * level, 8 * level);
+        if (level >= 3) d.setSubclass("Circle of the Moon");
+        return d;
+    }
+
+    @Test
+    void applyLevelUp_druid_acceptsEachWowSpecialization() {
+        for (String spec : List.of("Balance", "Feral", "Guardian", "Restoration")) {
+            PC d = druid(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(d, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(d.getSpecialization()).isEqualTo(spec);
+            assertThat(d.getLevel()).isEqualTo((short) 6);
+        }
+    }
+
+    @Test
+    void applyLevelUp_druid_mayChangeSpecialization() {
+        PC d = druid(5);
+        d.setSpecialization("Balance");
+        service.applyLevelUp(d, null, null, null, null, HpMode.AVERAGE, "Restoration");
+        assertThat(d.getSpecialization()).isEqualTo("Restoration");
+    }
+
+    @Test
+    void applyLevelUp_druid_nullSpecialization_keepsCurrent() {
+        PC d = druid(5);
+        d.setSpecialization("Feral");
+        service.applyLevelUp(d, null, null, null, null, HpMode.AVERAGE, null);
+        assertThat(d.getSpecialization()).isEqualTo("Feral");
+    }
+
+    @Test
+    void applyLevelUp_druid_rejectsInvalidSpecialization() {
+        for (String bad : List.of("balance", "Havoc", "Blood", "Shadow")) {
+            PC d = druid(5);
+            d.setSpecialization("Guardian");
+            assertThatThrownBy(() -> service.applyLevelUp(d, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(d.getSpecialization()).isEqualTo("Guardian");
+            assertThat(d.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_rejectsDruidSpecialization_onFighter() {
+        PC fighter = pc("Fighter", 5, 14, 50, 50);
+        fighter.setSubclass("Champion");
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, null, null, null, HpMode.AVERAGE, "Balance"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(fighter.getSpecialization()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_wowDruid_stillPicksANormalCircleAtLevelThree() {
+        PC d = druid(2);
+        d.setSpecialization("Balance");
+        service.applyLevelUp(d, "Circle of the Land", null, null, null, HpMode.AVERAGE, null);
+        assertThat(d.getSubclass()).isEqualTo("Circle of the Land"); // recommendation is not enforced
+        assertThat(d.getSpecialization()).isEqualTo("Balance");
+    }
+
+    @Test
+    void preview_wowDruid_recommendsSubclassWhenDue() {
+        String[][] cases = {
+                {"Balance", "Circle of the Stars"},
+                {"Feral", "Circle of the Moon"},
+                {"Guardian", "Circle of the Moon"},
+                {"Restoration", "Circle of the Land"},
+        };
+        for (String[] c : cases) {
+            PC d = druid(2);
+            d.setSpecialization(c[0]);
+            LevelUpPreview p = service.preview(d);
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.subclassOptions()).contains(c[1]);
+            assertThat(p.recommendedSubclass()).isEqualTo(c[1]);
+        }
+    }
+
+    @Test
+    void preview_noRecommendedSubclass_forBaseDruid_orWhenNotDue() {
+        assertThat(service.preview(druid(2)).recommendedSubclass()).isNull();
+
+        PC later = druid(4);
+        later.setSpecialization("Balance");
+        assertThat(service.preview(later).recommendedSubclass()).isNull();
+
+        assertThat(service.preview(pc("Cleric", 2, 14, 14, 14)).recommendedSubclass()).isNull();
+    }
 }
