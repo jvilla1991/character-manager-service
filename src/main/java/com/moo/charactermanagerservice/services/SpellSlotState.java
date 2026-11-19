@@ -31,9 +31,11 @@ import java.util.TreeMap;
  * the character has no slots for is dropped, and {@code used} is clamped to
  * 0..max, so a maximum that shrank pulls the used count down with it.
  *
- * <p>A player may spend a slot by hand at any time ({@link #spend}); slots
- * come back from a rest or from the Dungeon Master ({@link #restore},
- * {@link #restoreAll}). Who may call which is {@link PCService}'s decision.
+ * <p>A slot is spent one at a time ({@link #spend}) — by casting in a live
+ * session, or by hand by the Dungeon Master (or the owner of a character in
+ * no campaign); slots come back from a rest or from the Dungeon Master
+ * ({@link #restore}, {@link #restoreAll}). Who may call which is
+ * {@link PCService}'s decision.
  */
 final class SpellSlotState {
 
@@ -98,8 +100,8 @@ final class SpellSlotState {
      * @param existing     the stored character, or null on create
      * @param bodySetsUsed whether this caller may move {@code used}: the DM, or
      *                     the owner of a character in no campaign. A campaign
-     *                     player spends through the spend endpoint and gets
-     *                     slots back from a rest or the DM.
+     *                     player spends a slot only by casting in a live
+     *                     session and gets slots back from a rest or the DM.
      */
     static String normalize(PC incoming, PC existing, boolean bodySetsUsed) {
         String stored = existing == null ? null : existing.getSpellSlots();

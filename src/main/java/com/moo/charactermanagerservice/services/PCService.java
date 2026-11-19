@@ -110,9 +110,9 @@ public class PCService {
         }
         // Spell slots, once the adjustment lines above are settled (the slot bonus lines
         // are among them). The maximum is never the body's. In a campaign neither is the
-        // used count: a player spends through the spend endpoint, and only a rest or the DM
-        // gives slots back. A character in no campaign has no DM, so its owner keeps the
-        // count by hand.
+        // used count: a player spends a slot only by casting in a live session, and only a
+        // rest or the DM gives slots back — so this save must not be a way around either.
+        // A character in no campaign has no DM, so its owner keeps the count by hand.
         pc.setSpellSlots(SpellSlotState.normalize(pc, existing, existing.getCampaignId() == null));
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
@@ -539,22 +539,28 @@ public class PCService {
     // --- Spell slots: spend by hand, restore (V58) ----------------------------
 
     /**
-     * Spend one spell slot of the given spell level by hand — for a spell cast
-     * away from Session Mode, or one the sheet does not list. The owning player
-     * may do it at any time, and so may the campaign's DM on their behalf. The
-     * row is locked like a cast ({@code SessionService#castSpell}): the count is
-     * read-modify-write. 400 for a level that is not 1-9, 409 when the
-     * character has no free slot of that level.
+     * Spend one spell slot of the given spell level by hand. Who may: the
+     * campaign's DM (on the player's behalf), or the owner of a character in
+     * no campaign — there is no DM and no session, so the owner keeps the count.
+     * In a campaign the owning player gets a 403: a player spends a slot by
+     * casting in a live session ({@code SessionService#castSpell}), never by
+     * hand, so a spell cannot be used outside a session. Anyone else gets 403
+     * "Access denied".
      *
-     * <p>Wakes the PC's live session ({@link #bumpLiveSessionVersion}) so the
+     * <p>The row is locked like a cast: the count is read-modify-write. 400 for
+     * a level that is not 1-9, 409 when the character has no free slot of that
+     * level. Wakes the PC's live session ({@link #bumpLiveSessionVersion}) so the
      * DM's board shows the spend on the next poll.
      */
     @Transactional
     public SpellSlotResult spendSpellSlot(Long id, Integer level, UUID userId) {
         PC pc = findPCByIdForUpdate(id);
         boolean owner = userId.equals(pc.getUserId());
-        if (!owner) {
-            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        boolean dm = runsCampaignOf(pc, userId);
+        if (!dm && !(owner && pc.getCampaignId() == null)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, owner
+                    ? "In a campaign, spell slots are spent by casting in a session"
+                    : "Access denied");
         }
         int spellLevel = requireSpellLevel(level);
         if (!SpellSlotState.spend(pc, spellLevel)) {
