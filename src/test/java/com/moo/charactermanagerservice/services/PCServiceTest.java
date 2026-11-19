@@ -2437,7 +2437,7 @@ class PCServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
 
-    // --- WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival; pet family on Beast Master) ---
+    // --- WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival; pet family on a BM/Survival Beast Master) ---
 
     private static PC rangerBody(String subclass, String spec, String petFamily) {
         PC r = new PC();
@@ -2492,9 +2492,9 @@ class PCServiceTest {
     }
 
     @Test
-    void addPC_acceptsPetFamily_onABeastMasterHunter_forEverySpecAndFamily() {
+    void addPC_acceptsPetFamily_onABeastMasterHunter_forBothPetSpecsAndEveryFamily() {
         when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
-        for (String spec : List.of("Beast Mastery", "Marksmanship", "Survival")) {
+        for (String spec : List.of("Beast Mastery", "Survival")) {
             PC saved = pcService.addPC(rangerBody("Beast Master", spec, "Wolf"));
             assertThat(saved.getPetFamily()).isEqualTo("Wolf");
         }
@@ -2512,6 +2512,7 @@ class PCServiceTest {
                 rangerBody("Hunter", "Beast Mastery", "Wolf"),        // wrong subclass
                 rangerBody(null, "Beast Mastery", "Wolf"),            // no subclass yet
                 rangerBody("Beast Master", null, "Wolf"),             // base ranger
+                rangerBody("Beast Master", "Marksmanship", "Wolf"),   // Marksmanship keeps no pet
                 rangerBody("Demon Hunter", "Havoc", "Wolf"),          // Demon Hunter
                 rangerBody("Beast Master", "Beast Mastery", "wolf"),  // case-sensitive
                 rangerBody("Beast Master", "Beast Mastery", "Dragon"), // unknown family
@@ -2532,7 +2533,7 @@ class PCServiceTest {
     }
 
     @Test
-    void updatePC_ownerMayChangeHunterSpecializationAndPetFamily() {
+    void updatePC_ownerMayChangeHunterSpecialization_butThePetFamilyIsServerOwned() {
         pc.setClazz("ranger");
         pc.setSubclass("Beast Master");
         pc.setSpecialization("Beast Mastery");
@@ -2544,7 +2545,39 @@ class PCServiceTest {
         incoming.setId(1L);
         PC saved = pcService.updatePC(incoming, ownerId);
         assertThat(saved.getSpecialization()).isEqualTo("Survival");
-        assertThat(saved.getPetFamily()).isEqualTo("Raptor");
+        assertThat(saved.getPetFamily()).isEqualTo("Wolf"); // only PUT /{id}/pet changes it
+    }
+
+    @Test
+    void updatePC_keepsThePetFamily_whenTheBodyExplicitlyCarriesNull() {
+        // The old bug: null had to mean "keep", so "no pet" could never be saved through here.
+        // This path now always keeps the stored family; clearing goes through setPetFamily.
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Survival");
+        pc.setPetFamily("Hyena");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = rangerBody("Beast Master", "Survival", null);
+        incoming.setId(1L);
+        assertThat(pcService.updatePC(incoming, ownerId).getPetFamily()).isEqualTo("Hyena");
+    }
+
+    @Test
+    void updatePC_dropsTheStoredPetFamily_whenTheHunterBecomesMarksmanship() {
+        pc.setClazz("ranger");
+        pc.setSubclass("Beast Master");
+        pc.setSpecialization("Beast Mastery");
+        pc.setPetFamily("Cat");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = rangerBody("Beast Master", "Marksmanship", null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpecialization()).isEqualTo("Marksmanship");
+        assertThat(saved.getPetFamily()).isNull();
     }
 
     @Test
@@ -2580,27 +2613,23 @@ class PCServiceTest {
     }
 
     @Test
-    void updatePC_rejectsAPetFamily_onTheWrongSubclass_orAnUnknownName() {
+    void updatePC_ignoresAPetFamilyInTheBody_evenAnInvalidOne() {
         pc.setClazz("ranger");
         pc.setSubclass("Hunter");
         pc.setSpecialization("Marksmanship");
         when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
 
         PC wrongSubclass = rangerBody("Hunter", "Marksmanship", "Wolf");
         wrongSubclass.setId(1L);
-        assertThatThrownBy(() -> pcService.updatePC(wrongSubclass, ownerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        PC unknown = rangerBody("Beast Master", "Marksmanship", "Unicorn");
+        assertThat(pcService.updatePC(wrongSubclass, ownerId).getPetFamily()).isNull();
+        PC unknown = rangerBody("Hunter", "Marksmanship", "Unicorn");
         unknown.setId(1L);
-        assertThatThrownBy(() -> pcService.updatePC(unknown, ownerId))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
-        verify(pcRepository, never()).save(any());
+        assertThat(pcService.updatePC(unknown, ownerId).getPetFamily()).isNull();
     }
 
     @Test
-    void updatePCAsDm_acceptsAndPreservesPetFamily_andRejectsItOnABaseRanger() {
+    void updatePCAsDm_keepsTheStoredPetFamily_whateverTheBodySays() {
         pc.setClazz("ranger");
         pc.setSubclass("Beast Master");
         pc.setSpecialization("Beast Mastery");
@@ -2612,7 +2641,7 @@ class PCServiceTest {
 
         PC change = rangerBody("Beast Master", "Beast Mastery", "Turtle");
         change.setId(1L);
-        assertThat(pcService.updatePCAsDm(change, null, dmId).getPetFamily()).isEqualTo("Turtle");
+        assertThat(pcService.updatePCAsDm(change, null, dmId).getPetFamily()).isEqualTo("Bear");
 
         PC omit = rangerBody("Beast Master", null, null);
         omit.setId(1L);
@@ -2620,10 +2649,112 @@ class PCServiceTest {
 
         PC base = rangerBody("Beast Master", null, "Bear");
         base.setId(1L);
-        pc.setSpecialization(null); // stored as a base ranger: nothing to carry over
-        assertThatThrownBy(() -> pcService.updatePCAsDm(base, null, dmId))
+        pc.setSpecialization(null); // stored as a base ranger: no pet to keep
+        assertThat(pcService.updatePCAsDm(base, null, dmId).getPetFamily()).isNull();
+    }
+
+    // --- setPetFamily (PUT /pc/{id}/pet) ---
+
+    private void storedHunter(String spec, String subclass, String family) {
+        pc.setClazz("ranger");
+        pc.setSubclass(subclass);
+        pc.setSpecialization(spec);
+        pc.setPetFamily(family);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+    }
+
+    @Test
+    void setPetFamily_ownerSetsAndClearsIt() {
+        storedHunter("Beast Mastery", "Beast Master", null);
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.setPetFamily(1L, "Wolf", ownerId).getPetFamily()).isEqualTo("Wolf");
+        assertThat(pcService.setPetFamily(1L, " Bird of Prey ", ownerId).getPetFamily()).isEqualTo("Bird of Prey");
+        assertThat(pcService.setPetFamily(1L, null, ownerId).getPetFamily()).isNull();
+        pc.setPetFamily("Wolf");
+        assertThat(pcService.setPetFamily(1L, "  ", ownerId).getPetFamily()).isNull();
+        verify(pcRepository, times(4)).save(pc);
+    }
+
+    @Test
+    void setPetFamily_survivalHunterMayKeepAPet() {
+        storedHunter("Survival", "Beast Master", null);
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        assertThat(pcService.setPetFamily(1L, "Raptor", ownerId).getPetFamily()).isEqualTo("Raptor");
+    }
+
+    @Test
+    void setPetFamily_campaignDmMaySetAndClearIt() {
+        storedHunter("Beast Mastery", "Beast Master", "Bear");
+        pc.setCampaignId(7L);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.setPetFamily(1L, "Turtle", dmId).getPetFamily()).isEqualTo("Turtle");
+        assertThat(pcService.setPetFamily(1L, null, dmId).getPetFamily()).isNull();
+    }
+
+    @Test
+    void setPetFamily_strangerIsForbidden_inACampaignOrNot() {
+        storedHunter("Beast Mastery", "Beast Master", "Bear");
+        assertThatThrownBy(() -> pcService.setPetFamily(1L, null, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+
+        pc.setCampaignId(7L);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        assertThatThrownBy(() -> pcService.setPetFamily(1L, null, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThat(pc.getPetFamily()).isEqualTo("Bear");
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void setPetFamily_rejectsAFamily_onACharacterThatCannotKeepAPet_orAnUnknownName() {
+        storedHunter("Marksmanship", "Beast Master", null);
+        assertThatThrownBy(() -> pcService.setPetFamily(1L, "Wolf", ownerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        pc.setSpecialization("Beast Mastery");
+        pc.setSubclass("Hunter");
+        assertThatThrownBy(() -> pcService.setPetFamily(1L, "Wolf", ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        pc.setSubclass("Beast Master");
+        for (String bad : List.of("Unicorn", "wolf")) {
+            assertThatThrownBy(() -> pcService.setPetFamily(1L, bad, ownerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void setPetFamily_clearingIsAlwaysAllowed_evenWhenTheStoredPetIsNoLongerValid() {
+        storedHunter("Marksmanship", "Beast Master", "Wolf"); // saved before Marksmanship lost pets
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        assertThat(pcService.setPetFamily(1L, null, ownerId).getPetFamily()).isNull();
+    }
+
+    @Test
+    void levelUpPC_dropsAPetFamilyTheHeroCanNoLongerKeep() {
+        storedHunter("Beast Mastery", "Beast Master", "Wolf");
+        pc.setXp(1_000_000);
+        when(pcRepository.save(pc)).thenReturn(pc);
+        // The level-up re-specializes the hunter into Marksmanship.
+        doAnswer(inv -> { pc.setSpecialization("Marksmanship"); return null; })
+                .when(levelUpService).applyLevelUp(eq(pc), any(), any(), any(), any(), any(), any(), any());
+
+        assertThat(pcService.levelUpPC(1L, ownerId, null).getPetFamily()).isNull();
+    }
+
+    @Test
+    void levelUpPC_keepsThePetFamily_whenTheHeroStillQualifies() {
+        storedHunter("Survival", "Beast Master", "Wolf");
+        pc.setXp(1_000_000);
+        when(pcRepository.save(pc)).thenReturn(pc);
+        assertThat(pcService.levelUpPC(1L, ownerId, null).getPetFamily()).isEqualTo("Wolf");
     }
 
     // --- WoW Mage (wizard + Arcane/Fire/Frost) ---

@@ -133,10 +133,13 @@ public class PCService {
      * one of that class's specializations is kept (so e.g. a Death Knight's "Frost" is dropped,
      * not carried, when the DM turns it into an ordinary paladin).
      *
-     * <p>The WoW Hunter's pet family (V51) follows the same rule: a body carrying a NULL
-     * {@code petFamily} keeps the stored one while the character is still a WoW Hunter with the
-     * Beast Master subclass, and drops it otherwise (so leaving Beast Master never 400s on a stale
-     * family).
+     * <p>The WoW Hunter's pet family (V51) is server-owned on this path: only
+     * {@link #setPetFamily} changes it, so a body's {@code petFamily} — null, missing or a value —
+     * is ignored. That is what lets "no pet" be saved: on the dedicated endpoint null always means
+     * "clear", while here null could also mean "the body just didn't carry it". The stored family
+     * is kept while the character can still keep a pet (a Beast Mastery or Survival hunter with the
+     * Beast Master subclass) and dropped otherwise, so leaving Beast Master (or switching to
+     * Marksmanship) never 400s on a stale family.
      *
      * <p>The Death Knight's rune weapon (V53) is kept when the body omits it and replaced when
      * the body names a melee weapon on its own sheet; a value that no longer fits is stored as
@@ -160,10 +163,8 @@ public class PCService {
             incoming.setSpecialization(existing.getSpecialization());
         }
         // Runs after the specialization carry-over, so a body omitting both keeps both.
-        if (incoming.getPetFamily() == null && ClassProgression.petFamilyAllowed(
-                incoming.getClazz(), incoming.getSubclass(), incoming.getSpecialization())) {
-            incoming.setPetFamily(existing.getPetFamily());
-        }
+        incoming.setPetFamily(existing.getPetFamily());
+        dropPetFamilyIfIneligible(incoming);
         if (incoming.getSurvival() == null) {
             incoming.setSurvival(existing.getSurvival());
         }
@@ -333,6 +334,7 @@ public class PCService {
         String fightingStyle = request == null ? null : request.fightingStyle();
         levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode,
                 specialization, fightingStyle);
+        dropPetFamilyIfIneligible(pc); // e.g. a WoW Hunter re-specialized into Marksmanship
         pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
@@ -396,6 +398,35 @@ public class PCService {
                     session.bumpVersion();
                     sessionRepository.save(session);
                 });
+    }
+
+    // --- WoW Hunter pet family (V51) ------------------------------------------
+
+    /**
+     * Set or clear a WoW Hunter's pet family — the only way it changes after creation (the generic
+     * update paths keep the stored value, see {@link #preserveServerOwnedColumns}). The owner may
+     * do it, and so may the DM of the PC's campaign. {@code null} or a blank name clears the pet;
+     * anything else must be one of {@link ClassProgression#PET_FAMILIES} on a character that may
+     * keep a pet (400 otherwise, via {@link HeroClassRules#validatePetFamily}).
+     */
+    @Transactional
+    public PC setPetFamily(Long id, String family, UUID userId) {
+        PC pc = findPCById(id);
+        if (!userId.equals(pc.getUserId())) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        String next = family == null || family.isBlank() ? null : family.trim();
+        HeroClassRules.validatePetFamily(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), next);
+        pc.setPetFamily(next);
+        return pcRepository.save(pc);
+    }
+
+    /** Clear a stored pet family the character can no longer keep (class/subclass/spec changed). */
+    private static void dropPetFamilyIfIneligible(PC pc) {
+        if (pc.getPetFamily() != null && !ClassProgression.petFamilyAllowed(
+                pc.getClazz(), pc.getSubclass(), pc.getSpecialization())) {
+            pc.setPetFamily(null);
+        }
     }
 
     // --- Heroic Inspiration meter (V38) --------------------------------------

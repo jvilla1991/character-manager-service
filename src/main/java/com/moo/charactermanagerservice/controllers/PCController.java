@@ -5,6 +5,7 @@ import com.moo.charactermanagerservice.dto.LevelGrantRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.SetInspirationRequest;
+import com.moo.charactermanagerservice.dto.SetPetRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
@@ -151,6 +152,20 @@ public class PCController {
                                                  Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(pcService.setInspirationPips(id, request.pips(), user.getUuid()));
+    }
+
+    /**
+     * Set or clear a World of Warcraft Hunter's pet family — the owner or the campaign's DM.
+     * {@code {"family": "Wolf"}} sets it; {@code {"family": null}} (or a blank name) clears it.
+     * The generic {@code PUT /{id}} ignores {@code petFamily}, so this is the only way to change it.
+     */
+    @PutMapping("/{id}/pet")
+    public ResponseEntity<PC> setPetFamily(@PathVariable Long id,
+                                           @RequestBody SetPetRequest request,
+                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.setPetFamily(id, request == null ? null : request.family(),
+                user.getUuid()));
     }
 
     /**
