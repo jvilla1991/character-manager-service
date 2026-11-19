@@ -66,6 +66,7 @@ public class PCService {
         pc.setRuneWeapon(LongRestRules.normalizeRuneWeapon(pc, null));
         pc.setClassResources(ClassResourceState.normalize(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
+        pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         return pcRepository.saveAndFlush(pc);
     }
 
@@ -97,6 +98,12 @@ public class PCService {
             // long rest (or by the DM), so an owner's update keeps the stored
             // flags. Spells that are new in the body keep the flag they bring.
             LongRestRules.keepStoredPreparedFlags(pc, existing);
+            // Same for the adjustment lines on calculated numbers ("+1 | Taunka"
+            // under AC): in a campaign they are the DM's, so the owner's body
+            // never changes them.
+            pc.setStatAdjustments(existing.getStatAdjustments());
+        } else {
+            pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         }
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
@@ -113,6 +120,11 @@ public class PCService {
      * <p>The exhaustion level (2024 PHB, V37) follows the same rule: clients set
      * it by sending a value (0 included); a body carrying NULL — e.g. one built
      * from a projection that lacks the field — preserves the stored level.
+     *
+     * <p>The adjustment lines on calculated numbers (V57, {@code statAdjustments}) follow the
+     * same rule: a body carrying NULL keeps the stored lines; they are cleared by sending an
+     * empty object. Who may change them at all is decided by the caller ({@link #updatePC}
+     * keeps the stored lines for a character in a campaign).
      *
      * <p>The pending level grant is fully server-owned: only the DM's grant
      * endpoint sets it and only an applied level-up clears it, so a generic
@@ -171,6 +183,9 @@ public class PCService {
         if (incoming.getExhaustion() == null) {
             incoming.setExhaustion(existing.getExhaustion());
         }
+        if (incoming.getStatAdjustments() == null) {
+            incoming.setStatAdjustments(existing.getStatAdjustments());
+        }
         incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
         incoming.setHitDiceUsed(existing.getHitDiceUsed());
         incoming.setInspirationPips(existing.getInspirationPips());
@@ -225,6 +240,7 @@ public class PCService {
         preserveServerOwnedColumns(incoming, existing);
         HeroClassRules.validate(incoming);
         incoming.setCoins(CoinPurse.normalizeJson(incoming.getCoins()));
+        incoming.setStatAdjustments(StatAdjustmentRules.normalizeJson(incoming.getStatAdjustments()));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
         return saved;
@@ -253,6 +269,7 @@ public class PCService {
         copy.setInventory(pc.getInventory());
         copy.setFeatures(pc.getFeatures());
         copy.setSpells(pc.getSpells());
+        copy.setStatAdjustments(pc.getStatAdjustments());
         return copy;
     }
 

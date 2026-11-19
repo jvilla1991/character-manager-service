@@ -208,6 +208,38 @@ class PcActivityLogServiceTest {
         verify(activityLogRepository).save(argThat(e -> "DM added spell Fireball".equals(e.getDescription())));
     }
 
+    @Test
+    void logDmEdit_logsAddedAndRemovedStatAdjustments_alongsideTheNewTotal() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 14);
+        before.setStatAdjustments("{\"ac\":[{\"value\":-1,\"label\":\"Cursed\"}]}");
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 16);
+        after.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(e -> "DM changed AC 14 → 16".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(e -> "DM added AC adjustment +1 Taunka".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(e -> "DM removed AC adjustment -1 Cursed".equals(e.getDescription())));
+    }
+
+    @Test
+    void logDmEdit_statAdjustments_noOps_whenTheLinesAreTheSame() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+        PC after = new PC();
+        after.setId(1L);
+        after.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository, never()).save(any(PcActivityLog.class));
+    }
+
     // --- logDmEdit: malformed JSON -----------------------------------------------
 
     @Test
