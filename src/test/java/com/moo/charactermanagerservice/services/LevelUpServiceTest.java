@@ -697,6 +697,118 @@ class LevelUpServiceTest {
     }
 
     @Test
+    void applyLevelUp_asi_recordsALabelledLinePerRaisedAbility() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 16);
+        fighter.setAbilityDex((short) 13);
+
+        service.applyLevelUp(fighter, null, Map.of("STR", 1, "DEX", 1));
+
+        Map<String, List<StatAdjustmentRules.Line>> lines = StatAdjustmentRules.parse(fighter.getStatAdjustments());
+        assertThat(lines.get("STR")).containsExactly(new StatAdjustmentRules.Line(1, "Level 4 Increase"));
+        assertThat(lines.get("DEX")).containsExactly(new StatAdjustmentRules.Line(1, "Level 4 Increase"));
+        assertThat(lines).containsOnlyKeys("STR", "DEX");
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 17);
+        assertThat(fighter.getAbilityDex()).isEqualTo((short) 14);
+        // What is stored is what a client may send back.
+        assertThat(StatAdjustmentRules.normalizeJson(fighter.getStatAdjustments()))
+                .isEqualTo(fighter.getStatAdjustments());
+    }
+
+    @Test
+    void applyLevelUp_asi_plus2_recordsOneLineOfTwo_afterTheLinesAlreadyThere() {
+        PC fighter = pc("Fighter", 5, 14, 44, 44); // -> 6, a Fighter's extra ASI level
+        fighter.setAbilityStr((short) 17);
+        fighter.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}],"
+                + "\"STR\":[{\"value\":2,\"label\":\"Soldier\"},{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+
+        service.applyLevelUp(fighter, null, Map.of("STR", 2));
+
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 19);
+        assertThat(fighter.getStatAdjustments()).isEqualTo("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}],"
+                + "\"STR\":[{\"value\":2,\"label\":\"Soldier\"},{\"value\":1,\"label\":\"Level 4 Increase\"},"
+                + "{\"value\":2,\"label\":\"Level 6 Increase\"}]}");
+    }
+
+    @Test
+    void applyLevelUp_asi_lineSitsBesideTheDmsBonusSlots_whichStillCount() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28); // 3 -> 4, an ASI level
+        fighter.setAbilityStr((short) 16);
+        fighter.setStatAdjustments("{\"slot1\":[{\"value\":2,\"label\":\"Eldritch Knight\"}]}");
+        fighter.setSpellSlots("{\"1\":{\"max\":2,\"used\":1}}");
+
+        service.applyLevelUp(fighter, null, Map.of("STR", 2));
+
+        assertThat(fighter.getStatAdjustments()).isEqualTo("{\"slot1\":[{\"value\":2,\"label\":\"Eldritch Knight\"}],"
+                + "\"STR\":[{\"value\":2,\"label\":\"Level 4 Increase\"}]}");
+        assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}"); // the ability line is no slot
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 18);
+    }
+
+    @Test
+    void applyLevelUp_asi_skipsTheLine_whenTheAbilityAlreadyCarriesTheMostLines_butStillRaisesTheScore() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 10);
+        String line = "{\"value\":1,\"label\":\"Tome\"}";
+        String full = "{\"STR\":[" + String.join(",", java.util.Collections.nCopies(StatAdjustmentRules.LINES_MAX, line)) + "]}";
+        fighter.setStatAdjustments(full);
+
+        service.applyLevelUp(fighter, null, Map.of("STR", 2));
+
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 12);
+        assertThat(fighter.getStatAdjustments()).isEqualTo(full);
+        assertThat(StatAdjustmentRules.parse(fighter.getStatAdjustments()).get("STR"))
+                .hasSize(StatAdjustmentRules.LINES_MAX);
+    }
+
+    @Test
+    void applyLevelUp_asi_leavesAnUnreadableStoredValueAlone_andStillRaisesTheScore() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 10);
+        fighter.setStatAdjustments("not json");
+
+        service.applyLevelUp(fighter, null, Map.of("STR", 2));
+
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 12);
+        assertThat(fighter.getStatAdjustments()).isEqualTo("not json");
+    }
+
+    @Test
+    void applyLevelUp_asi_rejectedAllocation_recordsNoLine() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 19);
+
+        assertThatThrownBy(() -> service.applyLevelUp(fighter, null, Map.of("STR", 2)))
+                .isInstanceOf(ResponseStatusException.class);
+
+        assertThat(fighter.getStatAdjustments()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_feat_recordsNoAbilityLine() {
+        PC fighter = pc("Fighter", 3, 14, 28, 28);
+        fighter.setAbilityStr((short) 16);
+        String feat = FeatCatalog.featOptions("Fighter", 4,
+                Map.of("STR", 16, "DEX", 10, "CON", 14, "INT", 10, "WIS", 10, "CHA", 10)).get(0);
+
+        service.applyLevelUp(fighter, null, null, feat);
+
+        assertThat(fighter.getStatAdjustments()).isNull();
+        assertThat(fighter.getAbilityStr()).isEqualTo((short) 16);
+    }
+
+    @Test
+    void applyLevelUp_withoutAnAsi_recordsNoLine() {
+        PC fighter = pc("Fighter", 1, 14, 12, 12);
+
+        service.applyLevelUp(fighter);
+
+        assertThat(fighter.getStatAdjustments()).isNull();
+    }
+
+    @Test
     void applyLevelUp_asi_conIncrease_grantsRetroactiveHp() {
         // Fighter 3 -> 4, CON 15 (+2) -> 17 (+3). d10 avg 6 + new CON 3 = 9 this level;
         // retroactive (4-1) * 1 = 3 for the prior levels; total +12.

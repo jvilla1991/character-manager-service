@@ -90,9 +90,10 @@ public class InventoryTransferService {
             follower.setStatBlock(json.writeObject(block));
             followers.save(follower);
         }
+        int armorBefore = armorClass(source, inventory);
         inventory.remove(request.itemIndex());
         source.setInventory(json.write(inventory));
-        if (isEquippedArmor(original)) source.setAc(armorClass(source, inventory));
+        if (isEquippedArmor(original)) shiftArmorClass(source, armorBefore, armorClass(source, inventory));
         pcs.save(source);
         return new Result(inventory, source.getAc());
     }
@@ -110,23 +111,72 @@ public class InventoryTransferService {
                 && !"dropped".equals(item.get("status")) && item.get("armorClass") instanceof String formula && !formula.isBlank();
     }
 
-    /** Matches the sheet's armor-math rules, including its hand-editable unarmored fallback. */
-    private static short armorClass(PC pc, List<Map<String, Object>> inventory) {
+    /**
+     * Move the saved AC by what the armor change is worth, as the sheet does when armor comes off
+     * there. Everything else in the total rides along: the DM's adjustment lines and any older
+     * hand-typed difference. With no AC saved yet the total is built from the lines.
+     */
+    private static void shiftArmorClass(PC pc, int before, int after) {
+        int saved = pc.getAc() != null ? pc.getAc() : before + adjustmentSum(pc);
+        pc.setAc((short) (saved + (after - before)));
+    }
+
+    private static int adjustmentSum(PC pc) {
+        return StatAdjustmentRules.parse(pc.getStatAdjustments()).getOrDefault("ac", List.of())
+                .stream().mapToInt(StatAdjustmentRules.Line::value).sum();
+    }
+
+    /** One line of the sheet's AC breakdown, under the label the sheet gives it. */
+    private record ArmorLine(String label, int value) {}
+
+    /**
+     * AC from what is equipped, matching the sheet's armor-math rules: the highest-base armor (or
+     * unarmored 10), Dexterity as that armor lets it through, then every shield. A line the DM
+     * removed from the breakdown ({@code acRemoved}, matched by the line's label, one line per
+     * entry) is left out, so giving such an item away costs no AC a second time.
+     */
+    private static int armorClass(PC pc, List<Map<String, Object>> inventory) {
         int dex = Math.floorDiv((pc.getAbilityDex() == null ? 10 : pc.getAbilityDex()) - 10, 2);
-        int bestBase = -1, armor = 10 + dex, shields = 0;
+        int bestBase = -1, dexThrough = dex;
+        String bestName = "Unarmored";
+        List<ArmorLine> shields = new ArrayList<>();
         for (var item : inventory) {
             if (!isEquippedArmor(item)) continue;
             String formula = ((String) item.get("armorClass")).trim().toLowerCase(Locale.ROOT);
             var match = java.util.regex.Pattern.compile("^[+]?([0-9]+)").matcher(formula);
             if (!match.find()) continue;
             int base = Integer.parseInt(match.group(1));
-            if (formula.startsWith("+")) shields += base;
-            else if (base > bestBase) {
+            String name = item.get("name") instanceof String text ? text : "";
+            if (formula.startsWith("+")) {
+                if (base != 0) shields.add(new ArmorLine(name, base));
+            } else if (base > bestBase) {
                 bestBase = base;
-                armor = base + (formula.matches(".*max\\s*2.*") ? Math.min(2, dex) : formula.contains("dex") ? dex : 0);
+                bestName = name;
+                dexThrough = formula.matches(".*max\\s*2.*") ? Math.min(2, dex) : formula.contains("dex") ? dex : 0;
             }
         }
-        return (short) (armor + shields);
+        List<ArmorLine> lines = new ArrayList<>();
+        lines.add(new ArmorLine(bestName, bestBase < 0 ? 10 : bestBase));
+        lines.add(new ArmorLine("Dexterity", dexThrough));
+        lines.addAll(shields);
+
+        List<String> removed = new ArrayList<>();
+        for (var entry : StatAdjustmentRules.parse(pc.getStatAdjustments())
+                .getOrDefault(StatAdjustmentRules.removedKey("ac"), List.of())) {
+            removed.add(removalLabel(entry.label()));
+        }
+        int total = 0;
+        for (ArmorLine line : lines) {
+            if (!removed.remove(removalLabel(line.label()))) total += line.value();
+        }
+        return total;
+    }
+
+    /** The name a line is removed under: its label, cut to what an adjustment label may hold. */
+    private static String removalLabel(String label) {
+        String trimmed = label == null ? "" : label.trim();
+        return (trimmed.length() > StatAdjustmentRules.LABEL_MAX
+                ? trimmed.substring(0, StatAdjustmentRules.LABEL_MAX) : trimmed).trim();
     }
 
     private static ResponseStatusException error(HttpStatus status, String message) {

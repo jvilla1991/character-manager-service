@@ -241,6 +241,93 @@ class PcActivityLogServiceTest {
     }
 
     @Test
+    void logDmEdit_namesACalculatedLineTakenOutOfANumber_notAnAdjustment() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAc((short) 17);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAc((short) 15);
+        after.setStatAdjustments("{\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(e -> "DM changed AC 17 → 15".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(e ->
+                "DM removed the calculated Dexterity line from AC".equals(e.getDescription())));
+        verify(activityLogRepository, never()).save(argThat(e -> e.getDescription().contains("acRemoved")));
+        verify(activityLogRepository, never()).save(argThat(e -> e.getDescription().contains("adjustment")));
+    }
+
+    @Test
+    void logDmEdit_namesACalculatedLinePutBack() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setStatAdjustments(
+                "{\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"},{\"value\":1,\"label\":\"Shield\"}]}");
+        PC after = new PC();
+        after.setId(1L);
+        after.setStatAdjustments("{\"acRemoved\":[{\"value\":1,\"label\":\"Shield\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(e ->
+                "DM restored the calculated Dexterity line on AC".equals(e.getDescription())));
+        verify(activityLogRepository, times(1)).save(any(PcActivityLog.class)); // Shield is still out: no entry
+    }
+
+    @Test
+    void logDmEdit_keepsAdjustmentsAndRemovedLinesApart_inOneSave() {
+        PC before = new PC();
+        before.setId(1L);
+        PC after = new PC();
+        after.setId(1L);
+        after.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Shield\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(e -> "DM added AC adjustment +1 Taunka".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(e ->
+                "DM removed the calculated Shield line from AC".equals(e.getDescription())));
+    }
+
+    @Test
+    void logDmEdit_wordsABonusSpellSlotLineAsAnAdjustment_evenBesideARemovedLine() {
+        PC before = new PC();
+        before.setId(1L);
+        PC after = new PC();
+        after.setId(1L);
+        after.setStatAdjustments("{\"slot3\":[{\"value\":1,\"label\":\"Pearl of Power\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Shield\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(
+                e -> "DM added level 3 spell slot adjustment +1 Pearl of Power".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(
+                e -> "DM removed the calculated Shield line from AC".equals(e.getDescription())));
+        verify(activityLogRepository, times(2)).save(any(PcActivityLog.class));
+    }
+
+    @Test
+    void logDmEdit_namesAnAbilityScoreLineByItsShortName() {
+        PC before = new PC();
+        before.setId(1L);
+        before.setAbilityStr((short) 15);
+        PC after = new PC();
+        after.setId(1L);
+        after.setAbilityStr((short) 16);
+        after.setStatAdjustments("{\"STR\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(e -> "DM changed STR 15 → 16".equals(e.getDescription())));
+        verify(activityLogRepository).save(argThat(e ->
+                "DM added STR adjustment +1 Level 4 Increase".equals(e.getDescription())));
+    }
+
+    @Test
     void logDmEdit_statAdjustments_noOps_whenTheLinesAreTheSame() {
         PC before = new PC();
         before.setId(1L);
