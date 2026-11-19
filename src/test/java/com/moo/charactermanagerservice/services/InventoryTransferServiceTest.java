@@ -52,6 +52,49 @@ class InventoryTransferServiceTest {
         assertThatThrownBy(() -> service.give(1L, request("player", 2L), owner)).isInstanceOf(ResponseStatusException.class);
         assertThat(json.parse(target.getInventory())).hasSize(2);
     }
+    /** Give the source a chain shirt, a shield and the rations; the item at `itemIndex` is what gets given. */
+    private InventoryTransferService.Request wearingShirtAndShield(int itemIndex) {
+        snapshot = List.of(Map.of("name", "Rations", "qty", 3, "category", "gear"),
+                Map.of("name", "Chain Shirt", "qty", 1, "category", "armor", "equipped", true,
+                        "armorClass", "13 + Dex modifier (max 2)"),
+                Map.of("name", "Shield", "qty", 1, "category", "armor", "equipped", true, "armorClass", "+2"));
+        source.setInventory(json.write(snapshot));
+        return new InventoryTransferService.Request("player", 2L, itemIndex, snapshot);
+    }
+    @Test void givingArmorAwayKeepsTheDmAdjustmentLinesInTheSavedAc() {
+        var request = wearingShirtAndShield(2);
+        source.setAc((short) 18);                                  // 13 + Dex 2 + shield 2 + Taunka 1
+        source.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 16); // only the shield's 2 goes
+    }
+    @Test void givingArmorAwayKeepsAnOlderHandTypedDifference() {
+        var request = wearingShirtAndShield(1);
+        source.setAc((short) 20);                                  // 17 from the gear and 3 nobody labelled
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 17); // 10 + Dex 2 + shield 2 + 3
+    }
+    @Test void givingAwayAShieldWhoseLineTheDmRemovedCostsNoAcAgain() {
+        var request = wearingShirtAndShield(2);
+        source.setAc((short) 15);                                  // 13 + Dex 2, the shield already out
+        source.setStatAdjustments("{\"acRemoved\":[{\"value\":1,\"label\":\"Shield\"}]}");
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 15);
+    }
+    @Test void givingArmorAwayLeavesARemovedDexterityLineOut() {
+        var request = wearingShirtAndShield(1);
+        source.setAc((short) 15);                                  // 13 + shield 2, Dexterity out
+        source.setStatAdjustments("{\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}");
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 12); // unarmored 10 + shield 2
+    }
+    @Test void givingArmorAwayBuildsTheTotalFromTheLinesWhenNoAcWasSaved() {
+        var request = wearingShirtAndShield(2);
+        source.setAc(null);
+        source.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 16); // 13 + Dex 2 + Taunka 1
+    }
+    @Test void givingSomethingThatIsNotWornArmorLeavesTheSavedAcAlone() {
+        var request = wearingShirtAndShield(0);                    // the rations
+        source.setAc((short) 25);                                  // hand-set
+        assertThat(service.give(1L, request, owner).ac()).isEqualTo((short) 25);
+    }
     @Test void acceptsEquivalentJsonNumbers() {
         var copy = new LinkedHashMap<>(snapshot.get(1)); copy.put("weight", 65);
         snapshot = List.of(snapshot.get(0), copy);
