@@ -183,9 +183,11 @@ public class PCController {
     }
 
     /**
-     * Spend one spell slot by hand — the owning player (or the campaign's DM).
-     * Body {@code {"level": 3}}. 400 for a level that is not 1-9, 409 when no
-     * slot of that level is free. Returns the character's slots afterwards.
+     * Spend one spell slot by hand — the campaign's DM, or the owner of a
+     * character in no campaign (a campaign player gets 403: in a campaign a
+     * slot is spent by casting in a live session). Body {@code {"level": 3}}.
+     * 400 for a level that is not 1-9, 409 when no slot of that level is free.
+     * Returns the character's slots afterwards.
      */
     @PostMapping("/{id}/spell-slots/spend")
     public ResponseEntity<SpellSlotResult> spendSpellSlot(@PathVariable Long id,
