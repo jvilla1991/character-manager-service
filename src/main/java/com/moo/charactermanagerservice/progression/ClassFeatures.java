@@ -245,7 +245,8 @@ public final class ClassFeatures {
     // live in one <Class>Subclasses file per class; the World of Warcraft module's subclasses (the
     // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, the WoW
     // Rogue's Swashbuckler, the WoW Shaman's Path of the Elements and Path of the Spiritual
-    // Guardian, and the WoW Priest's Discipline and Shadow Domains) are defined below. Each level entry may REPLACE generic class features by name
+    // Guardian, the WoW Priest's Discipline and Shadow Domains, and the WoW Monk's Warrior of Mystic
+    // Brews) are defined below. Each level entry may REPLACE generic class features by name
     // and/or ADD new ones. An unknown subclass gets the generic features unchanged.
 
     /** A subclass's changes at one level: generic feature names it removes, and features it adds. */
@@ -288,6 +289,7 @@ public final class ClassFeatures {
         addSubclass(m, "barbarian", ClassProgression.PATH_OF_THE_SPIRITUAL_GUARDIAN, pathOfTheSpiritualGuardian());
         addSubclass(m, "cleric", ClassProgression.DISCIPLINE_DOMAIN, disciplineDomain());
         addSubclass(m, "cleric", ClassProgression.SHADOW_DOMAIN, shadowDomain());
+        addSubclass(m, "monk", ClassProgression.WARRIOR_OF_MYSTIC_BREWS, warriorOfMysticBrews());
         addSubclass(m, "paladin", ClassProgression.EBON_BLADE, ebonBlade());
         addSubclass(m, "paladin", ClassProgression.OATH_OF_THE_HOLY, oathOfTheHoly());
         addSubclass(m, "ranger", ClassProgression.DEMON_HUNTER, demonHunter());
@@ -429,6 +431,47 @@ public final class ClassFeatures {
         f.put(17, adds(
                 f("Vampiric Embrace", "While your Shadowform is active, whenever you roll its extra 1d6, a creature of your "
                         + "choice within 30 feet regains Hit Points equal to the number rolled.")));
+        return f;
+    }
+
+    /**
+     * Warrior of Mystic Brews, the WoW Monk's Brewmaster tradition (offered only to WoW monks).
+     * Purely additive: the generic Monk table has no subclass placeholders at these levels.
+     */
+    private static Map<Integer, SubclassGains> warriorOfMysticBrews() {
+        Map<Integer, SubclassGains> f = new HashMap<>();
+        f.put(3, adds(
+                f("Bonus Proficiencies", "You gain proficiency in the Performance skill (or another Monk skill of your "
+                        + "choice if you already have it) and with Brewer's Supplies."),
+                f("Drunken Technique", "Whenever you spend a Focus Point on Patient Defense, your Speed increases by 10 "
+                        + "feet until the end of the turn, and you can make one Unarmed Strike immediately after that "
+                        + "Bonus Action.")));
+        f.put(6, adds(
+                f("Tipsy Sway", "Leap to Your Feet: standing up from Prone costs you only 5 feet of movement. Redirect "
+                        + "Attack: when an enemy misses you with a melee attack roll, you can take a Reaction and spend 1 "
+                        + "Focus Point to make that attack hit another creature of your choice within 5 feet of you."),
+                f("Mystic Brew", "When you finish a Short or Long Rest while holding Brewer's Supplies, you can brew one "
+                        + "magical beverage with one of these options. Cinnamon Dragon: as a Magic action, exhale a 30-foot "
+                        + "Cone; each creature in it makes a Dexterity save (DC 8 + your Wisdom modifier + Proficiency "
+                        + "Bonus), taking Fire damage equal to four rolls of your Martial Arts die and gaining the Poisoned "
+                        + "condition until the end of its next turn on a failure, or half damage only on a success. "
+                        + "Heavenly Spirit: you gain Resistance to two of Cold, Necrotic, Psychic, or Radiant damage. "
+                        + "Refreshing Dip: you gain a pool of Martial Arts dice equal to your Wisdom modifier plus half "
+                        + "your Monk level; when you regain Hit Points you can spend one to add it to the healing. Only "
+                        + "you can drink the brew, which takes 1 minute; its effect lasts 1 hour or until you drink "
+                        + "another, and you can spend 1 Focus Point to extend it to 8 hours. Any undrunk brew vanishes "
+                        + "when you next finish a rest.")));
+        f.put(11, adds(
+                f("Wizened Brewer", "Your Mystic Brew gains new options. Blue Lightning: whenever you take a Reaction "
+                        + "that isn't an Opportunity Attack or a spell, you can also make one Unarmed Strike. Drunkard's "
+                        + "Luck: you gain Heroic Inspiration if you lack it, and when you make an ability check or saving "
+                        + "throw without it you can give it to yourself. Stumbling Monk: after you take a Bonus Action "
+                        + "other than Patient Defense, you can also use Patient Defense.")));
+        f.put(17, adds(
+                f("Master Brewer", "When you brew a Mystic Brew, you can combine two of its options in one beverage."),
+                f("Intoxicated Frenzy", "Immediately after you use Patient Defense, you can move up to your Speed, making "
+                        + "one Unarmed Strike against each creature you move within 5 feet of; a creature you hit must "
+                        + "succeed on a Dexterity save or fall Prone. Each creature can be targeted only once per turn.")));
         return f;
     }
 
