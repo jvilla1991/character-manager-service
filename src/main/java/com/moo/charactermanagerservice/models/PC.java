@@ -202,6 +202,13 @@ public class PC implements Serializable {
     // names a melee weapon the character has counts as unset (LongRestRules).
     private String runeWeapon;
 
+    // Limited-use class features (V55): how much of each is USED, as JSON keyed
+    // by resource — {"secondWind":1,"layOnHands":15}; NULL = nothing used. The
+    // maximum is computed (progression/ClassResources), never stored. Written
+    // by the sheet like spell slots, and by the session's rests.
+    @Column(columnDefinition = "TEXT")
+    private String classResources;
+
     // --- Setters (all fields; needed by Jackson + controller) ---
 
     public void setId(Long id) { this.id = id; }
@@ -260,6 +267,7 @@ public class PC implements Serializable {
     public void setBio(String bio) { this.bio = bio; }
     public void setNotes(String notes) { this.notes = notes; }
     public void setRuneWeapon(String runeWeapon) { this.runeWeapon = runeWeapon; }
+    public void setClassResources(String classResources) { this.classResources = classResources; }
 
     // --- Builder (kept for backward compat; not used by current REST layer) ---
     public static class Builder {

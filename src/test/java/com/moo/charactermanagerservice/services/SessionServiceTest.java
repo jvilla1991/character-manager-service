@@ -2500,6 +2500,194 @@ class SessionServiceTest {
         assertThat(knight.level()).isEqualTo((short) 5);
     }
 
+    // --- class resources: long rest restores all, short rest restores what the rules give ---
+
+    /** Mine (pc 7): a level 5 fighter with Second Wind and Action Surge spent. */
+    private static PC spentFighter() {
+        PC pc = tiredPc(7L, "Gorath");
+        pc.setClazz("Fighter");
+        pc.setSpellSlots(null);
+        pc.setClassResources("{\"secondWind\":2,\"actionSurge\":1}"); // 1 of 3, 0 of 1 left
+        return pc;
+    }
+
+    /** Wire a LOBBY session with the standard party seated, row-lockable, for a short rest. */
+    private void armShortRest(PC mine, PC theirs) {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        lenient().when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        lenient().when(pcRepository.findAllById(any())).thenReturn(List.of(mine, theirs));
+        lenient().when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(mine));
+        lenient().when(pcRepository.findByIdForUpdate(8L)).thenReturn(Optional.of(theirs));
+    }
+
+    @Test
+    void finishLongRest_restoresEveryClassResource_andLogsIt() {
+        PC mine = spentFighter();
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getClassResources()).isNull(); // nothing used
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).contains("Second Wind 1 → 3, Action Surge 0 → 1");
+    }
+
+    @Test
+    void finishLongRest_leavesAHeroAtZeroHitPoints_withTheirResourcesSpent() {
+        PC mine = spentFighter();
+        mine.setHpCurrent((short) 0);
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+    }
+
+    @Test
+    void interruptLongRest_restoresNoClassResources() {
+        PC mine = spentFighter();
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+
+        sessionService.interruptLongRest(1L, dmId);
+
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+    }
+
+    @Test
+    void openingAShortRest_givesBackWhatTheRulesSay_andLogsIt() {
+        PC mine = spentFighter();
+        PC theirs = tiredPc(8L, "Lyra");
+        theirs.setClazz("Paladin");
+        theirs.setClassResources("{\"layOnHands\":10,\"channelDivinity\":2}");
+        armShortRest(mine, theirs);
+
+        SessionStateView state = sessionService.toggleShortRest(1L, dmId);
+
+        assertThat(state.shortRestOpen()).isTrue();
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":1}"); // one use back; Action Surge all back
+        assertThat(theirs.getClassResources()).isEqualTo("{\"layOnHands\":10,\"channelDivinity\":1}");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 12); // a short rest heals nothing by itself
+        verify(activityLogService).log(7L, PcActivityType.SHORT_REST,
+                "Short rest: Second Wind 1 → 2, Action Surge 0 → 1", dmId);
+        verify(activityLogService).log(8L, PcActivityType.SHORT_REST,
+                "Short rest: Channel Divinity 0 → 1", dmId);
+        verify(pcRepository).save(mine);
+        verify(pcRepository).save(theirs);
+    }
+
+    @Test
+    void openingAShortRest_locksPcRowsInAscendingIdOrder() {
+        armShortRest(spentFighter(), tiredPc(8L, "Lyra"));
+
+        sessionService.toggleShortRest(1L, dmId);
+
+        org.mockito.InOrder order = inOrder(pcRepository);
+        order.verify(pcRepository).findByIdForUpdate(7L);
+        order.verify(pcRepository).findByIdForUpdate(8L);
+    }
+
+    @Test
+    void closingAShortRest_givesNothingBack() {
+        PC mine = spentFighter();
+        armShortRest(mine, tiredPc(8L, "Lyra"));
+        session.setShortRestOpen(true);
+
+        SessionStateView state = sessionService.toggleShortRest(1L, dmId);
+
+        assertThat(state.shortRestOpen()).isFalse();
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+        verify(pcRepository, never()).findByIdForUpdate(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+    }
+
+    @Test
+    void openingAShortRest_writesNothing_forAHeroWithNothingToRegain() {
+        PC rested = tiredPc(7L, "Gorath");
+        rested.setClazz("Fighter");
+        rested.setSpellSlots(null);
+        armShortRest(rested, tiredPc(8L, "Lyra"));
+
+        sessionService.toggleShortRest(1L, dmId);
+
+        verify(pcRepository, never()).save(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+    }
+
+    @Test
+    void openingAShortRest_restoresAWarlocksPactMagicSlots_butNotAWizardsSlots() {
+        PC warlock = tiredPc(7L, "Gorath");
+        warlock.setClazz("Warlock"); // tiredPc has slots used
+        PC wizard = tiredPc(8L, "Lyra");
+        wizard.setClazz("Wizard");
+        String wizardSlots = wizard.getSpellSlots();
+        armShortRest(warlock, wizard);
+
+        sessionService.toggleShortRest(1L, dmId);
+
+        assertThat(warlock.getSpellSlots()).contains("\"used\":0").doesNotContain("\"used\":3");
+        assertThat(wizard.getSpellSlots()).isEqualTo(wizardSlots);
+        verify(activityLogService).log(7L, PcActivityType.SHORT_REST, "Short rest: Pact Magic slots restored", dmId);
+        verify(pcRepository, never()).save(wizard);
+    }
+
+    @Test
+    void openingAShortRest_skipsAHeroAtZeroHitPoints() {
+        PC mine = spentFighter();
+        mine.setHpCurrent((short) 0);
+        armShortRest(mine, tiredPc(8L, "Lyra"));
+
+        sessionService.toggleShortRest(1L, dmId);
+
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+        verify(pcRepository, never()).save(mine);
+    }
+
+    @Test
+    void aPassedShortRestVote_givesTheSameRecovery() {
+        PC mine = spentFighter();
+        armShortRest(mine, tiredPc(8L, "Lyra"));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+
+        SessionStateView state = sessionService.castRestVote(1L, true, strangerId);
+
+        assertThat(state.shortRestOpen()).isTrue();
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":1}");
+        verify(activityLogService).log(7L, PcActivityType.SHORT_REST,
+                "Short rest: Second Wind 1 → 2, Action Surge 0 → 1", dmId);
+    }
+
+    @Test
+    void aFailedShortRestVote_givesNothingBack() {
+        PC mine = spentFighter();
+        armShortRest(mine, tiredPc(8L, "Lyra"));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+
+        sessionService.castRestVote(1L, false, strangerId);
+
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+    }
+
+    @Test
+    void aPassedLongRestVote_doesNotApplyShortRestRecovery() {
+        PC mine = spentFighter();
+        armShortRest(mine, tiredPc(8L, "Lyra"));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60))).setRestType(RestType.LONG);
+
+        sessionService.castRestVote(1L, true, strangerId);
+
+        assertThat(mine.getClassResources()).isEqualTo("{\"secondWind\":2,\"actionSurge\":1}");
+    }
+
     // --- rest vote: rest type ---
 
     @Test
