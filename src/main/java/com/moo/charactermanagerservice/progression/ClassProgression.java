@@ -81,10 +81,11 @@ public final class ClassProgression {
     // (Paladin and Ranger — and with them the World of Warcraft classes stored under those
     // two names: Death Knight, Demon Hunter, WoW Paladin, WoW Hunter).
     //
-    // Half casters have SLOTS only. isCaster, preparedSpellsFor and cantripsKnownFor still
-    // answer for the full and pact casters alone, so a Paladin or Ranger level-up offers no
-    // spell choices — the app does not model their prepared-spell progression yet. Add them
-    // there (and in the app) when that changes.
+    // Half casters also PREPARE spells from level 1 (2024 PHB): preparedSpellsFor carries their
+    // Prepared Spells column, so a Paladin or Ranger level-up offers the new picks, capped at the
+    // highest spell level they have slots for. They learn no cantrips from the class itself
+    // (cantripsKnownFor is 0); the Blessed / Druidic / Void Warrior fighting styles add theirs
+    // through the Fighting Style choice (see FeatCatalog).
 
     private static final Set<String> FULL_CASTERS =
             Set.of("bard", "cleric", "druid", "sorcerer", "wizard");
@@ -193,14 +194,18 @@ public final class ClassProgression {
 
     /**
      * Prepared/known spells by level (2024 PHB). Full casters share the standard progression;
-     * warlock uses the smaller pact table. Returns 0 for non-casters. This is the total a caster
-     * may have prepared/known at that level; the level-up delta is how many new ones they may add.
+     * warlock uses the smaller pact table and the half casters (Paladin, Ranger) their own
+     * Prepared Spells column. Returns 0 for non-casters. This is the total a caster may have
+     * prepared/known at that level; the level-up delta is how many new ones they may add.
      */
     private static final int[] FULL_CASTER_PREPARED = {
             4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22
     };
     private static final int[] PACT_PREPARED = {
             2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15
+    };
+    private static final int[] HALF_CASTER_PREPARED = {
+            2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15
     };
 
     public static int preparedSpellsFor(String clazz, int level) {
@@ -209,18 +214,18 @@ public final class ClassProgression {
         int idx = Math.min(level, MAX_LEVEL) - 1;
         if (FULL_CASTERS.contains(key)) return FULL_CASTER_PREPARED[idx];
         if (PACT_CASTER.equals(key)) return PACT_PREPARED[idx];
+        if (HALF_CASTERS.contains(key)) return HALF_CASTER_PREPARED[idx];
         return 0;
     }
 
     /**
-     * True when the class is one the app treats as a spellcaster (full or pact) — the classes
-     * whose level-up offers cantrips and spells. Half casters are not included although they
-     * have slots: ask {@link #spellSlotsFor} whether a class has spell slots.
+     * True when the class is a spellcaster — full, pact or half: the classes with spell slots
+     * whose level-up offers spells to learn (and, for the full and pact casters, cantrips).
      */
     public static boolean isCaster(String clazz) {
         if (clazz == null) return false;
         String key = clazz.trim().toLowerCase();
-        return FULL_CASTERS.contains(key) || PACT_CASTER.equals(key);
+        return FULL_CASTERS.contains(key) || PACT_CASTER.equals(key) || HALF_CASTERS.contains(key);
     }
 
     /**

@@ -89,15 +89,40 @@ class ClassProgressionTest {
     }
 
     @Test
-    void halfCastersHaveSlots_butAreStillNotCastersForSpellChoices() {
-        // isCaster answers "does the level-up offer cantrips and spells", which the app does
-        // not model for half casters yet.
-        assertThat(ClassProgression.isCaster("paladin")).isFalse();
-        assertThat(ClassProgression.isCaster("ranger")).isFalse();
-        assertThat(ClassProgression.preparedSpellsFor("paladin", 5)).isZero();
-        assertThat(ClassProgression.cantripsKnownFor("ranger", 5)).isZero();
+    void preparedSpellsFor_halfCasters_followThePreparedSpellsColumn() {
+        // 2024 PHB Paladin / Ranger Features tables, levels 1-20.
+        int[] expected = {2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15};
+        for (int level = 1; level <= ClassProgression.MAX_LEVEL; level++) {
+            assertThat(ClassProgression.preparedSpellsFor("paladin", level)).as("paladin " + level)
+                    .isEqualTo(expected[level - 1]);
+            assertThat(ClassProgression.preparedSpellsFor("Ranger", level)).as("ranger " + level)
+                    .isEqualTo(expected[level - 1]);
+        }
+        assertThat(ClassProgression.preparedSpellsFor("paladin", 25)).isEqualTo(15);
+        assertThat(ClassProgression.preparedSpellsFor("ranger", 0)).isZero();
+    }
+
+    @Test
+    void halfCasters_areCasters_withNoClassCantrips() {
+        assertThat(ClassProgression.isCaster("paladin")).isTrue();
+        assertThat(ClassProgression.isCaster(" Ranger ")).isTrue();
         assertThat(ClassProgression.isCaster("wizard")).isTrue();
         assertThat(ClassProgression.isCaster("warlock")).isTrue();
+        assertThat(ClassProgression.isCaster("fighter")).isFalse();
+        assertThat(ClassProgression.isCaster(null)).isFalse();
+        // The class teaches no cantrips; a cantrip Fighting Style adds them at level 2.
+        for (int level = 1; level <= ClassProgression.MAX_LEVEL; level++) {
+            assertThat(ClassProgression.cantripsKnownFor("paladin", level)).as("paladin " + level).isZero();
+            assertThat(ClassProgression.cantripsKnownFor("ranger", level)).as("ranger " + level).isZero();
+        }
+    }
+
+    @Test
+    void preparedSpellsFor_nonCasters_isZero() {
+        for (String clazz : new String[] {"fighter", "barbarian", "monk", "rogue", "artificer", ""}) {
+            assertThat(ClassProgression.preparedSpellsFor(clazz, 10)).as(clazz).isZero();
+        }
+        assertThat(ClassProgression.preparedSpellsFor(null, 10)).isZero();
     }
 
     // --- everything else ---

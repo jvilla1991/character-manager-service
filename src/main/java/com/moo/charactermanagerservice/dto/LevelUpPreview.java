@@ -10,7 +10,8 @@ import java.util.Map;
  * <p>Phase 1: deterministic gains (HP via fixed average, proficiency bonus). Phase 2: the
  * spell-slot picture — {@code spellLevel -> maxSlots} before (as stored) and after (the class
  * table for the new level plus the DM's bonus slot lines) — empty for a character with no slots.
- * Half casters (Paladin, Ranger) have slots here but no cantrip / spells-known deltas.
+ * Half casters (Paladin, Ranger) have slots here and a spells-known delta from their Prepared
+ * Spells column; the class itself teaches them no cantrips.
  * Phase 3: whether a subclass choice is due at the new level ({@code subclassDue}) and the
  * selectable names ({@code subclassOptions}); the options list is empty until catalog content
  * is authored, so the SPA shows the picker only when there is something to pick.
@@ -30,6 +31,13 @@ import java.util.Map;
  * specialization that recommends some (e.g. a Retribution paladin → {@code "Great Weapon
  * Fighting"}), {@code recommendedFightingStyles} lists those names — always a subset of
  * {@code fightingStyleOptions}. Advisory only; otherwise an empty list.
+ *
+ * <p>{@code alwaysPreparedSpells} lists the spells a class or subclass feature always keeps
+ * prepared that the character is owed at the new level and does not have yet (a Paladin's Find
+ * Steed at 5; for a character that passed such a level earlier, the ones it missed). When a
+ * subclass choice is due, {@code alwaysPreparedSpellsBySubclass} gives the same list for each
+ * option that changes it (an oath's 3rd-level spells), keyed by option name; the SPA uses the
+ * entry for the subclass the player picks. The SPA sends the full spells with the level-up.
  */
 public record LevelUpPreview(
         int currentLevel,
@@ -54,8 +62,27 @@ public record LevelUpPreview(
         boolean fightingStyleDue,
         List<String> fightingStyleOptions,
         String recommendedSubclass,
-        List<String> recommendedFightingStyles
+        List<String> recommendedFightingStyles,
+        List<SpellGrant> alwaysPreparedSpells,
+        Map<String, List<SpellGrant>> alwaysPreparedSpellsBySubclass
 ) {
+    /** Convenience constructor with no always-prepared spells gained this level. */
+    public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
+                          int newHpMax, int currentProfBonus, int newProfBonus,
+                          Map<Integer, Integer> currentSpellSlots, Map<Integer, Integer> newSpellSlots,
+                          boolean subclassDue, List<String> subclassOptions, boolean asiDue,
+                          List<String> featOptions, List<FeatureGain> featuresGained,
+                          int currentCantripsKnown, int newCantripsKnown,
+                          int currentSpellsKnown, int newSpellsKnown,
+                          boolean fightingStyleDue, List<String> fightingStyleOptions,
+                          String recommendedSubclass, List<String> recommendedFightingStyles) {
+        this(currentLevel, newLevel, hitDie, conModifier, hpGained, newHpMax, currentProfBonus,
+                newProfBonus, currentSpellSlots, newSpellSlots, subclassDue, subclassOptions, asiDue,
+                featOptions, featuresGained, currentCantripsKnown, newCantripsKnown,
+                currentSpellsKnown, newSpellsKnown, fightingStyleDue, fightingStyleOptions,
+                recommendedSubclass, recommendedFightingStyles, List.of(), Map.of());
+    }
+
     /** Convenience constructor with no recommended Fighting Styles. */
     public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
                           int newHpMax, int currentProfBonus, int newProfBonus,

@@ -43,6 +43,31 @@ class StatAdjustmentRulesTest {
         assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
     }
 
+    /** A value with `count` different keys, one line each. */
+    private static String withKeys(int count) {
+        StringBuilder json = new StringBuilder("{");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) json.append(',');
+            json.append("\"stat").append(i).append("\":[{\"value\":1,\"label\":\"Line\"}]");
+        }
+        return json.append('}').toString();
+    }
+
+    @Test
+    void normalizeJson_holdsEveryNumberWithABreakdownAtOnce() {
+        // Armor Class and its removed lines, six ability scores, nine spell slot levels.
+        assertThat(StatAdjustmentRules.STATS_MAX).isGreaterThanOrEqualTo(2 + 6 + 9);
+
+        String json = withKeys(StatAdjustmentRules.STATS_MAX);
+        assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
+        assertThat(StatAdjustmentRules.STATS_MAX).isEqualTo(32);
+    }
+
+    @Test
+    void normalizeJson_rejectsMoreNumbersThanTheLimit() {
+        assertBadRequest(withKeys(StatAdjustmentRules.STATS_MAX + 1));
+    }
+
     @Test
     void normalizeJson_dropsFieldsItDoesNotKnow() {
         String stored = StatAdjustmentRules.normalizeJson(
@@ -92,6 +117,92 @@ class StatAdjustmentRulesTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
                         .isEqualTo(HttpStatus.BAD_REQUEST));
+    }
+
+    // --- companion key for removed calculated lines ---------------------------
+
+    @Test
+    void removedKey_isTheNumbersNamePlusRemoved_andReadsBack() {
+        assertThat(StatAdjustmentRules.removedKey("ac")).isEqualTo("acRemoved");
+        assertThat(StatAdjustmentRules.isRemovedKey("acRemoved")).isTrue();
+        assertThat(StatAdjustmentRules.statOfRemovedKey("acRemoved")).isEqualTo("ac");
+        assertThat(StatAdjustmentRules.isRemovedKey("ac")).isFalse();
+        assertThat(StatAdjustmentRules.isRemovedKey("Removed")).isFalse(); // no number in front of it
+        assertThat(StatAdjustmentRules.isRemovedKey(null)).isFalse();
+    }
+
+    @Test
+    void isRemovedKey_neverTakesARealNumberForACompanionKey() {
+        // Every key that is a number in its own right: Armor Class, the ability scores, the
+        // bonus spell slots of each spell level, and the shapes the key pattern was written for.
+        List<String> numbers = new java.util.ArrayList<>(
+                List.of("ac", "STR", "DEX", "CON", "INT", "WIS", "CHA", "hpMax", "speed", "removed", "acremoved"));
+        for (int spellLevel = 1; spellLevel <= 9; spellLevel++) numbers.add(SpellSlotState.bonusKey(spellLevel));
+
+        assertThat(numbers).noneMatch(StatAdjustmentRules::isRemovedKey);
+        // A slot level's own companion key reads back to that slot level, not to anything shorter.
+        assertThat(StatAdjustmentRules.statOfRemovedKey(StatAdjustmentRules.removedKey("slot3"))).isEqualTo("slot3");
+    }
+
+    @Test
+    void normalizeJson_storesRemovedLinesBesideTheAdjustments() {
+        String json = "{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}";
+
+        assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
+    }
+
+    // --- appendLine -----------------------------------------------------------
+
+    @Test
+    void appendLine_startsAValue_andAddsAfterWhatIsThere() {
+        String first = StatAdjustmentRules.appendLine(null, "STR", 1, "Level 4 Increase");
+        assertThat(first).isEqualTo("{\"STR\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+
+        String second = StatAdjustmentRules.appendLine(first, "STR", 2, "Level 8 Increase");
+        assertThat(second).isEqualTo("{\"STR\":[{\"value\":1,\"label\":\"Level 4 Increase\"},"
+                + "{\"value\":2,\"label\":\"Level 8 Increase\"}]}");
+
+        assertThat(StatAdjustmentRules.appendLine("  ", "DEX", 1, "Level 4 Increase"))
+                .isEqualTo("{\"DEX\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+    }
+
+    @Test
+    void appendLine_keepsTheOtherNumbersExactlyAsStored() {
+        String stored = "{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}";
+
+        assertThat(StatAdjustmentRules.appendLine(stored, "CON", 1, "Level 4 Increase"))
+                .isEqualTo("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                        + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}],"
+                        + "\"CON\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+    }
+
+    @Test
+    void appendLine_leavesTheValueAlone_whenTheNumberIsFull() {
+        String line = "{\"value\":1,\"label\":\"Tome\"}";
+        String full = "{\"STR\":[" + String.join(",", Collections.nCopies(StatAdjustmentRules.LINES_MAX, line)) + "]}";
+
+        assertThat(StatAdjustmentRules.appendLine(full, "STR", 1, "Level 4 Increase")).isEqualTo(full);
+        // Another number on the same character still has room.
+        assertThat(StatAdjustmentRules.parse(StatAdjustmentRules.appendLine(full, "DEX", 1, "Level 4 Increase")))
+                .containsKey("DEX");
+    }
+
+    @Test
+    void appendLine_leavesTheValueAlone_whenThereIsNoRoomForAnotherNumber() {
+        String full = withKeys(StatAdjustmentRules.STATS_MAX);
+
+        assertThat(StatAdjustmentRules.appendLine(full, "STR", 1, "Level 4 Increase")).isEqualTo(full);
+        // A number that is already there can still take a line.
+        assertThat(StatAdjustmentRules.parse(StatAdjustmentRules.appendLine(full, "stat0", 1, "More")).get("stat0"))
+                .hasSize(2);
+    }
+
+    @Test
+    void appendLine_leavesAnUnreadableValueAlone() {
+        assertThat(StatAdjustmentRules.appendLine("not json", "STR", 1, "Level 4 Increase")).isEqualTo("not json");
+        assertThat(StatAdjustmentRules.appendLine("{\"STR\":5}", "STR", 1, "Level 4 Increase")).isEqualTo("{\"STR\":5}");
     }
 
     // --- parse ---------------------------------------------------------------

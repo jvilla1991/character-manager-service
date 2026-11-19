@@ -24,15 +24,29 @@ import java.util.regex.Pattern;
  * there. This class only guards the shape of the lines, so that what is stored
  * is always something every client can read back.
  *
- * <p>The key is deliberately not a fixed list. Armor Class is the only number
- * with a breakdown today; when the SPA gives another one (an ability score,
- * speed) the same treatment it just sends a new key, with no migration and no
- * change here.
+ * <p>The key is deliberately not a fixed list. Armor Class ({@code ac}), the
+ * six ability scores ({@code STR} ... {@code CHA}) and the bonus spell slots
+ * described below carry lines today; when the SPA gives another number
+ * (speed) the same treatment it just sends a new key, with no migration and
+ * no change here.
  *
  * <p>One family of keys the server does read: {@code slot1} .. {@code slot9}
  * are bonus spell slots of that spell level. {@link SpellSlotState} adds them
  * to the class table to get the maximum stored in {@code pc.spell_slots}, so a
  * line there changes a number the server owns, not one the SPA works out.
+ *
+ * <p>A number can also have a companion key, its own name plus
+ * {@value #REMOVED_SUFFIX} ({@code acRemoved}). It lists the lines the SPA
+ * works out by itself that the DM took out of the total, one entry per line,
+ * named by that line's label:
+ *
+ * <pre>{"acRemoved":[{"value":1,"label":"Dexterity"}]}</pre>
+ *
+ * <p>An entry there has the shape of a line so it passes the same checks, but
+ * only its label means anything; the value is a placeholder. A companion key
+ * is never one of the numbers themselves: {@link SpellSlotState} reads the
+ * exact keys {@code slot1} .. {@code slot9} and nothing that merely starts
+ * like one, so {@code slot3Removed} adds no slots.
  */
 public final class StatAdjustmentRules {
 
@@ -44,8 +58,30 @@ public final class StatAdjustmentRules {
     public static final int VALUE_MAX = 99;
     /** Most lines one number may carry. */
     public static final int LINES_MAX = 12;
-    /** Most numbers one character may carry lines for. */
-    public static final int STATS_MAX = 16;
+    /**
+     * Most keys one character may carry. Roomy on purpose: Armor Class and its
+     * companion key, six ability scores and nine spell slot levels already come
+     * to seventeen, before any of those gains a companion key of its own.
+     */
+    public static final int STATS_MAX = 32;
+
+    /** What a number's companion key ends in: {@code acRemoved} holds the removed lines of {@code ac}. */
+    public static final String REMOVED_SUFFIX = "Removed";
+
+    /** Whether a key is the companion key of some number, listing its removed calculated lines. */
+    public static boolean isRemovedKey(String key) {
+        return key != null && key.length() > REMOVED_SUFFIX.length() && key.endsWith(REMOVED_SUFFIX);
+    }
+
+    /** The companion key of a number: {@code ac} gives {@code acRemoved}. */
+    public static String removedKey(String stat) {
+        return stat + REMOVED_SUFFIX;
+    }
+
+    /** The number a companion key belongs to: {@code acRemoved} gives {@code ac}. */
+    public static String statOfRemovedKey(String key) {
+        return key.substring(0, key.length() - REMOVED_SUFFIX.length());
+    }
 
     /** A stat key: a short camelCase name such as {@code ac}, {@code hpMax} or {@code STR}. */
     private static final Pattern STAT_KEY = Pattern.compile("[A-Za-z][A-Za-z0-9]{0,23}");
@@ -154,6 +190,52 @@ public final class StatAdjustmentRules {
             if (!parsed.isEmpty()) out.put(entry.getKey(), parsed);
         }
         return out;
+    }
+
+    /**
+     * Add one line under a number in a stored value, for a change the server
+     * makes itself (a level-up raising an ability score records where the
+     * points came from). Everything already stored is kept as it is.
+     *
+     * <p>Never fails and never breaks a limit: when the number already carries
+     * {@link #LINES_MAX} lines, when a new key would go past {@link #STATS_MAX},
+     * or when the stored value cannot be read, the value comes back unchanged
+     * and the line is simply not recorded. The number itself still changes;
+     * the SPA shows the unexplained part as its base.
+     */
+    public static String appendLine(String json, String stat, int value, String label) {
+        Map<String, Object> raw;
+        if (json == null || json.isBlank()) {
+            raw = new LinkedHashMap<>();
+        } else {
+            try {
+                raw = MAPPER.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {});
+            } catch (JsonProcessingException e) {
+                return json;
+            }
+            if (raw == null) raw = new LinkedHashMap<>();
+        }
+        List<Object> lines;
+        Object existing = raw.get(stat);
+        if (existing == null) {
+            if (raw.size() >= STATS_MAX) return json;
+            lines = new ArrayList<>();
+        } else if (existing instanceof List<?> stored) {
+            if (stored.size() >= LINES_MAX) return json;
+            lines = new ArrayList<>(stored);
+        } else {
+            return json;
+        }
+        Map<String, Object> line = new LinkedHashMap<>();
+        line.put("value", value);
+        line.put("label", label);
+        lines.add(line);
+        raw.put(stat, lines);
+        try {
+            return MAPPER.writeValueAsString(raw);
+        } catch (JsonProcessingException e) {
+            return json;
+        }
     }
 
     private static ResponseStatusException bad(String message) {
