@@ -63,6 +63,7 @@ public class PCService {
         HeroClassRules.validate(pc);
         pc.setLevel((short) 1);
         pc.setRuneWeapon(LongRestRules.normalizeRuneWeapon(pc, null));
+        pc.setClassResources(ClassResourceState.normalize(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         return pcRepository.saveAndFlush(pc);
     }
@@ -162,6 +163,11 @@ public class PCService {
         incoming.setInspirationPips(existing.getInspirationPips());
         incoming.setHeroicInspiration(existing.getHeroicInspiration());
         incoming.setRuneWeapon(LongRestRules.normalizeRuneWeapon(incoming, existing));
+        // Class resource uses are bookkeeping the player keeps, like spell slots:
+        // the body's amounts are taken, cleaned against the rules table (unknown
+        // resources dropped, each clamped to 0..max). A body without the field
+        // keeps the stored amounts.
+        incoming.setClassResources(ClassResourceState.normalize(incoming, existing));
     }
 
     /**

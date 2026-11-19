@@ -284,6 +284,63 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":2,\"thirst\":1,\"fatigue\":2}");
     }
 
+    // --- class resources: the player's own bookkeeping, cleaned on every save ---
+
+    private PC fighterSave(String classResources) {
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("Fighter");
+        incoming.setLevel((short) 5);
+        incoming.setClassResources(classResources);
+        return incoming;
+    }
+
+    @Test
+    void updatePC_letsTheOwnerSpendClassResources_evenInACampaign() {
+        pc.setCampaignId(7L);
+        pc.setClazz("Fighter");
+        pc.setLevel((short) 5);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(fighterSave("{\"secondWind\":1,\"actionSurge\":1}"), ownerId);
+
+        assertThat(result.getClassResources()).isEqualTo("{\"secondWind\":1,\"actionSurge\":1}");
+    }
+
+    @Test
+    void updatePC_clampsClassResources_andDropsOnesTheCharacterDoesNotHave() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(fighterSave("{\"secondWind\":99,\"rage\":2}"), ownerId);
+
+        assertThat(result.getClassResources()).isEqualTo("{\"secondWind\":3}");
+    }
+
+    @Test
+    void updatePC_keepsStoredClassResources_whenTheBodyOmitsThem() {
+        pc.setClazz("Fighter");
+        pc.setLevel((short) 5);
+        pc.setClassResources("{\"secondWind\":2}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(fighterSave(null), ownerId);
+
+        assertThat(result.getClassResources()).isEqualTo("{\"secondWind\":2}");
+    }
+
+    @Test
+    void addPC_neverStartsWithClassResourcesSpentBeyondLevelOne() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC created = fighterSave("{\"secondWind\":5,\"actionSurge\":1}"); // level is forced to 1: no Action Surge
+
+        PC saved = pcService.addPC(created);
+
+        assertThat(saved.getClassResources()).isEqualTo("{\"secondWind\":2}");
+    }
+
     // --- prepared spells change during a long rest, not by an owner's save (campaign characters) ---
 
     private static final String STORED_SPELLS = "["

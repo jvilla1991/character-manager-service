@@ -35,6 +35,7 @@ import com.moo.charactermanagerservice.models.SessionRoll;
 import com.moo.charactermanagerservice.models.SessionShop;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.ClassResources;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
@@ -1308,6 +1309,7 @@ public class SessionService {
                 }
                 pc.setSurvival(json.writeObject(after));
             }
+            changes.addAll(ClassResourceState.restoreAll(pc)); // "Second Wind 1 → 3"
             changes.addAll(choiceChanges);
 
             pcRepository.save(pc);
@@ -1446,7 +1448,12 @@ public class SessionService {
      * {@code shortRestOpen} window. While open, players may spend hit dice via
      * {@link #spendHitDie}; the window clears automatically on encounter start
      * and session end. Version-bumped so every sheet shows the window live.
+     *
+     * <p>Opening the window is the short rest: every seated hero regains what
+     * their class features give back on one ({@link #applyShortRestRecovery}).
+     * Closing it changes nothing.
      */
+    @Transactional
     public SessionStateView toggleShortRest(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -1463,10 +1470,54 @@ public class SessionService {
                     "A long rest is in progress — finish or interrupt it first");
         }
 
-        session.setShortRestOpen(!Boolean.TRUE.equals(session.getShortRestOpen()));
+        boolean opening = !Boolean.TRUE.equals(session.getShortRestOpen());
+        session.setShortRestOpen(opening);
+        if (opening) {
+            applyShortRestRecovery(session, dmUserId);
+        }
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /**
+     * What a short rest gives back, applied to every seated hero as the
+     * short-rest window opens (the DM's toggle or a passed vote) so the
+     * features are there while the party spends Hit Dice: one use of Second
+     * Wind, Rage, Channel Divinity and Wild Shape; all of Action Surge and
+     * Focus Points; all Bardic Inspiration from Bard 5; and a Warlock's Pact
+     * Magic slots (see {@code ClassResources}). PC rows are locked in ascending
+     * id order, like every other party-wide write. A hero at 0 hit points is
+     * left alone, the same rule the long rest applies. Each hero who regained
+     * something gets one activity-log line.
+     */
+    private void applyShortRestRecovery(CombatSession session, UUID actorUserId) {
+        List<Long> pcIds = participantRepository.findBySessionIdOrderByOrderIndexAsc(session.getId()).stream()
+                .map(SessionParticipant::getPcId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .toList();
+        for (Long pcId : pcIds) {
+            PC pc = pcRepository.findByIdForUpdate(pcId).orElse(null);
+            if (pc == null || cannotRest(pc)) {
+                continue;
+            }
+            List<String> regained = new ArrayList<>(ClassResourceState.shortRest(pc));
+            if (ClassResources.regainsSpellSlotsOnShortRest(pc.getClazz())) {
+                Map<String, Object> slots = json.parseObject(pc.getSpellSlots());
+                if (anySlotUsed(slots)) {
+                    pc.setSpellSlots(json.writeObject(restoreAllSlots(slots)));
+                    regained.add("Pact Magic slots restored");
+                }
+            }
+            if (regained.isEmpty()) {
+                continue;
+            }
+            pcRepository.save(pc);
+            activityLogService.log(pc.getId(), PcActivityType.SHORT_REST,
+                    "Short rest: " + String.join(", ", regained), actorUserId);
+        }
     }
 
     /**
@@ -1749,6 +1800,8 @@ public class SessionService {
             openLongRestPhase(session, null);
         } else {
             session.setShortRestOpen(true);
+            // The vote has no single actor; the DM stands in on the log line.
+            applyShortRestRecovery(session, session.getDmUserId());
         }
     }
 
