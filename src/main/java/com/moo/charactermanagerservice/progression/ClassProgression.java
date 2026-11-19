@@ -307,6 +307,9 @@ public final class ClassProgression {
     /** The WoW Priest's Shadow domain (cleric), offered only to WoW clerics. */
     public static final String SHADOW_DOMAIN = "Shadow Domain";
 
+    /** The WoW Monk's Brewmaster tradition, offered only to WoW monks. */
+    public static final String WARRIOR_OF_MYSTIC_BREWS = "Warrior of Mystic Brews";
+
     /** The PHB ranger subclass whose Primal Companion a WoW Hunter may give a pet family. */
     public static final String BEAST_MASTER = "Beast Master";
 
@@ -321,6 +324,7 @@ public final class ClassProgression {
     private static final Map<String, List<String>> WOW_ONLY_SUBCLASSES = Map.of(
             "barbarian", List.of(PATH_OF_THE_ELEMENTS, PATH_OF_THE_SPIRITUAL_GUARDIAN),
             "cleric", List.of(DISCIPLINE_DOMAIN, SHADOW_DOMAIN),
+            "monk", List.of(WARRIOR_OF_MYSTIC_BREWS),
             "paladin", List.of(OATH_OF_THE_HOLY),
             "rogue", List.of(SWASHBUCKLER)
     );
@@ -414,7 +418,10 @@ public final class ClassProgression {
     // Elements and the Path of the Spiritual Guardian. The Shaman is also the first variant whose
     // specialization swaps a generic class feature (Totems for Primal Knowledge) — see
     // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
-    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides. The
+    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides, and the
+    // WoW Mage (wizard + Arcane/Fire/Frost) is the same — its WoW General feats live in FeatCatalog.
+    // The WoW Monk (Brewmaster/Mistweaver/Windwalker) unlocks the Warrior of Mystic Brews at its
+    // level-3 choice, with no feature overrides; its General feats also live in FeatCatalog. The
     // WoW Priest — a cleric with Discipline/Holy/Shadow — unlocks the Discipline Domain and the
     // Shadow Domain at its level-3 choice, with no feature overrides. The WoW Evoker — a sorcerer
     // with Augmentation/Devastation/Preservation — is the first variant that REQUIRES a subclass:
@@ -527,7 +534,20 @@ public final class ClassProgression {
             new ClassSpecializations("warlock", List.of("Affliction", "Demonology", "Destruction"), true,
                     Map.of("Affliction", "Great Old One Patron",
                             "Demonology", "Fiend Patron",
-                            "Destruction", "Fiend Patron"))
+                            "Destruction", "Fiend Patron")),
+            // WoW Mage. No WoW-only school, no Fighting Style choice and no feature overrides; every
+            // specialization recommends the PHB Evoker. The mage's WoW content is its General feats
+            // (Clearcasting, Fingers of Frost, Hot Streak — see FeatCatalog), open to any class.
+            new ClassSpecializations("wizard", List.of("Arcane", "Fire", "Frost"), true,
+                    Map.of("Arcane", "Evoker",
+                            "Fire", "Evoker",
+                            "Frost", "Evoker")),
+            // WoW Monk. Monks have no Fighting Style choice, so no recommended styles. Brewmaster
+            // recommends its WoW-only Warrior of Mystic Brews; the others recommend PHB subclasses.
+            new ClassSpecializations("monk", List.of("Brewmaster", "Mistweaver", "Windwalker"), true,
+                    Map.of("Brewmaster", WARRIOR_OF_MYSTIC_BREWS,
+                            "Mistweaver", "Warrior of Mercy",
+                            "Windwalker", "Warrior of the Open Hand"))
     );
 
     /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */

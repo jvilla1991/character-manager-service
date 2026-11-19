@@ -2719,4 +2719,398 @@ class LevelUpServiceTest {
             assertThat(names(service.preview(evoker(2, spec)).featuresGained())).contains("Evoker Spells");
         }
     }
+
+    // --- WoW Mage (wizard + Arcane/Fire/Frost; recommends Evoker; WoW General feats) ---
+
+    private static final List<String> MAGE_SPECS = List.of("Arcane", "Fire", "Frost");
+    private static final List<String> MAGE_FEATS = List.of("Clearcasting", "Fingers of Frost", "Hot Streak");
+
+    private static PC wizard(int level) {
+        PC w = pc("Wizard", level, 14, 6 * level, 6 * level);
+        if (level >= 3) w.setSubclass("Evoker");
+        return w;
+    }
+
+    private static PC mage(int level, String spec) {
+        PC w = wizard(level);
+        w.setSpecialization(spec);
+        return w;
+    }
+
+    @Test
+    void applyLevelUp_wizard_acceptsEachMageSpecialization_andRejectsOthers() {
+        for (String spec : MAGE_SPECS) {
+            PC w = wizard(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(w.getSpecialization()).isEqualTo(spec);
+            assertThat(w.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("arcane", "Holy", "Destruction", "Outlaw", "Brewmaster")) {
+            PC w = mage(5, "Arcane");
+            assertThatThrownBy(() -> service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(w.getSpecialization()).isEqualTo("Arcane");
+            assertThat(w.getLevel()).isEqualTo((short) 5);
+        }
+    }
+
+    @Test
+    void applyLevelUp_mageSpecialization_rejectedOnOtherClasses() {
+        PC r = rogue(5);
+        assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, "Arcane"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(r.getSpecialization()).isNull();
+        assertThat(r.getLevel()).isEqualTo((short) 5);
+    }
+
+    @Test
+    void applyLevelUp_mage_mayRespec() {
+        PC w = mage(5, "Fire");
+        service.applyLevelUp(w, null, null, null, null, HpMode.AVERAGE, "Frost");
+        assertThat(w.getSpecialization()).isEqualTo("Frost");
+        assertThat(w.getSubclass()).isEqualTo("Evoker");
+    }
+
+    @Test
+    void mage_recommendsEvoker_atTheLevel3Choice_andAddsNoWowOnlySchool() {
+        for (String spec : MAGE_SPECS) {
+            assertThat(ClassProgression.recommendedSubclass("wizard", spec)).isEqualTo("Evoker");
+            assertThat(ClassProgression.subclassesFor("wizard", spec))
+                    .containsExactlyElementsOf(ClassProgression.subclassesFor("wizard"));
+            assertThat(ClassProgression.requiredSubclass("wizard", spec)).isNull();
+            assertThat(ClassProgression.recommendedFightingStyles("wizard", spec)).isEmpty();
+
+            LevelUpPreview p = service.preview(mage(2, spec)); // 2 -> 3: subclass due
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.recommendedSubclass()).isEqualTo("Evoker");
+            assertThat(p.subclassOptions()).contains("Evoker");
+        }
+        assertThat(ClassProgression.recommendedSubclass("Wizard", "Arcane")).isEqualTo("Evoker");
+        assertThat(ClassProgression.recommendedSubclass("wizard", "fire")).isNull();
+        assertThat(service.preview(wizard(2)).recommendedSubclass()).isNull();
+
+        // Any wizard subclass is still accepted: the recommendation is advisory.
+        PC w = mage(2, "Frost");
+        service.applyLevelUp(w, "Illusionist");
+        assertThat(w.getSubclass()).isEqualTo("Illusionist");
+    }
+
+    @Test
+    void mage_addsNoFeatureOverrides() {
+        for (int level : List.of(1, 2, 3, 5, 6, 10, 14, 17)) {
+            for (String spec : MAGE_SPECS) {
+                assertThat(names(service.preview(mage(level, spec)).featuresGained()))
+                        .as("level %d %s", level, spec)
+                        .containsExactlyElementsOf(names(service.preview(wizard(level)).featuresGained()));
+            }
+        }
+    }
+
+    @Test
+    void mageFeats_offeredToEveryClassAtAsiLevels() {
+        for (String clazz : List.of("Wizard", "Fighter", "Rogue", "Monk", "Cleric")) {
+            PC p = pc(clazz, 3, 14, 20, 20); // 3 -> 4
+            if (!clazz.equals("Wizard")) p.setSubclass(ClassProgression.subclassesFor(clazz).get(0));
+            assertThat(service.preview(p).featOptions()).as(clazz).containsAll(MAGE_FEATS);
+        }
+        assertThat(service.preview(mage(7, "Fire")).featOptions()).containsAll(MAGE_FEATS);   // -> 8
+        assertThat(service.preview(mage(18, "Frost")).featOptions()).containsAll(MAGE_FEATS); // -> 19
+        assertThat(FeatCatalog.featOptions("wizard", 4)).containsAll(MAGE_FEATS).isSorted();
+    }
+
+    @Test
+    void mageFeats_acceptedAtLevel4_andRecordedAsFeat() {
+        for (String feat : MAGE_FEATS) {
+            PC w = mage(3, "Arcane");
+            w.setAbilityInt((short) 16);
+            service.applyLevelUp(w, null, null, feat);
+            assertThat(w.getLevel()).isEqualTo((short) 4);
+            assertThat(w.getFeatures()).contains(feat).contains("Feat (Level 4)");
+            assertThat(w.getAbilityInt()).isEqualTo((short) 16); // the +1 INT is left to the sheet flow
+        }
+        // Case-insensitive like every other feat, and open to non-mages.
+        PC f = pc("Fighter", 3, 14, 28, 28);
+        service.applyLevelUp(f, null, null, "hot streak");
+        assertThat(f.getFeatures()).contains("Feat (Level 4)");
+    }
+
+    @Test
+    void mageFeats_rejectedBelowLevel4_andOffNonAsiLevels() {
+        for (String feat : MAGE_FEATS) {
+            assertThat(FeatCatalog.isValidFeat(feat, "wizard", 3)).isFalse();
+            assertThat(FeatCatalog.isValidFeat(feat, "wizard", 4)).isTrue();
+            assertThat(FeatCatalog.featOptions("wizard", 3)).doesNotContain(feat);
+
+            PC two = mage(2, "Arcane"); // 2 -> 3: no ASI/feat available
+            assertThatThrownBy(() -> service.applyLevelUp(two, "Evoker", null, feat))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(two.getLevel()).isEqualTo((short) 2);
+
+            PC five = mage(4, "Arcane"); // 4 -> 5: not an ASI level
+            assertThatThrownBy(() -> service.applyLevelUp(five, null, null, feat))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(five.getLevel()).isEqualTo((short) 4);
+        }
+    }
+
+    @Test
+    void mage_otherVariantsUnchanged() {
+        assertThat(ClassProgression.recommendedSubclass("warlock", "Destruction")).isEqualTo("Fiend Patron");
+        assertThat(ClassProgression.recommendedSubclass("sorcerer", "Devastation")).isEqualTo("Draconic Sorcery");
+        assertThat(ClassProgression.recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
+        assertThat(ClassProgression.isClassSpecialization("sorcerer", "Fire")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("paladin", "Frost")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("wizard", "Destruction")).isFalse();
+        // The PHB catalog is untouched alongside the WoW feats.
+        assertThat(FeatCatalog.featOptions("wizard", 4)).contains("War Caster", "Sentinel").doesNotContain("Archery");
+        assertThat(FeatCatalog.featOptions("fighter", 4)).contains("Archery");
+    }
+
+    // --- WoW Monk (monk + Brewmaster/Mistweaver/Windwalker, Warrior of Mystic Brews, DEX/WIS feats) ---
+
+    private static final List<String> MONK_SPECS = List.of("Brewmaster", "Mistweaver", "Windwalker");
+    private static final List<String> MONK_FEATS =
+            List.of("Elusive Brawler", "Enveloping Mist", "Fists of Fury", "Stagger and Sway");
+    private static final String MYSTIC_BREWS = "Warrior of Mystic Brews";
+
+    private static PC monk(int level) {
+        PC m = pc("Monk", level, 14, 8 * level, 8 * level);
+        if (level >= 3) m.setSubclass("Warrior of the Open Hand");
+        m.setAbilityDex((short) 16);
+        m.setAbilityWis((short) 14);
+        return m;
+    }
+
+    private static PC wowMonk(int level, String spec) {
+        PC m = monk(level);
+        m.setSpecialization(spec);
+        return m;
+    }
+
+    private static PC brewmaster(int level) {
+        PC m = wowMonk(level, "Brewmaster");
+        m.setSubclass(MYSTIC_BREWS);
+        return m;
+    }
+
+    @Test
+    void applyLevelUp_monk_acceptsEachWowSpecialization_andRejectsOthers() {
+        for (String spec : MONK_SPECS) {
+            PC m = monk(5); // 5 -> 6: not an ASI level
+            service.applyLevelUp(m, null, null, null, null, HpMode.AVERAGE, spec);
+            assertThat(m.getSpecialization()).isEqualTo(spec);
+            assertThat(m.getLevel()).isEqualTo((short) 6);
+        }
+        for (String bad : List.of("brewmaster", "Arcane", "Holy", "Outlaw", "Restoration")) {
+            PC m = wowMonk(5, "Windwalker");
+            assertThatThrownBy(() -> service.applyLevelUp(m, null, null, null, null, HpMode.AVERAGE, bad))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+            assertThat(m.getSpecialization()).isEqualTo("Windwalker");
+            assertThat(m.getLevel()).isEqualTo((short) 5);
+        }
+        PC r = rogue(5);
+        assertThatThrownBy(() -> service.applyLevelUp(r, null, null, null, null, HpMode.AVERAGE, "Mistweaver"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void applyLevelUp_wowMonk_mayRespec() {
+        PC m = wowMonk(5, "Mistweaver");
+        service.applyLevelUp(m, null, null, null, null, HpMode.AVERAGE, "Brewmaster");
+        assertThat(m.getSpecialization()).isEqualTo("Brewmaster");
+        assertThat(m.getSubclass()).isEqualTo("Warrior of the Open Hand");
+    }
+
+    @Test
+    void wowMonk_recommendedSubclass_inPreviewAtLevel3() {
+        assertThat(ClassProgression.recommendedSubclass("monk", "Brewmaster")).isEqualTo(MYSTIC_BREWS);
+        assertThat(ClassProgression.recommendedSubclass("monk", "Mistweaver")).isEqualTo("Warrior of Mercy");
+        assertThat(ClassProgression.recommendedSubclass("Monk", "Windwalker")).isEqualTo("Warrior of the Open Hand");
+        assertThat(ClassProgression.recommendedSubclass("monk", "windwalker")).isNull();
+        for (String spec : MONK_SPECS) {
+            LevelUpPreview p = service.preview(wowMonk(2, spec)); // 2 -> 3
+            assertThat(p.subclassDue()).isTrue();
+            assertThat(p.recommendedSubclass()).isEqualTo(ClassProgression.recommendedSubclass("monk", spec));
+            assertThat(p.subclassOptions()).contains(p.recommendedSubclass());
+            assertThat(p.recommendedFightingStyles()).isEmpty();
+        }
+        assertThat(service.preview(monk(2)).recommendedSubclass()).isNull();
+    }
+
+    @Test
+    void mysticBrews_offeredOnlyToWowMonks() {
+        for (String spec : MONK_SPECS) {
+            assertThat(service.preview(wowMonk(2, spec)).subclassOptions())
+                    .containsAll(ClassProgression.subclassesFor("monk")).contains(MYSTIC_BREWS);
+        }
+        assertThat(service.preview(monk(2)).subclassOptions()).doesNotContain(MYSTIC_BREWS);
+        assertThat(ClassProgression.subclassesFor("monk")).doesNotContain(MYSTIC_BREWS);
+        assertThat(service.preview(wowRogue(2, "Outlaw")).subclassOptions()).doesNotContain(MYSTIC_BREWS);
+    }
+
+    @Test
+    void mysticBrews_acceptedForWowMonkAtLevel3_andRejectedOtherwise() {
+        PC m = wowMonk(2, "Brewmaster");
+        service.applyLevelUp(m, "warrior of mystic brews");
+        assertThat(m.getSubclass()).isEqualTo("warrior of mystic brews");
+        assertThat(m.getFeatures()).contains("Bonus Proficiencies", "Drunken Technique");
+
+        // A monk choosing its specialization in the same request may take it.
+        PC base = monk(2);
+        service.applyLevelUp(base, MYSTIC_BREWS, null, null, null, HpMode.AVERAGE, "Windwalker");
+        assertThat(base.getSubclass()).isEqualTo(MYSTIC_BREWS);
+
+        PC plain = monk(2);
+        assertThatThrownBy(() -> service.applyLevelUp(plain, MYSTIC_BREWS))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(plain.getSubclass()).isNull();
+
+        PC rogue = wowRogue(2, "Outlaw");
+        assertThatThrownBy(() -> service.applyLevelUp(rogue, MYSTIC_BREWS))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        PC late = wowMonk(3, "Brewmaster"); // subclass already chosen; 3 -> 4
+        late.setSubclass(null);
+        assertThatThrownBy(() -> service.applyLevelUp(late, MYSTIC_BREWS))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void mysticBrews_featuresAt3_6_11_17() {
+        assertThat(names(service.preview(brewmaster(2)).featuresGained()))
+                .contains("Bonus Proficiencies", "Drunken Technique");
+        assertThat(names(service.preview(brewmaster(5)).featuresGained()))
+                .contains("Tipsy Sway", "Mystic Brew");
+        assertThat(names(service.preview(brewmaster(10)).featuresGained())).contains("Wizened Brewer");
+        assertThat(names(service.preview(brewmaster(16)).featuresGained()))
+                .contains("Master Brewer", "Intoxicated Frenzy");
+        // Purely additive: the generic Monk features at each level are kept.
+        for (int level : List.of(2, 5, 10, 16)) {
+            assertThat(names(service.preview(brewmaster(level)).featuresGained()))
+                    .containsAll(names(com.moo.charactermanagerservice.progression.ClassFeatures.featuresAt("monk", level + 1)));
+        }
+    }
+
+    @Test
+    void wowMonk_addsNoFeatureOverrides() {
+        for (int level : List.of(1, 2, 4, 5, 9, 13, 19)) {
+            for (String spec : MONK_SPECS) {
+                assertThat(names(service.preview(wowMonk(level, spec)).featuresGained()))
+                        .as("level %d %s", level, spec)
+                        .containsExactlyElementsOf(names(service.preview(monk(level)).featuresGained()));
+            }
+        }
+    }
+
+    @Test
+    void monkFeats_offeredAtLevel4_withDexAndWis13() {
+        for (String clazz : List.of("Monk", "Rogue", "Wizard", "Fighter")) {
+            PC p = pc(clazz, 3, 14, 20, 20); // 3 -> 4
+            p.setAbilityDex((short) 13);
+            p.setAbilityWis((short) 13);
+            assertThat(service.preview(p).featOptions()).as(clazz).containsAll(MONK_FEATS);
+        }
+        assertThat(service.preview(wowMonk(7, "Windwalker")).featOptions()).containsAll(MONK_FEATS); // -> 8
+        assertThat(service.preview(monk(3)).featOptions()).containsAll(MONK_FEATS).isSorted();
+    }
+
+    @Test
+    void monkFeats_notOfferedWhenDexOrWisBelow13() {
+        PC lowDex = monk(3);
+        lowDex.setAbilityDex((short) 12);
+        PC lowWis = monk(3);
+        lowWis.setAbilityWis((short) 12);
+        PC unset = pc("Monk", 3, 14, 20, 20); // no DEX/WIS recorded
+        for (PC p : List.of(lowDex, lowWis, unset)) {
+            assertThat(service.preview(p).featOptions())
+                    .doesNotContainAnyElementsOf(MONK_FEATS)
+                    .contains("Sentinel", "Clearcasting");
+        }
+        assertThat(FeatCatalog.featOptions("monk", 4)).doesNotContainAnyElementsOf(MONK_FEATS);
+    }
+
+    @Test
+    void monkFeats_acceptedAtLevel4_withDexAndWis13() {
+        for (String feat : MONK_FEATS) {
+            PC m = wowMonk(3, "Brewmaster");
+            m.setAbilityDex((short) 13);
+            m.setAbilityWis((short) 13);
+            service.applyLevelUp(m, null, null, feat);
+            assertThat(m.getLevel()).isEqualTo((short) 4);
+            assertThat(m.getFeatures()).contains(feat).contains("Feat (Level 4)");
+            assertThat(m.getAbilityDex()).isEqualTo((short) 13); // the +1 DEX/WIS is left to the sheet flow
+        }
+        PC r = pc("Rogue", 3, 14, 20, 20);
+        r.setAbilityDex((short) 18);
+        r.setAbilityWis((short) 13);
+        service.applyLevelUp(r, null, null, "fists of fury");
+        assertThat(r.getFeatures()).contains("Feat (Level 4)");
+    }
+
+    @Test
+    void monkFeats_rejectedWhenDexOrWisBelow13_withAClearMessage() {
+        for (String feat : MONK_FEATS) {
+            for (int[] dexWis : new int[][] {{12, 16}, {16, 12}, {10, 10}}) {
+                PC m = monk(3);
+                m.setAbilityDex((short) dexWis[0]);
+                m.setAbilityWis((short) dexWis[1]);
+                assertThatThrownBy(() -> service.applyLevelUp(m, null, null, feat))
+                        .isInstanceOf(ResponseStatusException.class)
+                        .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                        .hasMessageContaining("requires Dexterity 13 and Wisdom 13");
+                assertThat(m.getLevel()).isEqualTo((short) 3);
+                assertThat(m.getFeatures()).isNull();
+            }
+        }
+        assertThat(FeatCatalog.unmetAbilityPrerequisite("Fists of Fury", "monk", 4, Map.of("DEX", 13, "WIS", 13)))
+                .isNull();
+        assertThat(FeatCatalog.unmetAbilityPrerequisite("Sentinel", "monk", 4, Map.of())).isNull();
+        assertThat(FeatCatalog.unmetAbilityPrerequisite("Fists of Fury", "monk", 3, Map.of())).isNull();
+    }
+
+    @Test
+    void monkFeats_rejectedBelowLevel4_andOffNonAsiLevels() {
+        Map<String, Integer> qualified = Map.of("DEX", 16, "WIS", 16);
+        for (String feat : MONK_FEATS) {
+            assertThat(FeatCatalog.isValidFeat(feat, "monk", 3, qualified)).isFalse();
+            assertThat(FeatCatalog.isValidFeat(feat, "monk", 4, qualified)).isTrue();
+            assertThat(FeatCatalog.featOptions("monk", 3, qualified)).doesNotContain(feat);
+
+            PC two = wowMonk(2, "Windwalker"); // 2 -> 3: no ASI/feat available
+            assertThatThrownBy(() -> service.applyLevelUp(two, "Warrior of the Open Hand", null, feat))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+            PC five = monk(4); // 4 -> 5: not an ASI level
+            assertThatThrownBy(() -> service.applyLevelUp(five, null, null, feat))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+    }
+
+    @Test
+    void wowMonk_otherVariantsUnchanged() {
+        for (String spec : MAGE_SPECS) {
+            assertThat(ClassProgression.recommendedSubclass("wizard", spec)).isEqualTo("Evoker");
+        }
+        assertThat(ClassProgression.recommendedSubclass("rogue", "Outlaw")).isEqualTo(SWASHBUCKLER);
+        assertThat(ClassProgression.subclassesFor("rogue", "Outlaw")).doesNotContain(MYSTIC_BREWS);
+        assertThat(ClassProgression.subclassesFor("wizard", "Arcane")).doesNotContain(MYSTIC_BREWS);
+        assertThat(ClassProgression.isClassSpecialization("druid", "Brewmaster")).isFalse();
+        assertThat(ClassProgression.isClassSpecialization("cleric", "Mistweaver")).isFalse();
+        // Ability prerequisites touch only the monk feats: PHB and mage feats still need no scores.
+        assertThat(FeatCatalog.featOptions("monk", 4)).contains("Sentinel", "Clearcasting", "Hot Streak");
+        for (String feat : MAGE_FEATS) {
+            assertThat(FeatCatalog.isValidFeat(feat, "wizard", 4)).isTrue();
+        }
+    }
 }

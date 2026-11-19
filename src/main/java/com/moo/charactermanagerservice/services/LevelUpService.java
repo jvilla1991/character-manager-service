@@ -97,7 +97,7 @@ public class LevelUpService {
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
-                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel) : List.of(),
+                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel, abilityScores(pc)) : List.of(),
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
@@ -395,12 +395,18 @@ public class LevelUpService {
                 setAbilityScore(pc, ability, (short) (abilityScore(pc, ability) + points)));
     }
 
-    /** Validate the chosen feat against the catalog and record it among the PC's features. */
+    /**
+     * Validate the chosen feat against the catalog — including ability-score prerequisites, checked
+     * against the PC's current (pre-level-up) scores — and record it among the PC's features.
+     */
     private void applyFeatChoice(PC pc, int newLevel, String feat) {
         String name = feat.trim();
-        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "'" + name + "' is not a selectable feat");
+        Map<String, Integer> scores = abilityScores(pc);
+        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel, scores)) {
+            String unmet = FeatCatalog.unmetAbilityPrerequisite(name, pc.getClazz(), newLevel, scores);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, unmet != null
+                    ? "'" + name + "' " + unmet
+                    : "'" + name + "' is not a selectable feat");
         }
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
         features.add(jsonColumns.featureEntry(name, "Feat (Level " + newLevel + ")", ""));
@@ -517,6 +523,13 @@ public class LevelUpService {
     }
 
     // ── Ability-score access ─────────────────────────────────────────────────────
+
+    /** The PC's six ability scores keyed by {@link #ABILITIES} (nulls as 0), for feat prerequisites. */
+    private Map<String, Integer> abilityScores(PC pc) {
+        Map<String, Integer> scores = new LinkedHashMap<>();
+        for (String ability : ABILITIES) scores.put(ability, abilityScore(pc, ability));
+        return scores;
+    }
 
     private int abilityScore(PC pc, String ability) {
         return switch (ability) {
