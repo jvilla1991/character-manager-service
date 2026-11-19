@@ -262,9 +262,16 @@ public class PcActivityLogService {
         }
     }
 
-    /** The diff's name for an adjusted number: "AC" (as in the scalar diff), else the key itself. */
+    /**
+     * The diff's name for an adjusted number: "AC" (as in the scalar diff), "level 3 spell slot"
+     * for a bonus-slot key ({@code slot3}, see {@link SpellSlotState}), else the key itself.
+     */
     private String statLabel(String stat) {
-        return "ac".equals(stat) ? "AC" : stat;
+        if ("ac".equals(stat)) return "AC";
+        if (stat.matches(SpellSlotState.BONUS_KEY_PREFIX + "[1-9]")) {
+            return "level " + stat.substring(SpellSlotState.BONUS_KEY_PREFIX.length()) + " spell slot";
+        }
+        return stat;
     }
 
     private Set<String> namesOf(List<Map<String, Object>> items) {

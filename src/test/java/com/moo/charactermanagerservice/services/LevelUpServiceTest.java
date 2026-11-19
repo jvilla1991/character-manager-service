@@ -288,6 +288,45 @@ class LevelUpServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
+    // --- DM bonus slot lines (statAdjustments slot1..slot9) count at level-up too ---
+
+    @Test
+    void applyLevelUp_keepsTheDmsBonusSlots_onTopOfTheNewTable() {
+        PC bard = pc("Bard", 8, 14, 50, 50); // 8 -> 9 (not an ASI level)
+        bard.setStatAdjustments("{\"slot1\":[{\"value\":1,\"label\":\"Boon\"}]}");
+        bard.setSpellSlots("{\"1\":{\"max\":5,\"used\":5},\"4\":{\"max\":2,\"used\":1}}");
+
+        service.applyLevelUp(bard);
+
+        assertThat(bard.getSpellSlots()).contains("\"1\":{\"max\":5,\"used\":5}");
+        assertThat(bard.getSpellSlots()).contains("\"4\":{\"max\":3,\"used\":1}");
+        assertThat(bard.getSpellSlots()).contains("\"5\":{\"max\":1,\"used\":0}");
+    }
+
+    @Test
+    void preview_newSpellSlots_includeTheDmsBonusSlots() {
+        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5
+        paladin.setSubclass("Oath of Devotion");
+        paladin.setStatAdjustments("{\"slot1\":[{\"value\":1,\"label\":\"Boon\"}]}");
+        paladin.setSpellSlots("{\"1\":{\"max\":4,\"used\":0}}");
+
+        LevelUpPreview p = service.preview(paladin);
+
+        assertThat(p.currentSpellSlots()).isEqualTo(Map.of(1, 4));
+        assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 5, 2, 2));
+    }
+
+    @Test
+    void applyLevelUp_aClassWithoutSlots_keepsItsDmGrantedSlots() {
+        PC fighter = pc("Fighter", 4, 16, 30, 30); // 4 -> 5
+        fighter.setStatAdjustments("{\"slot1\":[{\"value\":2,\"label\":\"Eldritch Knight\"}]}");
+        fighter.setSpellSlots("{\"1\":{\"max\":2,\"used\":1}}");
+
+        service.applyLevelUp(fighter);
+
+        assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}");
+    }
+
     // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
 
     @Test

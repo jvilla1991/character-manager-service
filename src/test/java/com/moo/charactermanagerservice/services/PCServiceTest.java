@@ -631,6 +631,213 @@ class PCServiceTest {
         verify(pcRepository, never()).save(any(PC.class));
     }
 
+    // --- spell slots: the maximum is the server's (class table + DM bonus lines, V58) ---
+
+    private static final String WIZARD_3_SLOTS = "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":1}}";
+    private static final String PEARL = "{\"slot3\":[{\"value\":1,\"label\":\"Pearl of Power\"}]}";
+
+    /** The stored level 3 wizard: 4 / 2 slots, three and one of them spent. */
+    private void storeWizardWithSlots(Long campaignId) {
+        pc.setLevel((short) 3);
+        pc.setCampaignId(campaignId);
+        pc.setSpellSlots(WIZARD_3_SLOTS);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        lenient().when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    private PC wizardSave(Long campaignId, String spellSlots) {
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("Wizard");
+        incoming.setLevel((short) 3);
+        incoming.setCampaignId(campaignId);
+        incoming.setSpellSlots(spellSlots);
+        return incoming;
+    }
+
+    @Test
+    void updatePC_aCampaignPlayerCannotChangeTheSlotMaximum_orTheUsedCount() {
+        storeWizardWithSlots(7L);
+
+        PC result = pcService.updatePC(
+                wizardSave(7L, "{\"1\":{\"max\":9,\"used\":0},\"2\":{\"max\":9,\"used\":0},\"3\":{\"max\":2,\"used\":0}}"),
+                ownerId);
+
+        assertThat(result.getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+    }
+
+    @Test
+    void updatePC_aCampaignPlayerCannotSpendThroughTheSaveEither() {
+        // Spending has its own endpoint; a whole-sheet save never moves the count in a campaign.
+        storeWizardWithSlots(7L);
+
+        PC result = pcService.updatePC(
+                wizardSave(7L, "{\"1\":{\"max\":4,\"used\":4},\"2\":{\"max\":2,\"used\":2}}"), ownerId);
+
+        assertThat(result.getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+    }
+
+    @Test
+    void updatePC_aCampaignPlayerCannotAddASlotBonusLine() {
+        storeWizardWithSlots(7L);
+        PC incoming = wizardSave(7L, null);
+        incoming.setStatAdjustments(PEARL); // the lines are the DM's in a campaign
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isNull();
+        assertThat(result.getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+    }
+
+    @Test
+    void updatePC_anOwnerInNoCampaign_mayChangeUsed_butNotTheMaximum() {
+        storeWizardWithSlots(null); // no campaign, so no DM: the owner keeps the count
+
+        PC result = pcService.updatePC(
+                wizardSave(null, "{\"1\":{\"max\":9,\"used\":0},\"2\":{\"max\":9,\"used\":2}}"), ownerId);
+
+        assertThat(result.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":2}}");
+    }
+
+    @Test
+    void updatePC_keepsTheStoredUsedCount_whenTheBodyCarriesNoSlots() {
+        storeWizardWithSlots(null);
+
+        assertThat(pcService.updatePC(wizardSave(null, null), ownerId).getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+        assertThat(pcService.updatePC(wizardSave(null, "{}"), ownerId).getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+    }
+
+    @Test
+    void updatePC_rebuildsTheMaximum_whenTheSaveChangesTheLevel() {
+        storeWizardWithSlots(7L);
+        PC incoming = wizardSave(7L, null);
+        incoming.setLevel((short) 5);
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSpellSlots()).isEqualTo(
+                "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":3,\"used\":1},\"3\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void updatePC_givesAPaladinTheHalfCasterSlots_evenWhenTheBodySendsNone() {
+        pc.setClazz("Paladin");
+        pc.setLevel((short) 5);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // nothing stored yet
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("Paladin");
+        incoming.setLevel((short) 5);
+        incoming.setSpellSlots("{}");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void updatePC_leavesACharacterWithoutSlotsAlone() {
+        pc.setClazz("Fighter");
+        pc.setLevel((short) 5);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(fighterSave(null), ownerId);
+
+        assertThat(result.getSpellSlots()).isNull();
+    }
+
+    @Test
+    void updatePCAsDm_mayChangeUsed_butNotTheMaximum() {
+        storeWizardWithSlots(7L);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC result = pcService.updatePCAsDm(
+                wizardSave(7L, "{\"1\":{\"max\":9,\"used\":0},\"2\":{\"max\":9,\"used\":1}}"), null, dmId);
+
+        assertThat(result.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":1}}");
+    }
+
+    @Test
+    void updatePCAsDm_aSlotBonusLine_raisesThatSpellLevelsMaximum_inTheSameSave() {
+        storeWizardWithSlots(7L);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        PC incoming = wizardSave(7L, null);
+        incoming.setStatAdjustments(PEARL);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(PEARL);
+        assertThat(result.getSpellSlots()).isEqualTo(
+                "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":1},\"3\":{\"max\":1,\"used\":0}}");
+    }
+
+    @Test
+    void updatePCAsDm_removingASlotBonusLine_lowersTheMaximum_andTheUsedCountWithIt() {
+        pc.setStatAdjustments("{\"slot1\":[{\"value\":2,\"label\":\"Boon\"}]}");
+        pc.setLevel((short) 1);
+        pc.setCampaignId(7L);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":4}}");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = wizardSave(7L, null);
+        incoming.setLevel((short) 1);
+        incoming.setStatAdjustments("{}"); // every line removed
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":2}}");
+    }
+
+    @Test
+    void updatePCAsDm_keepsStoredBonusSlots_whenTheBodyOmitsTheLines() {
+        pc.setStatAdjustments(PEARL);
+        storeWizardWithSlots(7L);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC result = pcService.updatePCAsDm(wizardSave(7L, null), null, dmId); // statAdjustments null
+
+        assertThat(result.getSpellSlots()).isEqualTo(
+                "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":1},\"3\":{\"max\":1,\"used\":0}}");
+    }
+
+    @Test
+    void updatePCAsDm_aSlotBonusLine_givesAClassWithoutSlotsASlot() {
+        pc.setClazz("Fighter");
+        pc.setLevel((short) 5);
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = fighterSave(null);
+        incoming.setStatAdjustments("{\"slot1\":[{\"value\":2,\"label\":\"Eldritch Knight\"}]}");
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void addPC_startsWithTheLevelOneSlots_whateverMaximumTheBodySends() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC created = wizardSave(null, "{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":3,\"used\":0}}"); // level forced to 1
+
+        assertThat(pcService.addPC(created).getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void addPC_givesAHalfCasterItsSlots_andAClassWithoutSlotsNone() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC paladin = new PC();
+        paladin.setClazz("Paladin");
+        paladin.setSpellSlots("{}");
+
+        assertThat(pcService.addPC(paladin).getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":0}}");
+        assertThat(pcService.addPC(fighterSave("{}")).getSpellSlots()).isNull();
+    }
+
     // --- exhaustion preservation (an update carrying null must not wipe it) ---
 
     @Test

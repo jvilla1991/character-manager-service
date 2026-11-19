@@ -26,7 +26,7 @@ import java.util.random.RandomGenerator;
  * level — validate the player's choices, then apply them in the right order. It does not load,
  * persist, or authorize ({@link PCService} owns that and delegates here), and it delegates the
  * mechanical sub-tasks to collaborators: {@link HpCalculator} (HP-per-level + the RNG seam),
- * {@link SpellSlotCalculator} (the {@code spellSlots} JSON), and {@link PcJsonColumns} (the
+ * {@link SpellSlotState} (the {@code spellSlots} JSON), and {@link PcJsonColumns} (the
  * {@code features}/{@code spells} JSON columns). Keeping the rules out of the controller and out of
  * PCService means the math is unit tested in isolation (no repo, no Spring context, no security).
  *
@@ -35,11 +35,12 @@ import java.util.random.RandomGenerator;
  * when none is sent. Because a roll isn't known until commit, the {@link #preview(PC) preview}
  * always reports the average (the floor/best-case estimate).
  *
- * <p><strong>Spell slots (Phase 2):</strong> for every class with a slot table (full casters,
- * warlock, and the half casters Paladin and Ranger), the {@code spellSlots} column is rebuilt from
- * {@link ClassProgression#spellSlotsFor} via {@link SpellSlotCalculator} — {@code max} is set from
- * the table for the new level while the player's {@code used} count is preserved (clamped to the
- * new max). Classes without slots are left untouched.
+ * <p><strong>Spell slots (Phase 2):</strong> the {@code spellSlots} column is rebuilt by
+ * {@link SpellSlotState#rebuild} — {@code max} is the class table for the new level
+ * ({@link ClassProgression#spellSlotsFor}: full casters, warlock, and the half casters Paladin and
+ * Ranger) plus the DM's bonus lines, the same sum every sheet save uses, while the player's
+ * {@code used} count is preserved (clamped to the new max). A character with no slots is left
+ * untouched.
  *
  * <p><strong>Multiclass seam:</strong> today total level == single class level, so all tables key
  * off {@code pc.clazz} / {@code pc.level}. When multiclassing lands, hit-die/slot lookups move to
@@ -50,7 +51,6 @@ import java.util.random.RandomGenerator;
 public class LevelUpService {
 
     private final HpCalculator hpCalculator;
-    private final SpellSlotCalculator spellSlotCalculator;
     private final PcJsonColumns jsonColumns;
 
     @Autowired
@@ -61,7 +61,6 @@ public class LevelUpService {
     /** Test seam: inject a seeded/fixed RNG so rolled-HP outcomes are deterministic. */
     LevelUpService(ObjectMapper objectMapper, RandomGenerator rng) {
         this.hpCalculator = new HpCalculator(rng);
-        this.spellSlotCalculator = new SpellSlotCalculator(objectMapper);
         this.jsonColumns = new PcJsonColumns(objectMapper);
     }
 
@@ -93,8 +92,8 @@ public class LevelUpService {
                 nz(pc.getHpMax()) + hpGained,
                 ClassProgression.proficiencyBonusForLevel(currentLevel),
                 ClassProgression.proficiencyBonusForLevel(newLevel),
-                spellSlotCalculator.currentMax(pc.getSpellSlots()),
-                ClassProgression.spellSlotsFor(pc.getClazz(), newLevel),
+                SpellSlotState.storedMax(pc.getSpellSlots()),
+                SpellSlotState.maxFor(pc.getClazz(), newLevel, pc.getStatAdjustments()),
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
@@ -156,7 +155,7 @@ public class LevelUpService {
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
      * any newly-learned spells), then bump level, add HP, recompute the proficiency bonus, and
-     * rebuild the spell-slot map (for classes that have slots). The caller persists.
+     * rebuild the spell-slot map (for characters that have slots). The caller persists.
      *
      * <p>HP order matters: ability scores are applied <em>before</em> HP, so the new level's gain
      * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
@@ -217,12 +216,9 @@ public class LevelUpService {
         pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
         pc.setProfBonus((short) ClassProgression.proficiencyBonusForLevel(newLevel));
 
-        // Every class with a slot table, half casters included — not isCaster, which only
-        // says whether the level-up offers spell choices.
-        Map<Integer, Integer> slots = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel);
-        if (!slots.isEmpty()) {
-            pc.setSpellSlots(spellSlotCalculator.rebuild(pc.getSpellSlots(), slots));
-        }
+        // Every character with slots, half casters and DM-granted slots included — not
+        // isCaster, which only says whether the level-up offers spell choices.
+        pc.setSpellSlots(SpellSlotState.rebuild(pc));
         return pc;
     }
 

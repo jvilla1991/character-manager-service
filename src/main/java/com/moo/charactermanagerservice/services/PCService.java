@@ -67,6 +67,8 @@ public class PCService {
         pc.setClassResources(ClassResourceState.normalize(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
+        // After the level and the adjustment lines: both decide how many slots there are.
+        pc.setSpellSlots(SpellSlotState.normalize(pc, null, true));
         return pcRepository.saveAndFlush(pc);
     }
 
@@ -105,6 +107,12 @@ public class PCService {
         } else {
             pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         }
+        // Spell slots, once the adjustment lines above are settled (the slot bonus lines
+        // are among them). The maximum is never the body's. In a campaign neither is the
+        // used count: a player spends through the spend endpoint, and only a rest or the DM
+        // gives slots back. A character in no campaign has no DM, so its owner keeps the
+        // count by hand.
+        pc.setSpellSlots(SpellSlotState.normalize(pc, existing, existing.getCampaignId() == null));
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
@@ -157,6 +165,11 @@ public class PCService {
      * the body names a melee weapon on its own sheet; a value that no longer fits is stored as
      * unset instead of failing the save — see {@link LongRestRules#normalizeRuneWeapon}.
      *
+     * <p>Spell slots are not handled here but by the callers, through
+     * {@link SpellSlotState#normalize}, because their maximum depends on the adjustment lines the
+     * callers settle after this method: the class table plus the DM's {@code slot1}..{@code slot9}
+     * bonus lines, never the body's {@code max}.
+     *
      * <p>The species origin (V56: {@code speciesSource}, {@code lineage}, {@code size}) is chosen
      * once, in the create wizard. A body carrying NULL for any of them keeps the stored value
      * while the species itself is unchanged — so a client built before V56, or a body made from a
@@ -191,10 +204,9 @@ public class PCService {
         incoming.setInspirationPips(existing.getInspirationPips());
         incoming.setHeroicInspiration(existing.getHeroicInspiration());
         incoming.setRuneWeapon(LongRestRules.normalizeRuneWeapon(incoming, existing));
-        // Class resource uses are bookkeeping the player keeps, like spell slots:
-        // the body's amounts are taken, cleaned against the rules table (unknown
-        // resources dropped, each clamped to 0..max). A body without the field
-        // keeps the stored amounts.
+        // Class resource uses are bookkeeping the player keeps: the body's amounts
+        // are taken, cleaned against the rules table (unknown resources dropped,
+        // each clamped to 0..max). A body without the field keeps the stored amounts.
         incoming.setClassResources(ClassResourceState.normalize(incoming, existing));
     }
 
@@ -241,6 +253,9 @@ public class PCService {
         HeroClassRules.validate(incoming);
         incoming.setCoins(CoinPurse.normalizeJson(incoming.getCoins()));
         incoming.setStatAdjustments(StatAdjustmentRules.normalizeJson(incoming.getStatAdjustments()));
+        // After the lines: a slot bonus line added in this same save already counts. The
+        // DM may set the used count (hand slots back); the maximum is still worked out.
+        incoming.setSpellSlots(SpellSlotState.normalize(incoming, existing, true));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
         return saved;
