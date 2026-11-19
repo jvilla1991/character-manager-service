@@ -62,6 +62,18 @@ public class PC implements Serializable {
 
     // --- Character identity ---
     private String species;
+    // Species origin (V56), set by the create wizard for a World of Warcraft species and null
+    // for everyone else: the content source the species comes from ("World of Warcraft"), the
+    // lineage chosen for it ("Night Elf", "Taunka") and its size ("Small" / "Medium"). Free
+    // text like species — the client's species catalog owns the allowed values. An update body
+    // that omits them keeps the stored ones while the species is unchanged
+    // (PCService.preserveServerOwnedColumns).
+    @Column(columnDefinition = "TEXT")
+    private String speciesSource;
+    @Column(columnDefinition = "TEXT")
+    private String lineage;
+    @Column(columnDefinition = "TEXT")
+    private String size;
     private String background;
     private String subclass;
     // Hero-class specialization (V46, formerly the Death Knight "rune" from V45): e.g.
@@ -222,6 +234,9 @@ public class PC implements Serializable {
     public void setCampaignId(Long campaignId) { this.campaignId = campaignId; }
 
     public void setSpecies(String species) { this.species = species; }
+    public void setSpeciesSource(String speciesSource) { this.speciesSource = speciesSource; }
+    public void setLineage(String lineage) { this.lineage = lineage; }
+    public void setSize(String size) { this.size = size; }
     public void setBackground(String background) { this.background = background; }
     public void setSubclass(String subclass) { this.subclass = subclass; }
     public void setSpecialization(String specialization) { this.specialization = specialization; }
