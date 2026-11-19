@@ -15,6 +15,9 @@ public record CampaignMemberView(
         String clazz,
         Short level,
         String species,
+        String speciesSource,
+        String lineage,
+        String size,
         String subclass,
         String specialization,
         String petFamily,
@@ -42,7 +45,8 @@ public record CampaignMemberView(
     public static CampaignMemberView from(PC pc) {
         return new CampaignMemberView(
                 pc.getId(), pc.getName(), pc.getPlayerName(), pc.getClazz(), pc.getLevel(),
-                pc.getSpecies(), pc.getSubclass(), pc.getSpecialization(), pc.getPetFamily(), pc.getCampaignId(),
+                pc.getSpecies(), pc.getSpeciesSource(), pc.getLineage(), pc.getSize(),
+                pc.getSubclass(), pc.getSpecialization(), pc.getPetFamily(), pc.getCampaignId(),
                 pc.getPortraitTint(), pc.getPortraitInitials(),
                 pc.getAbilityStr(), pc.getAbilityDex(), pc.getAbilityCon(),
                 pc.getAbilityInt(), pc.getAbilityWis(), pc.getAbilityCha(),

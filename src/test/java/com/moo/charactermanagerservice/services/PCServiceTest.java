@@ -2791,4 +2791,71 @@ class PCServiceTest {
         monk.setSpecialization("Mistweaver");
         assertThat(pcService.updatePCAsDm(monk, null, dmId).getSpecialization()).isEqualTo("Mistweaver");
     }
+
+    // ── Species origin (V56): source, lineage, size ──────────────────────────────
+
+    private static PC speciesBody(String species, String source, String lineage, String size) {
+        PC body = new PC();
+        body.setClazz("ranger");
+        body.setSpecies(species);
+        body.setSpeciesSource(source);
+        body.setLineage(lineage);
+        body.setSize(size);
+        return body;
+    }
+
+    private void storeNightElf() {
+        pc.setClazz("ranger");
+        pc.setSpecies("Elf");
+        pc.setSpeciesSource("World of Warcraft");
+        pc.setLineage("Night Elf");
+        pc.setSize("Medium");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void updatePC_keepsTheSpeciesOrigin_whenTheBodyOmitsIt_andTheSpeciesIsUnchanged() {
+        storeNightElf();
+        PC incoming = speciesBody("Elf", null, null, null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpeciesSource()).isEqualTo("World of Warcraft");
+        assertThat(saved.getLineage()).isEqualTo("Night Elf");
+        assertThat(saved.getSize()).isEqualTo("Medium");
+    }
+
+    @Test
+    void updatePC_takesANewSpeciesOrigin_whenTheBodySendsOne() {
+        storeNightElf();
+        PC incoming = speciesBody("Elf", "World of Warcraft", "Void Elf", "Medium");
+        incoming.setId(1L);
+        assertThat(pcService.updatePC(incoming, ownerId).getLineage()).isEqualTo("Void Elf");
+    }
+
+    @Test
+    void updatePC_clearsTheSpeciesOrigin_whenTheSpeciesChanges_andTheBodyOmitsIt() {
+        storeNightElf();
+        PC incoming = speciesBody("Dwarf", null, null, null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpecies()).isEqualTo("Dwarf");
+        assertThat(saved.getSpeciesSource()).isNull();
+        assertThat(saved.getLineage()).isNull();
+        assertThat(saved.getSize()).isNull();
+    }
+
+    @Test
+    void updatePC_leavesABaseGameCharactersSpeciesOriginEmpty() {
+        pc.setClazz("ranger");
+        pc.setSpecies("Halfling");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = speciesBody("Halfling", null, null, null);
+        incoming.setId(1L);
+        PC saved = pcService.updatePC(incoming, ownerId);
+        assertThat(saved.getSpeciesSource()).isNull();
+        assertThat(saved.getLineage()).isNull();
+        assertThat(saved.getSize()).isNull();
+    }
 }
