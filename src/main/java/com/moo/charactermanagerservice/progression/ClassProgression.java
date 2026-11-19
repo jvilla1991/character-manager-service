@@ -429,8 +429,8 @@ public final class ClassProgression {
     // gains Evoker Spells in place of Draconic Spells (see ClassFeatures' variant features). The WoW
     // Hunter — a ranger with Beast Mastery/Marksmanship/Survival and no hero subclass — may take any
     // ranger subclass; a Beast Mastery hunter gains Pet Specialization in place of Roving, and a
-    // hunter whose subclass is Beast Master may record its companion's pet family (see
-    // PET_FAMILIES). A ranger with the Demon Hunter hero subclass keeps the hero subclass's
+    // Beast Mastery or Survival hunter whose subclass is Beast Master may record its companion's
+    // pet family (see PET_FAMILIES). A ranger with the Demon Hunter hero subclass keeps the hero subclass's
     // Devourer/Havoc/Vengeance list instead.
 
     /**
@@ -603,8 +603,9 @@ public final class ClassProgression {
     }
 
     // ── Hunter pet families (World of Warcraft tabletop module) ─────────────────
-    // A WoW Hunter (ranger + Beast Mastery/Marksmanship/Survival) whose subclass is Beast Master may
-    // record the pet family of its Primal Companion (pc.pet_family, V51). The family decides which
+    // A WoW Hunter with the Beast Mastery or Survival specialization whose subclass is Beast Master
+    // may record the pet family of its Primal Companion (pc.pet_family, V51). A Marksmanship hunter
+    // keeps no pet (the module's pets belong to Beast Mastery and Survival hunters). The family decides which
     // pet specialization (Cunning/Ferocity/Tenacity) a Beast Mastery hunter's Pet Specialization
     // feature uses; that mapping is presentation and lives in the frontend.
 
@@ -622,14 +623,18 @@ public final class ClassProgression {
         return name != null && PET_FAMILIES.contains(name);
     }
 
+    /** The WoW Hunter specializations whose Beast Master keeps a pet (exact, case-sensitive). */
+    public static final List<String> PET_SPECIALIZATIONS = List.of("Beast Mastery", "Survival");
+
     /**
-     * Whether a PC may record a pet family: only a WoW Hunter (a ranger whose specialization is one
-     * of the ranger's {@link ClassSpecializations} values — never a Demon Hunter) whose subclass is
+     * Whether a PC may record a pet family: only a WoW Hunter (a ranger — never a Demon Hunter —
+     * whose specialization is one of {@link #PET_SPECIALIZATIONS}) whose subclass is
      * {@value #BEAST_MASTER} (case-insensitive).
      */
     public static boolean petFamilyAllowed(String clazz, String subclass, String specialization) {
         return clazz != null && "ranger".equals(clazz.trim().toLowerCase())
                 && isClassSpecialization(clazz, specialization)
+                && PET_SPECIALIZATIONS.contains(specialization)
                 && subclass != null && BEAST_MASTER.equalsIgnoreCase(subclass.trim());
     }
 

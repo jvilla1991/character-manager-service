@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.SetPetRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
@@ -376,5 +377,20 @@ class PCControllerTest {
         assertThatThrownBy(() -> pcController.deletePC(1L, auth))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(403));
+    }
+
+    // --- PUT /{id}/pet ---
+
+    @Test
+    void setPetFamily_delegatesTheFamily_andANullToClear() {
+        when(pcService.setPetFamily(1L, "Wolf", ownerId)).thenReturn(pc);
+        ResponseEntity<PC> set = pcController.setPetFamily(1L, new SetPetRequest("Wolf"), auth);
+        assertThat(set.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(set.getBody()).isSameAs(pc);
+
+        when(pcService.setPetFamily(1L, null, ownerId)).thenReturn(pc);
+        assertThat(pcController.setPetFamily(1L, new SetPetRequest(null), auth).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+        verify(pcService).setPetFamily(1L, null, ownerId);
     }
 }
