@@ -26,6 +26,12 @@ public record LongRestView(
         List<ReadinessView> readiness,
         LongRestChoices myChoices
 ) {
+    /**
+     * {@code clazz} / {@code subclass} / {@code specialization} / {@code level}
+     * let a client name the hero's class the way the sheet does (a Paladin with
+     * the Oath of the Ebon Blade is a Death Knight).
+     */
     public record ReadinessView(Long participantId, Long pcId, String displayName,
-                                boolean ready, boolean cannotRest) {}
+                                boolean ready, boolean cannotRest,
+                                String clazz, String subclass, String specialization, Short level) {}
 }

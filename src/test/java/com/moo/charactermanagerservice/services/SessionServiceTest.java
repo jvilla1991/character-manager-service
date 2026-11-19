@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.LongRestChoices;
+import com.moo.charactermanagerservice.dto.LongRestView;
+import com.moo.charactermanagerservice.dto.SetTimeRequest;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -1820,7 +1822,8 @@ class SessionServiceTest {
         sessionService.finishLongRest(1L, dmId);
 
         assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"noon\"");
-        verify(campaignRepository, never()).save(any());
+        // The campaign is still saved: it remembers when the rest finished.
+        verify(campaignRepository).save(campaign);
     }
 
     @Test
@@ -2281,6 +2284,220 @@ class SessionServiceTest {
 
         assertThat(state.longRest()).isNull();
         assertThat(mine.getSpells()).contains("{\"name\":\"Command\",\"lvl\":1,\"prepared\":true}");
+    }
+
+    // --- one long rest every 24 hours (campaign clock) ---
+
+    private static final String NOON = "{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}";
+    private static final String MORNING = "{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"morning\"}";
+
+    @Test
+    void finishLongRest_remembersWhenItFinished_afterTheClockMoved() {
+        campaign.setGameTime(NOON);
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.finishLongRest(1L, dmId); // clock on: walks to the next morning
+
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        assertThat(state.longRestAvailable()).isFalse();
+        assertThat(state.longRestWait().finishedTimeOfDay()).isEqualTo("morning");
+        assertThat(state.longRestWait().availableTimeOfDay()).isEqualTo("night");
+        assertThat(state.longRestWait().segmentsLeft()).isEqualTo(2);
+        assertThat(state.longRestWait().reason())
+                .isEqualTo("The party finished a long rest this morning. The next one can start tonight.");
+        verify(campaignRepository).save(campaign);
+    }
+
+    @Test
+    void finishLongRest_clockOff_remembersTheSegmentItFinishedIn() {
+        campaign.setGameTime(NOON);
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"noon\",\"segmentsSince\":0}");
+    }
+
+    @Test
+    void finishLongRest_onAClockNobodySet_keepsNoRecord_soThereIsNoLimit() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra")); // clock never set
+        session.setLongRestAdvanceClock(false);
+
+        SessionStateView state = sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getLastLongRest()).isNull();
+        assertThat(state.longRestAvailable()).isTrue();
+        assertThat(state.longRestWait()).isNull();
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void finishLongRest_thatStartsTheClock_countsFromThatMorning() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra")); // clock never set, advance on
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+    }
+
+    @Test
+    void interruptLongRest_doesNotCount() {
+        campaign.setGameTime(NOON);
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.interruptLongRest(1L, dmId);
+
+        assertThat(campaign.getLastLongRest()).isNull();
+        assertThat(state.longRestAvailable()).isTrue();
+    }
+
+    @Test
+    void openLongRest_throws409_withTheReason_insideTheWait() {
+        campaign.setGameTime(MORNING);
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.openLongRest(1L, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409))
+                .hasMessageContaining("The party finished a long rest this morning. The next one can start tonight.");
+        assertThat(Boolean.TRUE.equals(session.getLongRestOpen())).isFalse();
+    }
+
+    @Test
+    void openLongRest_isAllowedAgain_onceTwoSegmentsHavePassed() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"night\"}");
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":2}");
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any())).thenReturn(List.of(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra")));
+
+        SessionStateView state = sessionService.openLongRest(1L, null, dmId);
+
+        assertThat(state.longRest()).isNotNull();
+        assertThat(state.longRestAvailable()).isTrue();
+    }
+
+    @Test
+    void initiateRestVote_long_throws409_insideTheWait_butAShortRestIsNeverLimited() {
+        armRestVote();
+        campaign.setGameTime(MORNING);
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":1}");
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.LONG, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409))
+                .hasMessageContaining("The next one can start");
+        verify(restVoteRepository, never()).save(any());
+
+        SessionStateView state = sessionService.initiateRestVote(1L, RestType.SHORT, playerId);
+        assertThat(state.restVote().restType()).isEqualTo("SHORT");
+    }
+
+    @Test
+    void advanceTime_countsTowardTheWait() {
+        campaign.setGameTime(MORNING);
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        SessionStateView noon = sessionService.advanceTime(1L, dmId);
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"morning\",\"segmentsSince\":1}");
+        assertThat(noon.longRestAvailable()).isFalse();
+        assertThat(noon.longRestWait().segmentsLeft()).isEqualTo(1);
+
+        SessionStateView night = sessionService.advanceTime(1L, dmId);
+        assertThat(night.longRestAvailable()).isTrue();
+        assertThat(night.longRestWait()).isNull();
+    }
+
+    @Test
+    void advanceTime_leavesACampaignWithNoRecordAlone() {
+        campaign.setGameTime(MORNING);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        sessionService.advanceTime(1L, dmId);
+
+        assertThat(campaign.getLastLongRest()).isNull();
+    }
+
+    @Test
+    void setTime_movingTheTimeOfDayForward_countsThoseSegments() {
+        campaign.setGameTime(MORNING);
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        SessionStateView state = sessionService.setTime(1L,
+                new SetTimeRequest("1", "1", "1", "night", null, null), dmId); // morning → night: two segments
+
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"morning\",\"segmentsSince\":2}");
+        assertThat(state.longRestAvailable()).isTrue();
+    }
+
+    @Test
+    void setTime_changingOnlyTheDate_leavesTheWaitWhereItWas() {
+        // The DM relabels the new day right after a rest: that is not time passing.
+        campaign.setGameTime(MORNING);
+        campaign.setLastLongRest("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        SessionStateView state = sessionService.setTime(1L,
+                new SetTimeRequest("1492 DR", "Hammer", "4th", "morning", null, null), dmId);
+
+        assertThat(campaign.getLastLongRest()).isEqualTo("{\"timeOfDay\":\"morning\",\"segmentsSince\":0}");
+        assertThat(state.longRestAvailable()).isFalse();
+    }
+
+    // --- Death Knight must choose the rune's weapon to ready ---
+
+    @Test
+    void ready_throws400_forADeathKnightWithAMeleeWeapon_noRuneOnOne_andNoChoice() {
+        List<SessionParticipant> party = armLongRest(tiredDeathKnight("Blood"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, null, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Choose the weapon that carries Gorath's rune before readying");
+        assertThat(Boolean.TRUE.equals(party.get(0).getLongRestReady())).isFalse();
+    }
+
+    @Test
+    void ready_isFine_forADeathKnightWhoseRuneIsAlreadyOnAWeapon_orWhoHasNoMeleeWeapon() {
+        PC inscribed = tiredDeathKnight("Blood");
+        inscribed.setRuneWeapon("Greatsword");
+        List<SessionParticipant> party = armLongRest(inscribed, tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+        assertThat(party.get(0).getLongRestReady()).isTrue();
+
+        PC unarmed = tiredDeathKnight("Blood");
+        unarmed.setInventory("[]");
+        List<SessionParticipant> second = armLongRest(unarmed, tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+        assertThat(second.get(0).getLongRestReady()).isTrue();
+    }
+
+    @Test
+    void unready_isNeverBlockedByTheRuneRule() {
+        List<SessionParticipant> party = armLongRest(tiredDeathKnight("Blood"), tiredPc(8L, "Lyra"));
+
+        sessionService.setLongRestReady(1L, 7L, false, null, playerId);
+
+        assertThat(Boolean.TRUE.equals(party.get(0).getLongRestReady())).isFalse();
+    }
+
+    @Test
+    void readiness_carriesWhatTheClientNeedsToNameTheHerosClass() {
+        armLongRest(tiredDeathKnight("Frost"), tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.getState(1L, dmId, null);
+
+        LongRestView.ReadinessView knight = state.longRest().readiness().get(0);
+        assertThat(knight.clazz()).isEqualTo("Paladin");
+        assertThat(knight.subclass()).isEqualTo("Oath of the Ebon Blade");
+        assertThat(knight.specialization()).isEqualTo("Frost");
+        assertThat(knight.level()).isEqualTo((short) 5);
     }
 
     // --- rest vote: rest type ---

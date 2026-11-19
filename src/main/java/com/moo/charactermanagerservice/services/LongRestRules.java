@@ -13,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -197,6 +198,48 @@ final class LongRestRules {
         return String.join("; ", parts);
     }
 
+    /**
+     * Prepared spells change during a long rest, so an owner's whole-character
+     * save must not move them: every leveled spell that was already on the
+     * stored sheet keeps its stored {@code prepared} flag (or keeps having
+     * none), whatever the body says. A spell that is new in the body — learned
+     * or granted since — keeps the flag it arrives with, and a spell the body
+     * drops is simply gone. Nothing is rejected, like the other server-owned
+     * fields. Mutates {@code incoming}.
+     */
+    static void keepStoredPreparedFlags(PC incoming, PC existing) {
+        Map<String, Map<String, Object>> stored = new LinkedHashMap<>();
+        for (Map<String, Object> spell : JSON.parse(existing.getSpells())) {
+            if (isLeveled(spell)) {
+                stored.putIfAbsent(key(spellName(spell)), spell);
+            }
+        }
+        if (stored.isEmpty() || incoming.getSpells() == null) {
+            return;
+        }
+        List<Map<String, Object>> spells = JSON.parse(incoming.getSpells());
+        boolean changed = false;
+        for (Map<String, Object> spell : spells) {
+            Map<String, Object> was = isLeveled(spell) ? stored.get(key(spellName(spell))) : null;
+            if (was == null) {
+                continue;
+            }
+            if (was.containsKey("prepared")) {
+                if (!java.util.Objects.equals(was.get("prepared"), spell.get("prepared"))
+                        || !spell.containsKey("prepared")) {
+                    spell.put("prepared", was.get("prepared"));
+                    changed = true;
+                }
+            } else if (spell.containsKey("prepared")) {
+                spell.remove("prepared");
+                changed = true;
+            }
+        }
+        if (changed) {
+            incoming.setSpells(JSON.write(spells));
+        }
+    }
+
     // ── Death Knight: Runeforging ──────────────────────────────────────────────
 
     /** A Death Knight who has Runeforging: Paladin + Oath of the Ebon Blade, level 3 or higher. */
@@ -207,14 +250,28 @@ final class LongRestRules {
                 && pc.getLevel() != null && pc.getLevel() >= 3;
     }
 
-    // A weapon the sheet cannot swing in melee. The hero's own weapon entries
-    // carry no melee/ranged flag (only the shop catalog does), so this reads
-    // what they do carry: the Ammunition property, or a telling name. The
-    // client applies the same test (utils/rune-weapon.ts).
+    // Fallback for a weapon the catalog does not know (a custom or renamed
+    // weapon, a free-text entry like "Handaxes (4)"): read what the entry does
+    // carry — the Ammunition property, or a telling name. The client applies
+    // the same two steps (utils/rune-weapon.ts).
     private static final Pattern RANGED_NAME = Pattern.compile(
             "(?i)(bow\\b|\\bsling\\b|\\bdarts?\\b|\\bblowgun\\b|\\bmusket\\b|\\bpistol\\b|\\bnet\\b)");
 
     static boolean isRanged(String name, Object properties) {
+        return isRanged(name, null, properties);
+    }
+
+    /**
+     * Whether a weapon on a sheet is ranged. A catalog weapon (matched by its
+     * catalog key, else by its exact name) answers from the catalog's own
+     * melee/ranged data ({@link WeaponCatalog}); anything else falls back to
+     * the Ammunition property and the name.
+     */
+    static boolean isRanged(String name, String catalogKey, Object properties) {
+        Optional<Boolean> known = WeaponCatalog.ranged(catalogKey, name);
+        if (known.isPresent()) {
+            return known.get();
+        }
         if (properties instanceof List<?> list) {
             for (Object p : list) {
                 if (p != null && p.toString().trim().toLowerCase(Locale.ROOT).startsWith("ammunition")) {
@@ -236,7 +293,7 @@ final class LongRestRules {
             String name = text(item.get("name"));
             if (name == null || !"weapon".equalsIgnoreCase(text(item.get("category")))
                     || "dropped".equalsIgnoreCase(text(item.get("status")))
-                    || isRanged(name, item.get("properties"))) {
+                    || isRanged(name, text(item.get("catalogKey")), item.get("properties"))) {
                 continue;
             }
             byKey.putIfAbsent(key(name), name);
@@ -277,6 +334,20 @@ final class LongRestRules {
         }
         if (matchMeleeWeapon(pc, requested) == null) {
             throw bad(requested.trim() + " is not a melee weapon " + pc.getName() + " has");
+        }
+    }
+
+    /**
+     * A Death Knight who has a melee weapon but no rune on one must choose the
+     * rune's weapon as they ready up; 400 otherwise. Checked at Ready only —
+     * the client blocks the button the same way.
+     */
+    static void requireRuneChoice(PC pc, LongRestChoices choices) {
+        if (!isRuneforger(pc) || meleeWeapons(pc).isEmpty() || runeWeaponOf(pc) != null) {
+            return;
+        }
+        if (choices == null || choices.runeWeapon() == null || choices.runeWeapon().isBlank()) {
+            throw bad("Choose the weapon that carries " + pc.getName() + "'s rune before readying");
         }
     }
 

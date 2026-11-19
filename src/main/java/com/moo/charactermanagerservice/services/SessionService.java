@@ -10,6 +10,7 @@ import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.LongRestResultView;
 import com.moo.charactermanagerservice.dto.LongRestView;
+import com.moo.charactermanagerservice.dto.LongRestWaitView;
 import com.moo.charactermanagerservice.dto.LootResultView;
 import com.moo.charactermanagerservice.dto.RestVoteView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
@@ -817,6 +818,11 @@ public class SessionService {
                 json.parseObject(campaign.getGameTime()), campaignService.parseWeekDays(campaign));
         campaign.setGameTime(json.writeObject(advanced));
         String segment = String.valueOf(advanced.get("timeOfDay"));
+        // One more segment since the last long rest finished (if there was one).
+        Map<String, Object> lastLongRest = json.parseObject(campaign.getLastLongRest());
+        if (!lastLongRest.isEmpty()) {
+            campaign.setLastLongRest(json.writeObject(LongRestClock.tick(lastLongRest)));
+        }
         // Survival campaigns: each member auto-eats/drinks their supplies as
         // time passes (hunger/thirst rise only when the ration/waterskin runs
         // out); fatigue always climbs on its segments.
@@ -948,11 +954,34 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "A long rest is already in progress");
         }
+        assertLongRestNotTooSoon(session);
 
         openLongRestPhase(session, undisturbed);
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /**
+     * What the party must still wait for before another long rest may start
+     * (one every 24 hours on the campaign clock — see {@link LongRestClock}),
+     * or null when one may start now.
+     */
+    private LongRestWaitView longRestWait(Campaign campaign) {
+        String storedTime = campaign.getGameTime();
+        if (storedTime == null || storedTime.isBlank()) {
+            return null; // no clock, nothing to count on
+        }
+        String now = String.valueOf(GameClock.normalize(json.parseObject(storedTime)).get("timeOfDay"));
+        return LongRestClock.waitFor(json.parseObject(campaign.getLastLongRest()), now);
+    }
+
+    /** 409, with the reason in the clock's own words, while the 24-hour wait is running. */
+    private void assertLongRestNotTooSoon(CombatSession session) {
+        LongRestWaitView wait = longRestWait(campaignService.findById(session.getCampaignId()));
+        if (wait != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, wait.reason());
+        }
     }
 
     /**
@@ -1022,6 +1051,7 @@ public class SessionService {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found");
             }
             LongRestRules.validate(pc, choices);
+            LongRestRules.requireRuneChoice(pc, choices);
             pending = LongRestRules.serialize(choices);
         }
 
@@ -1211,6 +1241,16 @@ public class SessionService {
         if (advanceClock) {
             advanceClockToNextMorning(campaign);
         }
+        // Remember when this rest finished, for the 24-hour wait. A campaign
+        // whose clock was never set (and was not started by this rest) has
+        // nothing to count on, so it gets no record and no limit.
+        String clockNow = campaign.getGameTime();
+        if (clockNow != null && !clockNow.isBlank()) {
+            String finishedAt = String.valueOf(
+                    GameClock.normalize(json.parseObject(clockNow)).get("timeOfDay"));
+            campaign.setLastLongRest(json.writeObject(LongRestClock.finished(finishedAt)));
+            campaignRepository.save(campaign);
+        }
 
         Map<Long, SessionParticipant> seatByPc = new LinkedHashMap<>();
         for (SessionParticipant p : participants) {
@@ -1344,7 +1384,7 @@ public class SessionService {
                 }
             }
         }
-        campaignRepository.save(campaign);
+        // The caller saves the campaign, together with the finished-rest record.
     }
 
     /** True when any spell level has an expended slot. */
@@ -1392,7 +1432,8 @@ public class SessionService {
                 }
             }
             readiness.add(new LongRestView.ReadinessView(
-                    p.getId(), pc.getId(), pc.getName(), isReady, down));
+                    p.getId(), pc.getId(), pc.getName(), isReady, down,
+                    pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), pc.getLevel()));
         }
         return new LongRestView(
                 !Boolean.FALSE.equals(session.getLongRestAdvanceClock()),
@@ -1535,6 +1576,9 @@ public class SessionService {
         if (restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "A rest vote is already in progress");
+        }
+        if (type == RestType.LONG) {
+            assertLongRestNotTooSoon(session); // short rests are never limited
         }
 
         List<SessionParticipant> participants =
@@ -1857,6 +1901,21 @@ public class SessionService {
                     weekdaysSeen.add(newWeekday);
                 }
             }
+        }
+
+        // A hand-set clock still counts toward the 24-hour long rest wait: moving
+        // the time of day forward passes that many segments (morning → night is
+        // two). The date labels are free text and say nothing about distance,
+        // so a change of date alone leaves the wait where it was.
+        Map<String, Object> lastLongRest = json.parseObject(campaign.getLastLongRest());
+        if (!lastLongRest.isEmpty()) {
+            int from = GameClock.SEGMENTS.indexOf(String.valueOf(current.get("timeOfDay")));
+            int to = GameClock.SEGMENTS.indexOf(request.timeOfDay());
+            int forward = from < 0 ? 0 : Math.floorMod(to - from, GameClock.SEGMENTS.size());
+            for (int i = 0; i < forward; i++) {
+                lastLongRest = LongRestClock.tick(lastLongRest);
+            }
+            campaign.setLastLongRest(json.writeObject(lastLongRest));
         }
 
         campaign.setGameTime(json.writeObject(GameClock.of(
@@ -2492,6 +2551,9 @@ public class SessionService {
                         r.getCreatedAt() == null ? null : r.getCreatedAt().toString()))
                 .orElse(null);
 
+        // One long rest every 24 hours, counted on the campaign clock.
+        LongRestWaitView longRestWait = longRestWait(campaign);
+
         return new SessionStateView(
                 session.getId(),
                 session.getCampaignId(),
@@ -2520,7 +2582,9 @@ public class SessionService {
                 restVote,
                 lootResult,
                 longRest,
-                longRestResult
+                longRestResult,
+                longRestWait == null,
+                longRestWait
         );
     }
 

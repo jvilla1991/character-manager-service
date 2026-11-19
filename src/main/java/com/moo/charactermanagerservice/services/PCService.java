@@ -91,6 +91,10 @@ public class PCService {
         // character in no campaign has no DM, so its owner still manages it.
         if (existing.getCampaignId() != null) {
             pc.setExhaustion(existing.getExhaustion());
+            // Same idea for prepared spells: in a campaign they change during a
+            // long rest (or by the DM), so an owner's update keeps the stored
+            // flags. Spells that are new in the body keep the flag they bring.
+            LongRestRules.keepStoredPreparedFlags(pc, existing);
         }
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
