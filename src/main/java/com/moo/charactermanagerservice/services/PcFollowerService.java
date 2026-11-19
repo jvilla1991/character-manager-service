@@ -25,6 +25,11 @@ import java.util.UUID;
  * follower; the owning player and that DM may both read the list and update a
  * follower (HP, spell slots, gear change as it adventures). The stat block is
  * an opaque JSON object — validated only for being an object of sane size.
+ *
+ * <p>A follower rides in the live session snapshot under its owner (see
+ * {@code FollowerCombatantView}), so every write here also wakes the PC's live
+ * session — otherwise the 2s poll would keep answering "nothing changed" and
+ * the table would look at a stale follower until something else happened.
  */
 @Service
 public class PcFollowerService {
@@ -60,7 +65,7 @@ public class PcFollowerService {
     /** The DM of the PC's campaign grants it a follower. */
     @Transactional
     public FollowerView grant(Long pcId, FollowerRequest request, UUID dmUserId) {
-        pcService.findPCByIdForDm(pcId, dmUserId); // 403 unless the caller runs the PC's campaign
+        PC pc = pcService.findPCByIdForDm(pcId, dmUserId); // 403 unless the caller runs the PC's campaign
         String name = requireName(request == null ? null : request.name());
         String statBlock = requireStatBlock(request == null ? null : request.statBlock());
         if (followerRepository.countByPcId(pcId) >= MAX_FOLLOWERS_PER_PC) {
@@ -76,6 +81,7 @@ public class PcFollowerService {
         PcFollower saved = followerRepository.save(follower);
 
         activityLogService.log(pcId, PcActivityType.DM_EDIT, "DM granted a follower: " + name, dmUserId);
+        pcService.bumpLiveSessionVersion(pc);
         return toView(saved);
     }
 
@@ -86,7 +92,7 @@ public class PcFollowerService {
      */
     @Transactional
     public FollowerView update(Long pcId, Long followerId, FollowerRequest request, UUID userId) {
-        assertOwnerOrCampaignDm(pcId, userId);
+        PC pc = assertOwnerOrCampaignDm(pcId, userId);
         PcFollower follower = findFollower(pcId, followerId);
         if (request == null || (request.name() == null && request.statBlock() == null)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name or statBlock is required");
@@ -97,15 +103,18 @@ public class PcFollowerService {
         if (request.statBlock() != null) {
             follower.setStatBlock(requireStatBlock(request.statBlock()));
         }
-        return toView(followerRepository.save(follower));
+        PcFollower saved = followerRepository.save(follower);
+        pcService.bumpLiveSessionVersion(pc);
+        return toView(saved);
     }
 
     /** The DM of the PC's campaign dismisses (permanently removes) a follower. */
     @Transactional
     public void dismiss(Long pcId, Long followerId, UUID dmUserId) {
-        pcService.findPCByIdForDm(pcId, dmUserId);
+        PC pc = pcService.findPCByIdForDm(pcId, dmUserId);
         PcFollower follower = findFollower(pcId, followerId);
         followerRepository.delete(follower);
+        pcService.bumpLiveSessionVersion(pc);
         activityLogService.log(pcId, PcActivityType.DM_EDIT,
                 "DM dismissed the follower " + follower.getName(), dmUserId);
     }
@@ -113,11 +122,12 @@ public class PcFollowerService {
     // --- helpers -----------------------------------------------------------
 
     /** Owner passes outright; anyone else must be the DM of the PC's campaign. */
-    private void assertOwnerOrCampaignDm(Long pcId, UUID userId) {
+    private PC assertOwnerOrCampaignDm(Long pcId, UUID userId) {
         PC pc = pcService.findPCById(pcId);
         if (!userId.equals(pc.getUserId())) {
             pcService.findPCByIdForDm(pcId, userId);
         }
+        return pc;
     }
 
     /** The follower, but only if it belongs to this PC — otherwise 404 (no leak across PCs). */

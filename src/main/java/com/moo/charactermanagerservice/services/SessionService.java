@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
+import com.moo.charactermanagerservice.dto.FollowerCombatantView;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.LongRestChoices;
@@ -24,6 +25,7 @@ import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.PcFollower;
 import com.moo.charactermanagerservice.models.RestType;
 import com.moo.charactermanagerservice.models.RestVoteStatus;
 import com.moo.charactermanagerservice.models.SessionLongRestResult;
@@ -51,6 +53,7 @@ import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.PcFollowerRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -117,6 +120,7 @@ public class SessionService {
     private final SessionRestVoteBallotRepository restVoteBallotRepository;
     private final SessionLootResultRepository lootResultRepository;
     private final SessionLongRestResultRepository longRestResultRepository;
+    private final PcFollowerRepository followerRepository;
     private final PcJsonColumns json;
 
     /**
@@ -146,6 +150,7 @@ public class SessionService {
                           SessionRestVoteBallotRepository restVoteBallotRepository,
                           SessionLootResultRepository lootResultRepository,
                           SessionLongRestResultRepository longRestResultRepository,
+                          PcFollowerRepository followerRepository,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -165,6 +170,7 @@ public class SessionService {
         this.restVoteBallotRepository = restVoteBallotRepository;
         this.lootResultRepository = lootResultRepository;
         this.longRestResultRepository = longRestResultRepository;
+        this.followerRepository = followerRepository;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -575,6 +581,32 @@ public class SessionService {
     }
 
     /**
+     * The followers of every seated PC, grouped by owner and oldest first —
+     * loaded in ONE query however many heroes are seated. Followers appear
+     * automatically with their owner: there is no opt-in and no seat of their
+     * own. A stat block that cannot be read yields a bare name-only entry
+     * rather than failing the snapshot.
+     */
+    private Map<Long, List<FollowerCombatantView>> loadFollowers(List<SessionParticipant> participants) {
+        List<Long> pcIds = participants.stream()
+                .map(SessionParticipant::getPcId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (pcIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, List<FollowerCombatantView>> byPcId = new LinkedHashMap<>();
+        for (PcFollower follower : followerRepository.findByPcIdInOrderByIdAsc(pcIds)) {
+            if (follower.getPcId() == null || follower.getId() == null) {
+                continue;
+            }
+            byPcId.computeIfAbsent(follower.getPcId(), id -> new ArrayList<>())
+                    .add(FollowerCombatantView.from(follower, json.parseObject(follower.getStatBlock())));
+        }
+        return byPcId;
+    }
+
+    /**
      * Apply damage (positive amount) or healing (negative amount) to a combatant.
      * DM only. For a PC this writes through to the canonical pc row so the change
      * persists after the session ends — temporary HP absorbs damage first, and
@@ -664,8 +696,15 @@ public class SessionService {
      * negative is healing (current capped at max, temp untouched).
      */
     private int[] applyHpDelta(Short curShort, Short tempShort, Short maxShort, int amount) {
-        int cur = curShort == null ? 0 : curShort;
-        int temp = tempShort == null ? 0 : tempShort;
+        return applyHpDelta(curShort == null ? null : Integer.valueOf(curShort),
+                tempShort == null ? null : Integer.valueOf(tempShort),
+                maxShort == null ? null : Integer.valueOf(maxShort), amount);
+    }
+
+    /** The one HP rule, shared by PCs, enemies and followers — see the Short overload. */
+    private int[] applyHpDelta(Integer curBoxed, Integer tempBoxed, Integer max, int amount) {
+        int cur = curBoxed == null ? 0 : curBoxed;
+        int temp = tempBoxed == null ? 0 : tempBoxed;
 
         if (amount > 0) {
             int absorbed = Math.min(temp, amount);
@@ -673,11 +712,65 @@ public class SessionService {
             cur = Math.max(0, cur - (amount - absorbed));
         } else if (amount < 0) {
             cur += -amount;
-            if (maxShort != null) {
-                cur = Math.min(cur, maxShort);
+            if (max != null) {
+                cur = Math.min(cur, max);
             }
         }
         return new int[]{cur, temp};
+    }
+
+    /**
+     * Apply damage (positive amount) or healing (negative amount) to a follower
+     * of a seated PC. DM only. Same HP rule as {@link #applyDamage} — temporary
+     * HP absorbs damage first, current HP floors at 0, healing caps at max — but
+     * nothing else a PC or enemy gets: a follower at 0 stays listed (no removal,
+     * no death saves, no fatigue).
+     *
+     * <p>The new HP is written back into the follower's saved stat block (only
+     * {@code hp.cur} and {@code hp.temp} change; every other field is kept), so
+     * the follower's sheet and the tracker never disagree. The row is locked
+     * for the read-modify-write so a concurrent sheet save cannot be lost.
+     *
+     * <p>404 when the follower does not exist or its PC is not seated in this
+     * session — a DM may only reach followers through a table they are running.
+     */
+    @Transactional
+    public SessionStateView applyFollowerDamage(Long sessionId, Long followerId, Integer amount, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (amount == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "amount is required");
+        }
+
+        PcFollower follower = followerRepository.findByIdForUpdate(followerId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Follower not found with id " + followerId));
+        if (follower.getPcId() == null
+                || participantRepository.findBySessionIdAndPcId(sessionId, follower.getPcId()).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Follower's character is not seated in this session");
+        }
+
+        Map<String, Object> statBlock = json.parseObject(follower.getStatBlock());
+        Map<String, Object> hp = new LinkedHashMap<>();
+        if (statBlock.get("hp") instanceof Map<?, ?> stored) {
+            stored.forEach((key, value) -> hp.put(String.valueOf(key), value));
+        }
+        int[] next = applyHpDelta(FollowerCombatantView.whole(hp.get("cur")),
+                FollowerCombatantView.whole(hp.get("temp")),
+                FollowerCombatantView.whole(hp.get("max")), amount);
+        hp.put("cur", next[0]);
+        hp.put("temp", next[1]);
+        statBlock.put("hp", hp);
+        follower.setStatBlock(json.writeObject(statBlock));
+        followerRepository.save(follower);
+
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
     }
 
     /**
@@ -2452,6 +2545,7 @@ public class SessionService {
                                         List<SessionParticipant> participants,
                                         UUID requesterId) {
         Map<Long, PC> pcsById = loadPcs(participants);
+        Map<Long, List<FollowerCombatantView>> followersByPcId = loadFollowers(participants);
 
         boolean isDm = requesterId.equals(session.getDmUserId());
         boolean active = session.getStatus() == SessionStatus.ACTIVE;
@@ -2480,6 +2574,11 @@ public class SessionService {
             boolean ownedByMe = requesterId.equals(p.getOwnerUserId());
             boolean currentTurn = p.getId().equals(activeIdForViews);
             ParticipantView view = ParticipantView.from(p, pc, ownedByMe, currentTurn);
+            // Followers ride under their owner's row. PC rows are never hidden
+            // from anyone, so neither are the followers standing beside them.
+            if (!view.npc()) {
+                view = view.withFollowers(followersByPcId.get(p.getPcId()));
+            }
             // A player's enemy rows never carry AC — a monster's armor class is
             // the DM's information in every visibility mode. On top of that,
             // "see enemies, hide health" also strips the HP fields. The DM

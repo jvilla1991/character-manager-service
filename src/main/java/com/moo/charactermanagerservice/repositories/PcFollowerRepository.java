@@ -15,4 +15,7 @@ public interface PcFollowerRepository extends JpaRepository<PcFollower, Long> {
     List<PcFollower> findByPcIdOrderByCreatedAtAscIdAsc(Long pcId);
 
     long countByPcId(Long pcId);
+
+    /** Every follower of the given characters in one query, oldest (lowest id) first. */
+    List<PcFollower> findByPcIdInOrderByIdAsc(java.util.Collection<Long> pcIds);
 }
