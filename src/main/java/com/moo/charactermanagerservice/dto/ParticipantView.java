@@ -3,6 +3,8 @@ package com.moo.charactermanagerservice.dto;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 
+import java.util.List;
+
 /**
  * One combatant as seen in the live session snapshot. Field names are flat and
  * mirror the PC JSON (hpCurrent/hpMax/hpTemp, conditions as a JSON string) so the
@@ -11,6 +13,10 @@ import com.moo.charactermanagerservice.models.SessionParticipant;
  *
  * <p>For a PC combatant, HP/conditions are read from the canonical {@code pc}
  * row; for an NPC they come from the participant's own {@code npc*} columns.
+ *
+ * <p>{@code followers} are the PC's followers, oldest first — they share their
+ * owner's turn, so they ride nested here instead of holding rows of their own.
+ * Never null: an enemy row, or a PC with no followers, carries an empty list.
  */
 public record ParticipantView(
         Long participantId,
@@ -37,7 +43,8 @@ public record ParticipantView(
         Short deathSaveFailures,
         Short hitDiceUsed,
         Short inspirationPips,
-        Boolean heroicInspiration
+        Boolean heroicInspiration,
+        List<FollowerCombatantView> followers
 ) {
     /**
      * Build the view for a participant. {@code pc} is the canonical character for
@@ -59,7 +66,8 @@ public record ParticipantView(
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), p.getNpcArmorClass(),
                     p.getNpcConditions(), null, null,
                     p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
-                    null, null, null
+                    null, null, null,
+                    List.of()
             );
         }
 
@@ -71,7 +79,8 @@ public record ParticipantView(
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
                 pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
-                pc.getHitDiceUsed(), pc.getInspirationPips(), pc.getHeroicInspiration()
+                pc.getHitDiceUsed(), pc.getInspirationPips(), pc.getHeroicInspiration(),
+                List.of()
         );
     }
 
@@ -89,7 +98,8 @@ public record ParticipantView(
                 null, null, null, ac,
                 conditions, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures,
-                hitDiceUsed, inspirationPips, heroicInspiration
+                hitDiceUsed, inspirationPips, heroicInspiration,
+                followers
         );
     }
 
@@ -107,7 +117,22 @@ public record ParticipantView(
                 hpMax, hpCurrent, hpTemp, null,
                 conditions, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures,
-                hitDiceUsed, inspirationPips, heroicInspiration
+                hitDiceUsed, inspirationPips, heroicInspiration,
+                followers
+        );
+    }
+
+    /** A copy carrying this PC's followers (see the class note); null reads as none. */
+    public ParticipantView withFollowers(List<FollowerCombatantView> followers) {
+        return new ParticipantView(
+                participantId, pcId, npc, ownedByMe, currentTurn,
+                name, clazz, level, portraitTint, portraitInitials,
+                initiative, initRolled, orderIndex,
+                hpMax, hpCurrent, hpTemp, ac,
+                conditions, survival, spellSlots,
+                deathSaveSuccesses, deathSaveFailures,
+                hitDiceUsed, inspirationPips, heroicInspiration,
+                followers == null ? List.of() : List.copyOf(followers)
         );
     }
 }
