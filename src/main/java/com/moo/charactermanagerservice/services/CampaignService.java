@@ -273,6 +273,9 @@ public class CampaignService {
         // the week definition has its own endpoint — a body that omits it
         // (every existing client) must not null the column.
         campaign.setWeekDays(existing.getWeekDays());
+        // the long rest record is written only by the session service — a
+        // campaign edit must not clear the 24-hour wait.
+        campaign.setLastLongRest(existing.getLastLongRest());
         return campaignRepository.save(campaign);
     }
 

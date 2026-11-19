@@ -73,6 +73,12 @@ public class Campaign implements Serializable {
     @Column(name = "week_days", columnDefinition = "TEXT")
     private String weekDays;
 
+    // The last FINISHED long rest, for "one long rest every 24 hours" (V54):
+    // {"timeOfDay":"morning","segmentsSince":0}; NULL = no limit. Written only
+    // by the session service (LongRestClock); pinned on campaign updates.
+    @Column(name = "last_long_rest", columnDefinition = "TEXT")
+    private String lastLongRest;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -110,4 +116,5 @@ public class Campaign implements Serializable {
     public void setGameTime(String gameTime) { this.gameTime = gameTime; }
     public void setLocation(String location) { this.location = location; }
     public void setWeekDays(String weekDays) { this.weekDays = weekDays; }
+    public void setLastLongRest(String lastLongRest) { this.lastLongRest = lastLongRest; }
 }

@@ -93,6 +93,12 @@ import java.util.Map;
  * <p>{@code longRestResult} is the latest long rest outcome (or null) —
  * FINISHED or INTERRUPTED — broadcast so every client can announce it once
  * and refresh its sheet. See {@link LongRestResultView}.
+ *
+ * <p>{@code longRestAvailable} / {@code longRestWait} carry the "one long rest
+ * every 24 hours" rule, counted on the campaign clock: available is false, and
+ * the wait says why and until when, while the party must still wait. This is
+ * only that rule — a rest can also be refused for other reasons (an encounter,
+ * a vote in progress). See {@link LongRestWaitView}.
  */
 public record SessionStateView(
         Long sessionId,
@@ -122,5 +128,7 @@ public record SessionStateView(
         RestVoteView restVote,
         LootResultView lootResult,
         LongRestView longRest,
-        LongRestResultView longRestResult
+        LongRestResultView longRestResult,
+        boolean longRestAvailable,
+        LongRestWaitView longRestWait
 ) {}
