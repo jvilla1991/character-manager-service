@@ -228,10 +228,10 @@ class LevelUpServiceTest {
         assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
     }
 
-    // --- half casters (Paladin, Ranger): slots, but no spell choices at level-up ---
+    // --- half casters (Paladin, Ranger): slots and prepared-spell picks at level-up ---
 
     @Test
-    void preview_halfCaster_reportsSlotChanges_butNoSpellChoices() {
+    void preview_halfCaster_reportsSlotChanges_andThePreparedSpellDelta() {
         PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5: the first 2nd-level slots
         paladin.setSubclass("Oath of Devotion");
         paladin.setSpellSlots("{\"1\":{\"max\":3,\"used\":1}}");
@@ -240,11 +240,35 @@ class LevelUpServiceTest {
 
         assertThat(p.currentSpellSlots()).isEqualTo(Map.of(1, 3));
         assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 4, 2, 2));
-        // No cantrip or prepared-spell delta: the level-up offers a half caster no spells.
+        // The class teaches no cantrips; prepared spells go 5 -> 6.
         assertThat(p.currentCantripsKnown()).isZero();
         assertThat(p.newCantripsKnown()).isZero();
-        assertThat(p.currentSpellsKnown()).isZero();
-        assertThat(p.newSpellsKnown()).isZero();
+        assertThat(p.currentSpellsKnown()).isEqualTo(5);
+        assertThat(p.newSpellsKnown()).isEqualTo(6);
+    }
+
+    @Test
+    void preview_halfCaster_preparedSpellDelta_followsThe2024Table() {
+        // New prepared spells gained on reaching each level 2..20 (2024 PHB Paladin / Ranger).
+        int[] gained = {1, 1, 1, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 1, 0, 2, 0, 1, 0};
+        for (String clazz : List.of("Paladin", "Ranger")) {
+            for (int level = 1; level < 20; level++) {
+                LevelUpPreview p = service.preview(pc(clazz, level, 14, 10 * level, 10 * level));
+                assertThat(p.newSpellsKnown() - p.currentSpellsKnown()).as(clazz + " " + level + " -> " + (level + 1))
+                        .isEqualTo(gained[level - 1]);
+            }
+        }
+    }
+
+    @Test
+    void preview_wowVariantsOnHalfCasters_getTheSamePreparedSpellDelta() {
+        // Death Knight and WoW Paladin are stored as paladins; Demon Hunter and WoW Hunter as rangers.
+        for (PC hero : List.of(deathKnight(1), demonHunter(1), wowPaladin(1, "Holy"), hunter(1, null, "Survival"))) {
+            LevelUpPreview p = service.preview(hero);
+            assertThat(p.currentSpellsKnown()).as(hero.getClazz()).isEqualTo(2);
+            assertThat(p.newSpellsKnown()).as(hero.getClazz()).isEqualTo(3);
+            assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 2));
+        }
     }
 
     @Test
@@ -279,10 +303,29 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void applyLevelUp_halfCaster_stillLearnsNoLeveledSpells() {
-        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5
-        paladin.setSubclass("Oath of Devotion");
+    void applyLevelUp_halfCaster_learnsItsNewPreparedSpell() {
+        PC paladin = pc("Paladin", 1, 14, 12, 12); // 1 -> 2: prepared 2 -> 3
+        paladin.setSpells("[{\"lvl\":1,\"name\":\"Bless\"},{\"lvl\":1,\"name\":\"Heroism\"}]");
 
+        service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Cure Wounds")));
+
+        assertThat(paladin.getLevel()).isEqualTo((short) 2);
+        assertThat(paladin.getSpells()).contains("Bless").contains("Heroism").contains("Cure Wounds");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_rejectsMoreSpellsThanTheDelta() {
+        PC ranger = pc("Ranger", 1, 14, 12, 12); // 1 -> 2: one new spell
+        assertThatThrownBy(() -> service.applyLevelUp(ranger, null, null, null,
+                List.of(spell(1, "Cure Wounds"), spell(1, "Goodberry"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("at most 1 new spell");
+        assertThat(ranger.getLevel()).isEqualTo((short) 1);
+
+        // 5 -> 6 has no new prepared spell at all.
+        PC paladin = pc("Paladin", 5, 14, 50, 50);
+        paladin.setSubclass("Oath of Devotion");
         assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Bless"))))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
@@ -325,6 +368,32 @@ class LevelUpServiceTest {
         service.applyLevelUp(fighter);
 
         assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_capsSpellLevelAtItsHighestSlot() {
+        // Paladin 3 -> 4 (an ASI level): still only 1st-level slots, so a 2nd-level spell is refused.
+        PC low = pc("Paladin", 3, 14, 30, 30);
+        low.setSubclass("Oath of Devotion");
+        assertThatThrownBy(() -> service.applyLevelUp(low, null, Map.of("STR", 2), null, List.of(spell(2, "Aid"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("highest spell level");
+
+        // Ranger 4 -> 5: the first 2nd-level slots arrive with the new prepared spell.
+        PC ranger = pc("Ranger", 4, 14, 40, 40);
+        ranger.setSubclass("Hunter");
+        service.applyLevelUp(ranger, null, null, null, List.of(spell(2, "Pass without Trace")));
+        assertThat(ranger.getSpells()).contains("Pass without Trace");
+        assertThat(ranger.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_rejectsACantripWithoutACantripFightingStyle() {
+        PC paladin = pc("Paladin", 1, 14, 12, 12);
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, List.of(spell(0, "Light"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
     // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
@@ -1509,6 +1578,34 @@ class LevelUpServiceTest {
             assertThat(r.getFeatures()).contains("\"name\":\"Druidic Warrior\"").contains("Druid cantrips")
                     .contains("Wisdom");
         }
+    }
+
+    @Test
+    void applyLevelUp_cantripFightingStyle_ridesWithTheLevelTwoPreparedSpell() {
+        // Level 2 gives a half caster one new prepared spell AND the Fighting Style choice: the
+        // style's two cantrips and the spell arrive in the same request.
+        PC paladin = pc("Paladin", 1, 14, 10, 10);
+        paladin.setSpells("[{\"lvl\":1,\"name\":\"Bless\"},{\"lvl\":1,\"name\":\"Heroism\"}]");
+        List<Map<String, Object>> picks = List.of(cantrip("Sacred Flame"), cantrip("Guidance"), spell(1, "Cure Wounds"));
+        service.applyLevelUp(paladin, null, null, null, picks, HpMode.AVERAGE, null, "Blessed Warrior");
+        assertThat(paladin.getLevel()).isEqualTo((short) 2);
+        assertThat(paladin.getSpells()).contains("Bless").contains("Sacred Flame").contains("Guidance").contains("Cure Wounds");
+        assertThat(paladin.getFeatures()).contains("\"name\":\"Blessed Warrior\"");
+
+        PC ranger = pc("Ranger", 1, 14, 10, 10);
+        service.applyLevelUp(ranger, null, null, null,
+                List.of(spell(1, "Goodberry"), cantrip("Druidcraft"), cantrip("Thorn Whip")),
+                HpMode.AVERAGE, null, "Druidic Warrior");
+        assertThat(ranger.getSpells()).contains("Goodberry").contains("Druidcraft").contains("Thorn Whip");
+
+        // The style's cantrip count is still exact, and the spell count still capped.
+        PC tooMany = pc("Paladin", 1, 14, 10, 10);
+        assertThatThrownBy(() -> service.applyLevelUp(tooMany, null, null, null,
+                List.of(cantrip("Sacred Flame"), cantrip("Guidance"), spell(1, "Cure Wounds"), spell(1, "Bless")),
+                HpMode.AVERAGE, null, "Blessed Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(tooMany.getLevel()).isEqualTo((short) 1);
     }
 
     @Test

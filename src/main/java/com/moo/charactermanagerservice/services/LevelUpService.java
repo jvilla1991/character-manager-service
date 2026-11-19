@@ -216,8 +216,8 @@ public class LevelUpService {
         pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
         pc.setProfBonus((short) ClassProgression.proficiencyBonusForLevel(newLevel));
 
-        // Every character with slots, half casters and DM-granted slots included — not
-        // isCaster, which only says whether the level-up offers spell choices.
+        // Every character with slots: the class table (full casters, the warlock and the half
+        // casters) plus any slots the DM granted.
         pc.setSpellSlots(SpellSlotState.rebuild(pc));
         return pc;
     }

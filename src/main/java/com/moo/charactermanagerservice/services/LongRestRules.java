@@ -56,7 +56,7 @@ final class LongRestRules {
     // The 2024 PHB "Prepared Spells" column by class level — the same table as
     // PREPARED_SPELLS in the client's utils/spell-preparation.ts. Kept apart
     // from ClassProgression.preparedSpellsFor on purpose: that one drives the
-    // level-up spell picks and has no half-caster rows.
+    // level-up spell picks, this one the cap on the prepared list.
     private static final Map<String, int[]> PREPARED_CAP = Map.of(
             "bard",     new int[] {4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22},
             "cleric",   new int[] {4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22},
