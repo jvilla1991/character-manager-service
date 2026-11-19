@@ -55,8 +55,26 @@ public record LevelUpPreview(
         boolean fightingStyleDue,
         List<String> fightingStyleOptions,
         String recommendedSubclass,
-        List<String> recommendedFightingStyles
+        List<String> recommendedFightingStyles,
+        List<SpellGrant> alwaysPreparedSpells
 ) {
+    /** Convenience constructor with no always-prepared spells gained this level. */
+    public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
+                          int newHpMax, int currentProfBonus, int newProfBonus,
+                          Map<Integer, Integer> currentSpellSlots, Map<Integer, Integer> newSpellSlots,
+                          boolean subclassDue, List<String> subclassOptions, boolean asiDue,
+                          List<String> featOptions, List<FeatureGain> featuresGained,
+                          int currentCantripsKnown, int newCantripsKnown,
+                          int currentSpellsKnown, int newSpellsKnown,
+                          boolean fightingStyleDue, List<String> fightingStyleOptions,
+                          String recommendedSubclass, List<String> recommendedFightingStyles) {
+        this(currentLevel, newLevel, hitDie, conModifier, hpGained, newHpMax, currentProfBonus,
+                newProfBonus, currentSpellSlots, newSpellSlots, subclassDue, subclassOptions, asiDue,
+                featOptions, featuresGained, currentCantripsKnown, newCantripsKnown,
+                currentSpellsKnown, newSpellsKnown, fightingStyleDue, fightingStyleOptions,
+                recommendedSubclass, recommendedFightingStyles, List.of());
+    }
+
     /** Convenience constructor with no recommended Fighting Styles. */
     public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
                           int newHpMax, int currentProfBonus, int newProfBonus,

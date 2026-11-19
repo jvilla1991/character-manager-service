@@ -4,9 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.SpellGrant;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.ClassSpellGrants;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -106,7 +108,8 @@ public class LevelUpService {
                 fightingStyleDue,
                 fightingStyleOptions,
                 subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null,
-                recommendedFightingStyles
+                recommendedFightingStyles,
+                ClassSpellGrants.grantsAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel)
         );
     }
 
@@ -448,6 +451,13 @@ public class LevelUpService {
      * Warrior, Void Warrior) the request must carry <em>exactly</em> the class's cantrip delta plus
      * the style's extra cantrips — the count is all that is checked (the server has no spell list,
      * so it can't confirm they are Cleric/Druid/Warlock cantrips).
+     *
+     * <p>A spell named by {@link ClassSpellGrants#grantsAt} for this level (a Paladin's Find Steed
+     * at 5) is a class feature's always-prepared spell, not a pick: it is left out of both counts
+     * and the spell-level cap, and saved with {@code alwaysPrepared} and {@code grantedBy} set here,
+     * so it never counts against the prepared-spell limit. If the character already has the spell,
+     * the existing entry is marked instead. The app sends these with the picks (the preview lists
+     * their names); a request without them simply adds none.
      */
     private void applySpellChoices(PC pc, int currentLevel, int newLevel,
                                    List<Map<String, Object>> chosen, String fightingStyle) {
@@ -465,9 +475,13 @@ public class LevelUpService {
         int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
                 - ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel);
 
+        List<SpellGrant> grants = ClassSpellGrants.grantsAt(pc.getClazz(), pc.getSubclass(),
+                pc.getSpecialization(), newLevel);
+
         int newCantrips = 0;
         int newLeveled = 0;
         for (Map<String, Object> spell : chosen) {
+            if (grantFor(grants, spellName(spell)) != null) continue;
             if (spellLevelOf(spell) == 0) newCantrips++;
             else newLeveled++;
         }
@@ -497,6 +511,23 @@ public class LevelUpService {
             if (name.isBlank()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
             }
+            SpellGrant grant = grantFor(grants, name);
+            if (grant != null) {
+                // A class feature's always-prepared spell: mark the entry the character already
+                // has, or save the one sent with the marker on it.
+                Map<String, Object> entry = spells.stream()
+                        .filter(existing -> spellName(existing).equalsIgnoreCase(name))
+                        .findFirst().orElse(null);
+                if (entry == null) {
+                    entry = new LinkedHashMap<>(spell);
+                    spells.add(entry);
+                    known.add(name.toLowerCase());
+                }
+                entry.put("prepared", true);
+                entry.put("alwaysPrepared", true);
+                entry.put("grantedBy", grant.grantedBy());
+                continue;
+            }
             int spellLevel = spellLevelOf(spell);
             if (spellLevel > maxSpellLevel) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -509,6 +540,12 @@ public class LevelUpService {
             spells.add(spell);
         }
         pc.setSpells(jsonColumns.write(spells));
+    }
+
+    /** The grant naming this spell (case-insensitive, trimmed), or null when it is an ordinary pick. */
+    private static SpellGrant grantFor(List<SpellGrant> grants, String spellName) {
+        String name = spellName == null ? "" : spellName.trim();
+        return grants.stream().filter(g -> g.name().equalsIgnoreCase(name)).findFirst().orElse(null);
     }
 
     private int spellLevelOf(Map<String, Object> spell) {
