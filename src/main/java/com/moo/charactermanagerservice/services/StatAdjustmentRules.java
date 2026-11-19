@@ -28,6 +28,11 @@ import java.util.regex.Pattern;
  * with a breakdown today; when the SPA gives another one (an ability score,
  * speed) the same treatment it just sends a new key, with no migration and no
  * change here.
+ *
+ * <p>One family of keys the server does read: {@code slot1} .. {@code slot9}
+ * are bonus spell slots of that spell level. {@link SpellSlotState} adds them
+ * to the class table to get the maximum stored in {@code pc.spell_slots}, so a
+ * line there changes a number the server owns, not one the SPA works out.
  */
 public final class StatAdjustmentRules {
 

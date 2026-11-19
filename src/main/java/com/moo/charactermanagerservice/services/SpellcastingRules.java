@@ -43,6 +43,15 @@ final class SpellcastingRules {
     }
 
     /**
+     * True when the spell's stored snapshot carries {@code "ritual": true}.
+     * Absent — older PCs serialized before the flag existed — means it cannot
+     * be cast as a ritual.
+     */
+    static boolean isRitual(Map<String, Object> spell) {
+        return Boolean.TRUE.equals(spell.get("ritual"));
+    }
+
+    /**
      * True when the parsed {@code spellSlots} object has an entry for this slot
      * level with {@code used < max}. Keys arrive as strings from JSON.
      */

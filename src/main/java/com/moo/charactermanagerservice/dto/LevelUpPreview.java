@@ -8,7 +8,9 @@ import java.util.Map;
  * SPA can render the deltas before the user commits.
  *
  * <p>Phase 1: deterministic gains (HP via fixed average, proficiency bonus). Phase 2: the
- * spell-slot picture — {@code spellLevel -> maxSlots} before and after — empty for non-casters.
+ * spell-slot picture — {@code spellLevel -> maxSlots} before (as stored) and after (the class
+ * table for the new level plus the DM's bonus slot lines) — empty for a character with no slots.
+ * Half casters (Paladin, Ranger) have slots here but no cantrip / spells-known deltas.
  * Phase 3: whether a subclass choice is due at the new level ({@code subclassDue}) and the
  * selectable names ({@code subclassOptions}); the options list is empty until catalog content
  * is authored, so the SPA shows the picker only when there is something to pick.

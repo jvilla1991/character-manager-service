@@ -227,6 +227,20 @@ class PcActivityLogServiceTest {
     }
 
     @Test
+    void logDmEdit_namesABonusSpellSlotLineByItsSpellLevel() {
+        PC before = new PC();
+        before.setId(1L);
+        PC after = new PC();
+        after.setId(1L);
+        after.setStatAdjustments("{\"slot3\":[{\"value\":1,\"label\":\"Pearl of Power\"}]}");
+
+        activityLogService.logDmEdit(before, after, actorId);
+
+        verify(activityLogRepository).save(argThat(
+                e -> "DM added level 3 spell slot adjustment +1 Pearl of Power".equals(e.getDescription())));
+    }
+
+    @Test
     void logDmEdit_statAdjustments_noOps_whenTheLinesAreTheSame() {
         PC before = new PC();
         before.setId(1L);

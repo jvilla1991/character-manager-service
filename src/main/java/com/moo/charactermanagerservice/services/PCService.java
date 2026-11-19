@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.SpellSlotResult;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
@@ -67,6 +68,8 @@ public class PCService {
         pc.setClassResources(ClassResourceState.normalize(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
+        // After the level and the adjustment lines: both decide how many slots there are.
+        pc.setSpellSlots(SpellSlotState.normalize(pc, null, true));
         return pcRepository.saveAndFlush(pc);
     }
 
@@ -105,6 +108,12 @@ public class PCService {
         } else {
             pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         }
+        // Spell slots, once the adjustment lines above are settled (the slot bonus lines
+        // are among them). The maximum is never the body's. In a campaign neither is the
+        // used count: a player spends through the spend endpoint, and only a rest or the DM
+        // gives slots back. A character in no campaign has no DM, so its owner keeps the
+        // count by hand.
+        pc.setSpellSlots(SpellSlotState.normalize(pc, existing, existing.getCampaignId() == null));
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
@@ -157,6 +166,11 @@ public class PCService {
      * the body names a melee weapon on its own sheet; a value that no longer fits is stored as
      * unset instead of failing the save — see {@link LongRestRules#normalizeRuneWeapon}.
      *
+     * <p>Spell slots are not handled here but by the callers, through
+     * {@link SpellSlotState#normalize}, because their maximum depends on the adjustment lines the
+     * callers settle after this method: the class table plus the DM's {@code slot1}..{@code slot9}
+     * bonus lines, never the body's {@code max}.
+     *
      * <p>The species origin (V56: {@code speciesSource}, {@code lineage}, {@code size}) is chosen
      * once, in the create wizard. A body carrying NULL for any of them keeps the stored value
      * while the species itself is unchanged — so a client built before V56, or a body made from a
@@ -191,10 +205,9 @@ public class PCService {
         incoming.setInspirationPips(existing.getInspirationPips());
         incoming.setHeroicInspiration(existing.getHeroicInspiration());
         incoming.setRuneWeapon(LongRestRules.normalizeRuneWeapon(incoming, existing));
-        // Class resource uses are bookkeeping the player keeps, like spell slots:
-        // the body's amounts are taken, cleaned against the rules table (unknown
-        // resources dropped, each clamped to 0..max). A body without the field
-        // keeps the stored amounts.
+        // Class resource uses are bookkeeping the player keeps: the body's amounts
+        // are taken, cleaned against the rules table (unknown resources dropped,
+        // each clamped to 0..max). A body without the field keeps the stored amounts.
         incoming.setClassResources(ClassResourceState.normalize(incoming, existing));
     }
 
@@ -241,6 +254,9 @@ public class PCService {
         HeroClassRules.validate(incoming);
         incoming.setCoins(CoinPurse.normalizeJson(incoming.getCoins()));
         incoming.setStatAdjustments(StatAdjustmentRules.normalizeJson(incoming.getStatAdjustments()));
+        // After the lines: a slot bonus line added in this same save already counts. The
+        // DM may set the used count (hand slots back); the maximum is still worked out.
+        incoming.setSpellSlots(SpellSlotState.normalize(incoming, existing, true));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
         return saved;
@@ -520,6 +536,96 @@ public class PCService {
         return saved;
     }
 
+    // --- Spell slots: spend by hand, restore (V58) ----------------------------
+
+    /**
+     * Spend one spell slot of the given spell level by hand — for a spell cast
+     * away from Session Mode, or one the sheet does not list. The owning player
+     * may do it at any time, and so may the campaign's DM on their behalf. The
+     * row is locked like a cast ({@code SessionService#castSpell}): the count is
+     * read-modify-write. 400 for a level that is not 1-9, 409 when the
+     * character has no free slot of that level.
+     *
+     * <p>Wakes the PC's live session ({@link #bumpLiveSessionVersion}) so the
+     * DM's board shows the spend on the next poll.
+     */
+    @Transactional
+    public SpellSlotResult spendSpellSlot(Long id, Integer level, UUID userId) {
+        PC pc = findPCByIdForUpdate(id);
+        boolean owner = userId.equals(pc.getUserId());
+        if (!owner) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        int spellLevel = requireSpellLevel(level);
+        if (!SpellSlotState.spend(pc, spellLevel)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "No level " + spellLevel + " slot available");
+        }
+        return saveSlotChange(pc, (owner ? "Spent" : "DM spent") + " a level " + spellLevel
+                + " spell slot (" + SpellSlotState.describe(pc, spellLevel) + ")", userId);
+    }
+
+    /**
+     * Give spell slots back outside a rest: one slot of {@code level}, or every
+     * spent slot when {@code all}. In a campaign that is the DM's call alone —
+     * the owning player gets a 403, slots return with a rest or from the DM. A
+     * character in no campaign has no DM, so there its owner may.
+     *
+     * <p>400 for a level that is not 1-9, 409 when nothing is spent at that
+     * level. {@code all} on a fully rested character changes nothing and is
+     * not an error (no log line, no session bump). {@code all} wins when both
+     * are sent.
+     */
+    @Transactional
+    public SpellSlotResult restoreSpellSlots(Long id, Integer level, boolean all, UUID userId) {
+        PC pc = findPCByIdForUpdate(id);
+        boolean owner = userId.equals(pc.getUserId());
+        boolean dm = runsCampaignOf(pc, userId);
+        if (!dm && !(owner && pc.getCampaignId() == null)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, owner
+                    ? "In a campaign, spell slots come back with a rest or from your Dungeon Master"
+                    : "Access denied");
+        }
+        String restored;
+        if (all) {
+            if (SpellSlotState.restoreAll(pc) == 0) {
+                return new SpellSlotResult(pc.getId(), SpellSlotState.view(pc));
+            }
+            restored = "all spell slots";
+        } else {
+            int spellLevel = requireSpellLevel(level);
+            if (!SpellSlotState.restore(pc, spellLevel)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "No spent level " + spellLevel + " slot to restore");
+            }
+            restored = "a level " + spellLevel + " spell slot ("
+                    + SpellSlotState.describe(pc, spellLevel) + ")";
+        }
+        return saveSlotChange(pc, (dm ? "DM restored " : "Restored ") + restored, userId);
+    }
+
+    /** Shared tail of spend and restore: persist, log, wake the live session. */
+    private SpellSlotResult saveSlotChange(PC pc, String description, UUID actorUserId) {
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(), PcActivityType.SPELL_SLOT, description, actorUserId);
+        bumpLiveSessionVersion(saved);
+        return new SpellSlotResult(saved.getId(), SpellSlotState.view(saved));
+    }
+
+    /** Load a PC under the row lock (see {@link PCRepository#findByIdForUpdate}); 404 like {@link #findPCById}. */
+    private PC findPCByIdForUpdate(Long id) {
+        return pcRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new PCNotFoundException("PC not found with id " + id));
+    }
+
+    private static int requireSpellLevel(Integer level) {
+        if (level == null || level < 1 || level > SpellSlotState.MAX_SPELL_LEVEL) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "level must be a spell level from 1 to " + SpellSlotState.MAX_SPELL_LEVEL);
+        }
+        return level;
+    }
+
     public void deletePC(Long id, UUID userId) {
         PC pc = findPCById(id);
         assertOwnership(pc, userId);
@@ -579,6 +685,13 @@ public class PCService {
         if (!userId.equals(pc.getUserId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
+    }
+
+    /** Whether the caller is the DM of the campaign this PC belongs to; false for a PC in no campaign. */
+    private boolean runsCampaignOf(PC pc, UUID userId) {
+        return pc.getCampaignId() != null && campaignRepository.findById(pc.getCampaignId())
+                .map(campaign -> userId.equals(campaign.getDmUserId()))
+                .orElse(false);
     }
 
     /**

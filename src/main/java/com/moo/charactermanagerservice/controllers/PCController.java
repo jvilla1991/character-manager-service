@@ -4,8 +4,11 @@ import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelGrantRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.RestoreSpellSlotsRequest;
 import com.moo.charactermanagerservice.dto.SetInspirationRequest;
 import com.moo.charactermanagerservice.dto.SetPetRequest;
+import com.moo.charactermanagerservice.dto.SpellSlotResult;
+import com.moo.charactermanagerservice.dto.SpendSpellSlotRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.models.PC;
@@ -177,6 +180,38 @@ public class PCController {
                                                    Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(pcService.useHeroicInspiration(id, user.getUuid()));
+    }
+
+    /**
+     * Spend one spell slot by hand — the owning player (or the campaign's DM).
+     * Body {@code {"level": 3}}. 400 for a level that is not 1-9, 409 when no
+     * slot of that level is free. Returns the character's slots afterwards.
+     */
+    @PostMapping("/{id}/spell-slots/spend")
+    public ResponseEntity<SpellSlotResult> spendSpellSlot(@PathVariable Long id,
+                                                          @RequestBody(required = false) SpendSpellSlotRequest request,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.spendSpellSlot(id, request == null ? null : request.level(),
+                user.getUuid()));
+    }
+
+    /**
+     * Give spell slots back outside a rest — the campaign's DM, or the owner of
+     * a character in no campaign (a campaign player gets 403). Body
+     * {@code {"level": 3}} restores one slot of that level (409 when none is
+     * spent); {@code {"all": true}} restores every slot and never fails on a
+     * fully rested character.
+     */
+    @PostMapping("/{id}/spell-slots/restore")
+    public ResponseEntity<SpellSlotResult> restoreSpellSlots(@PathVariable Long id,
+                                                             @RequestBody(required = false) RestoreSpellSlotsRequest request,
+                                                             Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.restoreSpellSlots(id,
+                request == null ? null : request.level(),
+                request != null && Boolean.TRUE.equals(request.all()),
+                user.getUuid()));
     }
 
     @DeleteMapping("/delete/{id}")

@@ -422,7 +422,8 @@ public class SessionController {
      * A player casts one of their own seated PC's spells: spends a slot (with
      * upcasting) and consumes a flagged material component. Returns the updated
      * slots and inventory, plus a warning when a costly component was missing
-     * but the campaign let the cast through.
+     * but the campaign let the cast through. With {@code "ritual": true} a
+     * ritual spell is cast without spending a slot (409 if it is not one).
      */
     @PostMapping("/session/{id}/spell/cast")
     public ResponseEntity<CastResult> castSpell(@PathVariable Long id,
@@ -430,7 +431,8 @@ public class SessionController {
                                                 Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(sessionService.castSpell(
-                id, request.pcId(), request.spellName(), request.atLevel(), user.getUuid()));
+                id, request.pcId(), request.spellName(), request.atLevel(),
+                Boolean.TRUE.equals(request.ritual()), user.getUuid()));
     }
 
     /**
