@@ -444,6 +444,193 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":5,\"thirst\":0,\"fatigue\":0}");
     }
 
+    // --- stat adjustments (the DM's labelled lines on calculated numbers, V57) ---
+
+    private static final String TAUNKA = "{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}";
+    private static final String OWN_LINE = "{\"ac\":[{\"value\":5,\"label\":\"Because I say so\"}]}";
+
+    private PC memberOfTheDmsCampaign() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        return existing;
+    }
+
+    @Test
+    void updatePC_ignoresTheOwnersStatAdjustments_whenTheCharacterIsInACampaign() {
+        pc.setStatAdjustments(TAUNKA);
+        pc.setCampaignId(7L); // in a campaign the lines are the DM's to set
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setStatAdjustments(OWN_LINE);
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+    }
+
+    @Test
+    void updatePC_ignoresAnOwnersAttemptToClearTheLines_whenTheCharacterIsInACampaign() {
+        pc.setStatAdjustments(TAUNKA);
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setStatAdjustments("{}");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+    }
+
+    @Test
+    void updatePC_doesNotEvenValidateTheOwnersLines_whenTheCharacterIsInACampaign() {
+        pc.setStatAdjustments(TAUNKA);
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setStatAdjustments("not json"); // ignored, so it cannot fail the save
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+    }
+
+    @Test
+    void updatePC_letsTheOwnerSetStatAdjustments_whenTheCharacterIsInNoCampaign() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc)); // no campaign, so no DM
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setStatAdjustments("{\"ac\":[{\"value\":1,\"label\":\" Taunka \"}]}");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA); // stored trimmed
+    }
+
+    @Test
+    void updatePC_preservesStatAdjustments_whenTheBodyOmitsThem() {
+        pc.setStatAdjustments(TAUNKA);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setName("Renamed"); // statAdjustments null: a payload built without the field
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+    }
+
+    @Test
+    void updatePC_rejectsMalformedStatAdjustments_whenTheCharacterIsInNoCampaign() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setStatAdjustments("{\"ac\":[{\"value\":0,\"label\":\"Nothing\"}]}");
+
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+        verify(pcRepository, never()).save(any(PC.class));
+    }
+
+    @Test
+    void updatePCAsDm_setsStatAdjustments() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(memberOfTheDmsCampaign()));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setAc((short) 16);
+        incoming.setStatAdjustments(TAUNKA);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+        assertThat(result.getAc()).isEqualTo((short) 16);
+    }
+
+    @Test
+    void updatePCAsDm_clearsStatAdjustments_whenTheBodySendsNoLines() {
+        PC existing = memberOfTheDmsCampaign();
+        existing.setStatAdjustments(TAUNKA);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setStatAdjustments("{\"ac\":[]}");
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo("{}");
+    }
+
+    @Test
+    void updatePCAsDm_preservesStatAdjustments_whenTheBodyOmitsThem() {
+        PC existing = memberOfTheDmsCampaign();
+        existing.setStatAdjustments(TAUNKA);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getStatAdjustments()).isEqualTo(TAUNKA);
+    }
+
+    @Test
+    void updatePCAsDm_rejectsMalformedStatAdjustments() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(memberOfTheDmsCampaign()));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setStatAdjustments("{\"ac\":[{\"value\":1}]}"); // no label
+
+        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+        verify(pcRepository, never()).save(any(PC.class));
+    }
+
+    @Test
+    void updatePCAsDm_refusesStatAdjustments_fromSomeoneWhoDoesNotRunTheCampaign() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(memberOfTheDmsCampaign()));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setStatAdjustments(TAUNKA);
+
+        assertThatThrownBy(() -> pcService.updatePCAsDm(incoming, null, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("403");
+        verify(pcRepository, never()).save(any(PC.class));
+    }
+
     // --- exhaustion preservation (an update carrying null must not wipe it) ---
 
     @Test

@@ -158,6 +158,7 @@ public class PcActivityLogService {
         diffInventory(changes, before.getInventory(), after.getInventory());
         diffNamedSet(changes, "feature", before.getFeatures(), after.getFeatures());
         diffNamedSet(changes, "spell", before.getSpells(), after.getSpells());
+        diffStatAdjustments(changes, before.getStatAdjustments(), after.getStatAdjustments());
 
         return changes;
     }
@@ -233,6 +234,37 @@ public class PcActivityLogService {
         for (String name : before) {
             if (!after.contains(name)) changes.add("DM removed " + label + " " + name);
         }
+    }
+
+    /**
+     * Adjustment lines on calculated numbers ("+1 Taunka" under AC): one entry
+     * per line added or removed, matched by amount and label together, so a
+     * relabel reads as one removed and one added. The total itself is covered
+     * by the scalar diff above ("DM changed AC 15 → 16").
+     */
+    private void diffStatAdjustments(List<String> changes, String beforeJson, String afterJson) {
+        Map<String, List<StatAdjustmentRules.Line>> before = StatAdjustmentRules.parse(beforeJson);
+        Map<String, List<StatAdjustmentRules.Line>> after = StatAdjustmentRules.parse(afterJson);
+
+        Set<String> stats = new LinkedHashSet<>(before.keySet());
+        stats.addAll(after.keySet());
+        for (String stat : stats) {
+            String label = statLabel(stat);
+            List<StatAdjustmentRules.Line> removed = new ArrayList<>(before.getOrDefault(stat, List.of()));
+            for (StatAdjustmentRules.Line line : after.getOrDefault(stat, List.of())) {
+                if (!removed.remove(line)) {
+                    changes.add("DM added " + label + " adjustment " + line.describe());
+                }
+            }
+            for (StatAdjustmentRules.Line line : removed) {
+                changes.add("DM removed " + label + " adjustment " + line.describe());
+            }
+        }
+    }
+
+    /** The diff's name for an adjusted number: "AC" (as in the scalar diff), else the key itself. */
+    private String statLabel(String stat) {
+        return "ac".equals(stat) ? "AC" : stat;
     }
 
     private Set<String> namesOf(List<Map<String, Object>> items) {
