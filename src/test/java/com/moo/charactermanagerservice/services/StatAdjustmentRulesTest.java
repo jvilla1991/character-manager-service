@@ -43,6 +43,31 @@ class StatAdjustmentRulesTest {
         assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
     }
 
+    /** A value with `count` different keys, one line each. */
+    private static String withKeys(int count) {
+        StringBuilder json = new StringBuilder("{");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) json.append(',');
+            json.append("\"stat").append(i).append("\":[{\"value\":1,\"label\":\"Line\"}]");
+        }
+        return json.append('}').toString();
+    }
+
+    @Test
+    void normalizeJson_holdsEveryNumberWithABreakdownAtOnce() {
+        // Armor Class and its removed lines, six ability scores, nine spell slot levels.
+        assertThat(StatAdjustmentRules.STATS_MAX).isGreaterThanOrEqualTo(2 + 6 + 9);
+
+        String json = withKeys(StatAdjustmentRules.STATS_MAX);
+        assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
+        assertThat(StatAdjustmentRules.STATS_MAX).isEqualTo(32);
+    }
+
+    @Test
+    void normalizeJson_rejectsMoreNumbersThanTheLimit() {
+        assertBadRequest(withKeys(StatAdjustmentRules.STATS_MAX + 1));
+    }
+
     @Test
     void normalizeJson_dropsFieldsItDoesNotKnow() {
         String stored = StatAdjustmentRules.normalizeJson(

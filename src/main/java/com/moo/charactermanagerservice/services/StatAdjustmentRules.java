@@ -24,10 +24,11 @@ import java.util.regex.Pattern;
  * there. This class only guards the shape of the lines, so that what is stored
  * is always something every client can read back.
  *
- * <p>The key is deliberately not a fixed list. Armor Class is the only number
- * with a breakdown today; when the SPA gives another one (an ability score,
- * speed) the same treatment it just sends a new key, with no migration and no
- * change here.
+ * <p>The key is deliberately not a fixed list. Armor Class ({@code ac}), the
+ * six ability scores ({@code STR} ... {@code CHA}) and the bonus spell slots
+ * described below carry lines today; when the SPA gives another number
+ * (speed) the same treatment it just sends a new key, with no migration and
+ * no change here.
  *
  * <p>One family of keys the server does read: {@code slot1} .. {@code slot9}
  * are bonus spell slots of that spell level. {@link SpellSlotState} adds them
@@ -57,8 +58,12 @@ public final class StatAdjustmentRules {
     public static final int VALUE_MAX = 99;
     /** Most lines one number may carry. */
     public static final int LINES_MAX = 12;
-    /** Most numbers one character may carry lines for. */
-    public static final int STATS_MAX = 16;
+    /**
+     * Most keys one character may carry. Roomy on purpose: Armor Class and its
+     * companion key, six ability scores and nine spell slot levels already come
+     * to seventeen, before any of those gains a companion key of its own.
+     */
+    public static final int STATS_MAX = 32;
 
     /** What a number's companion key ends in: {@code acRemoved} holds the removed lines of {@code ac}. */
     public static final String REMOVED_SUFFIX = "Removed";
