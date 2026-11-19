@@ -35,10 +35,11 @@ import java.util.random.RandomGenerator;
  * when none is sent. Because a roll isn't known until commit, the {@link #preview(PC) preview}
  * always reports the average (the floor/best-case estimate).
  *
- * <p><strong>Spell slots (Phase 2):</strong> for caster classes, the {@code spellSlots} column is
- * rebuilt from {@link ClassProgression#spellSlotsFor} via {@link SpellSlotCalculator} — {@code max}
- * is set from the table for the new level while the player's {@code used} count is preserved
- * (clamped to the new max). Non-casters are left untouched.
+ * <p><strong>Spell slots (Phase 2):</strong> for every class with a slot table (full casters,
+ * warlock, and the half casters Paladin and Ranger), the {@code spellSlots} column is rebuilt from
+ * {@link ClassProgression#spellSlotsFor} via {@link SpellSlotCalculator} — {@code max} is set from
+ * the table for the new level while the player's {@code used} count is preserved (clamped to the
+ * new max). Classes without slots are left untouched.
  *
  * <p><strong>Multiclass seam:</strong> today total level == single class level, so all tables key
  * off {@code pc.clazz} / {@code pc.level}. When multiclassing lands, hit-die/slot lookups move to
@@ -155,7 +156,7 @@ public class LevelUpService {
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
      * any newly-learned spells), then bump level, add HP, recompute the proficiency bonus, and
-     * rebuild the spell-slot map (for casters). The caller persists.
+     * rebuild the spell-slot map (for classes that have slots). The caller persists.
      *
      * <p>HP order matters: ability scores are applied <em>before</em> HP, so the new level's gain
      * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
@@ -216,9 +217,11 @@ public class LevelUpService {
         pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
         pc.setProfBonus((short) ClassProgression.proficiencyBonusForLevel(newLevel));
 
-        if (ClassProgression.isCaster(pc.getClazz())) {
-            pc.setSpellSlots(spellSlotCalculator.rebuild(
-                    pc.getSpellSlots(), ClassProgression.spellSlotsFor(pc.getClazz(), newLevel)));
+        // Every class with a slot table, half casters included — not isCaster, which only
+        // says whether the level-up offers spell choices.
+        Map<Integer, Integer> slots = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel);
+        if (!slots.isEmpty()) {
+            pc.setSpellSlots(spellSlotCalculator.rebuild(pc.getSpellSlots(), slots));
         }
         return pc;
     }
