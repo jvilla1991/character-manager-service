@@ -131,6 +131,20 @@ public class SessionController {
                 sessionService.applyDamage(id, participantId, request.amount(), user.getUuid()));
     }
 
+    /**
+     * DM damages (positive) or heals (negative) a follower of a seated PC; the
+     * new HP writes through to the follower's saved stat block.
+     */
+    @PostMapping("/session/{id}/followers/{followerId}/damage")
+    public ResponseEntity<SessionStateView> applyFollowerDamage(@PathVariable Long id,
+                                                               @PathVariable Long followerId,
+                                                               @RequestBody DamageRequest request,
+                                                               Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(
+                sessionService.applyFollowerDamage(id, followerId, request.amount(), user.getUuid()));
+    }
+
     /** DM awards XP to a single combatant (PC only); writes through to the character. */
     @PostMapping("/session/{id}/participants/{participantId}/xp")
     public ResponseEntity<XpAwardResult> awardXp(@PathVariable Long id,

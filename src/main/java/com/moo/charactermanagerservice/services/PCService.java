@@ -403,8 +403,11 @@ public class PCService {
      *
      * <p>Call it from inside the caller's transaction so the bump commits (or
      * rolls back) together with the PC change it announces.
+     *
+     * <p>Package-visible so {@link PcFollowerService} can announce follower
+     * changes the same way — a follower rides in its owner's snapshot row.
      */
-    private void bumpLiveSessionVersion(PC pc) {
+    void bumpLiveSessionVersion(PC pc) {
         if (pc.getCampaignId() == null) {
             return;
         }

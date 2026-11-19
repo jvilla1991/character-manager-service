@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -244,5 +245,40 @@ class PcFollowerServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
         verify(followerRepository, never()).delete(any());
+    }
+
+    // --- waking the live session ---
+
+    @Test
+    void grant_update_andDismiss_eachWakeTheOwnersLiveSession() {
+        // A follower rides in its owner's session row, so each write must bump
+        // that session's version or the 2s poll would keep answering 204.
+        when(followerRepository.countByPcId(1L)).thenReturn(0L);
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+        PcFollower follower = stored(5L, 1L, "Brannoc");
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(follower));
+
+        followerService.grant(1L, new FollowerRequest("Brannoc", statBlock()), dmId);
+        verify(pcService, times(1)).bumpLiveSessionVersion(pc);
+
+        followerService.update(1L, 5L, new FollowerRequest(null, Map.of("ac", 18)), ownerId);
+        verify(pcService, times(2)).bumpLiveSessionVersion(pc);
+
+        followerService.dismiss(1L, 5L, dmId);
+        verify(pcService, times(3)).bumpLiveSessionVersion(pc);
+    }
+
+    @Test
+    void aRefusedWrite_neverWakesTheSession() {
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(stored(5L, 1L, "Brannoc")));
+
+        assertThatThrownBy(() -> followerService.update(1L, 5L, new FollowerRequest(null, null), ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> followerService.dismiss(1L, 5L, ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThatThrownBy(() -> followerService.grant(1L, new FollowerRequest(" ", statBlock()), dmId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+
+        verify(pcService, never()).bumpLiveSessionVersion(any());
     }
 }

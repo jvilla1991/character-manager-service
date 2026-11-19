@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.FollowerCombatantView;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
 import com.moo.charactermanagerservice.dto.LongRestChoices;
@@ -14,6 +15,7 @@ import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.PcFollower;
 import com.moo.charactermanagerservice.models.RestType;
 import com.moo.charactermanagerservice.models.RestVoteStatus;
 import com.moo.charactermanagerservice.models.SessionLongRestResult;
@@ -30,6 +32,7 @@ import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
 import com.moo.charactermanagerservice.repositories.EncounterCreatureRepository;
 import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.PCRepository;
+import com.moo.charactermanagerservice.repositories.PcFollowerRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
@@ -88,6 +91,7 @@ class SessionServiceTest {
     @Mock private SessionRestVoteBallotRepository restVoteBallotRepository;
     @Mock private SessionLootResultRepository lootResultRepository;
     @Mock private SessionLongRestResultRepository longRestResultRepository;
+    @Mock private PcFollowerRepository followerRepository;
 
     private SessionService sessionService;
 
@@ -104,7 +108,7 @@ class SessionServiceTest {
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
                 activityLogService, sessionRollRepository, restVoteRepository,
                 restVoteBallotRepository, lootResultRepository, longRestResultRepository,
-                new ObjectMapper());
+                followerRepository, new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -3857,6 +3861,202 @@ class SessionServiceTest {
         r.setBreakdown(breakdown);
         r.setGrandTotal(grandTotal);
         return r;
+    }
+
+    // --- followers ride under their owner's row ---
+
+    private static PcFollower follower(Long id, Long pcId, String name, String statBlock) {
+        PcFollower f = new PcFollower();
+        f.setId(id);
+        f.setPcId(pcId);
+        f.setName(name);
+        f.setStatBlock(statBlock);
+        return f;
+    }
+
+    /** Seat PC 7 (participant 5) in the session and hand back follower 40 with the given block. */
+    private PcFollower seatFollower(String statBlock) {
+        PcFollower guard = follower(40L, 7L, "Brannoc", statBlock);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        lenient().when(followerRepository.findByIdForUpdate(40L)).thenReturn(Optional.of(guard));
+        lenient().when(participantRepository.findBySessionIdAndPcId(1L, 7L))
+                .thenReturn(Optional.of(participant(5L, 7L)));
+        return guard;
+    }
+
+    @Test
+    void snapshot_nestsFollowersUnderTheirSeatedOwner_andEnemiesCarryNone() {
+        session.setEnemiesHidden(false);
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcs();
+        when(followerRepository.findByPcIdInOrderByIdAsc(any())).thenReturn(List.of(
+                follower(40L, 7L, "Brannoc", "{\"hp\":{\"cur\":9,\"max\":16,\"temp\":2},\"ac\":16,"
+                        + "\"clazz\":\"Guard\",\"level\":2,\"conditions\":[\"prone\"],"
+                        + "\"portraitTint\":\"gold\",\"portraitInitials\":\"GU\",\"inventory\":[]}"),
+                follower(41L, 7L, "Wolf", "{\"hp\":{\"cur\":5,\"max\":5}}")));
+
+        // A player sees exactly what the DM sees: PC rows are never hidden.
+        for (UUID viewer : List.of(dmId, playerId)) {
+            SessionStateView state = sessionService.getState(1L, viewer, null);
+
+            ParticipantView mine = state.participants().get(0);
+            assertThat(mine.followers()).extracting(FollowerCombatantView::followerId)
+                    .containsExactly(40L, 41L);
+            assertThat(mine.followers().get(0)).isEqualTo(new FollowerCombatantView(
+                    40L, 7L, "Brannoc", "Guard", 2, "gold", "GU", 16, 9, 2, 16, List.of("prone")));
+            assertThat(state.participants().get(1).npc()).isTrue();
+            assertThat(state.participants().get(1).followers()).isEmpty();
+            assertThat(state.participants().get(2).followers()).isEmpty(); // a PC with none
+        }
+
+        // One batched lookup per snapshot, for both seated PCs at once.
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<Long>> ids = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(followerRepository, times(2)).findByPcIdInOrderByIdAsc(ids.capture());
+        assertThat(ids.getValue()).containsExactlyInAnyOrder(7L, 8L);
+    }
+
+    @Test
+    void snapshot_keepsFollowersOnEnemyRowsStrippedForPlayers() {
+        session.setEnemiesHidden(false);
+        session.setEnemyHpHidden(true);
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcs();
+
+        SessionStateView state = sessionService.getState(1L, playerId, null);
+
+        // withoutHp()/withoutAc() copies must still carry a real (empty) list.
+        assertThat(state.participants().get(1).ac()).isNull();
+        assertThat(state.participants().get(1).followers()).isNotNull().isEmpty();
+    }
+
+    @Test
+    void snapshot_toleratesSparseAndMalformedFollowerStatBlocks() {
+        arm(session, 1L, hiddenEnemySetup());
+        stubPcs();
+        when(followerRepository.findByPcIdInOrderByIdAsc(any())).thenReturn(List.of(
+                follower(40L, 7L, "Empty", "{}"),
+                follower(41L, 7L, "Broken", "{not json"),
+                follower(42L, 7L, "Null", null),
+                follower(43L, 7L, "NotAnObject", "[1,2]"),
+                follower(44L, 7L, "WrongTypes", "{\"hp\":\"lots\",\"ac\":\"17\",\"level\":\"high\","
+                        + "\"clazz\":5,\"conditions\":\"prone\"}"),
+                follower(45L, 7L, "MixedConditions", "{\"hp\":{\"cur\":3.0},\"conditions\":[\"stunned\",4,null]}")));
+
+        List<FollowerCombatantView> followers =
+                sessionService.getState(1L, dmId, null).participants().get(0).followers();
+
+        assertThat(followers).hasSize(6);
+        for (FollowerCombatantView bare : followers.subList(0, 4)) {
+            assertThat(bare).isEqualTo(new FollowerCombatantView(bare.followerId(), 7L, bare.name(),
+                    null, null, null, null, null, null, null, null, List.of()));
+        }
+        FollowerCombatantView wrong = followers.get(4);
+        assertThat(wrong.hpCurrent()).isNull();
+        assertThat(wrong.ac()).isEqualTo(17); // a numeric string still reads
+        assertThat(wrong.level()).isNull();
+        assertThat(wrong.clazz()).isNull();
+        assertThat(wrong.conditions()).isEmpty();
+        assertThat(followers.get(5).hpCurrent()).isEqualTo(3);
+        assertThat(followers.get(5).conditions()).containsExactly("stunned");
+    }
+
+    @Test
+    void followerDamage_tempAbsorbsFirst_andEveryOtherFieldSurvives() throws Exception {
+        PcFollower guard = seatFollower("{\"clazz\":\"Guard\",\"hp\":{\"cur\":9,\"max\":16,\"temp\":3,\"dice\":\"2d8\"},"
+                + "\"ac\":16,\"inventory\":[{\"name\":\"Spear\",\"qty\":1}],\"conditions\":[\"prone\"]}");
+
+        SessionStateView state = sessionService.applyFollowerDamage(1L, 40L, 5, dmId);
+
+        Map<String, Object> saved = new ObjectMapper().readValue(guard.getStatBlock(),
+                new com.fasterxml.jackson.core.type.TypeReference<>() {});
+        assertThat(saved.get("hp")).isEqualTo(Map.of("cur", 7, "max", 16, "temp", 0, "dice", "2d8"));
+        assertThat(saved).containsEntry("clazz", "Guard").containsEntry("ac", 16)
+                .containsEntry("conditions", List.of("prone"))
+                .containsEntry("inventory", List.of(Map.of("name", "Spear", "qty", 1)));
+        assertThat(saved.keySet()).containsExactly("clazz", "hp", "ac", "inventory", "conditions");
+        verify(followerRepository).save(guard);
+        verify(sessionRepository).save(session);
+        assertThat(session.getVersion()).isEqualTo(1L);
+        assertThat(state.version()).isEqualTo(1L);
+    }
+
+    @Test
+    void followerDamage_floorsAtZero_andTheFollowerStaysListed() {
+        PcFollower guard = seatFollower("{\"hp\":{\"cur\":4,\"max\":16,\"temp\":0}}");
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(participant(5L, 7L))));
+        when(pcRepository.findAllById(any())).thenReturn(List.of(pc(7L, "Hero", 0)));
+        when(followerRepository.findByPcIdInOrderByIdAsc(any())).thenReturn(List.of(guard));
+
+        SessionStateView state = sessionService.applyFollowerDamage(1L, 40L, 99, dmId);
+
+        assertThat(guard.getStatBlock()).contains("\"cur\":0");
+        assertThat(state.participants().get(0).followers()).singleElement()
+                .satisfies(f -> assertThat(f.hpCurrent()).isZero());
+        verify(followerRepository, never()).delete(any());
+        verify(pcRepository, never()).save(any()); // the owner's own sheet is untouched
+    }
+
+    @Test
+    void followerHeal_capsAtMax_andLeavesTempAlone() {
+        PcFollower guard = seatFollower("{\"hp\":{\"cur\":9,\"max\":16,\"temp\":4}}");
+
+        sessionService.applyFollowerDamage(1L, 40L, -50, dmId);
+
+        assertThat(guard.getStatBlock()).isEqualTo("{\"hp\":{\"cur\":16,\"max\":16,\"temp\":4}}");
+    }
+
+    @Test
+    void followerDamage_onABlockWithNoHp_startsFromZero() {
+        PcFollower guard = seatFollower("{\"clazz\":\"Guard\"}");
+
+        sessionService.applyFollowerDamage(1L, 40L, -6, dmId);
+
+        assertThat(guard.getStatBlock()).isEqualTo("{\"clazz\":\"Guard\",\"hp\":{\"cur\":6,\"temp\":0}}");
+    }
+
+    @Test
+    void followerDamage_isDmOnly() {
+        PcFollower guard = seatFollower("{\"hp\":{\"cur\":9,\"max\":16}}");
+
+        for (UUID caller : List.of(playerId, strangerId)) {
+            assertThatThrownBy(() -> sessionService.applyFollowerDamage(1L, 40L, 3, caller))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        }
+        assertThat(guard.getStatBlock()).isEqualTo("{\"hp\":{\"cur\":9,\"max\":16}}");
+        verify(followerRepository, never()).save(any());
+        assertThat(session.getVersion()).isZero();
+    }
+
+    @Test
+    void followerDamage_404sWhenTheFollowersPcIsNotSeatedHere_orTheFollowerIsUnknown() {
+        seatFollower("{\"hp\":{\"cur\":9,\"max\":16}}");
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sessionService.applyFollowerDamage(1L, 40L, 3, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
+        assertThatThrownBy(() -> sessionService.applyFollowerDamage(1L, 99L, 3, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
+        verify(followerRepository, never()).save(any());
+        assertThat(session.getVersion()).isZero();
+    }
+
+    @Test
+    void followerDamage_409sOnAnEndedSession_and400sWithoutAnAmount() {
+        seatFollower("{\"hp\":{\"cur\":9,\"max\":16}}");
+
+        assertThatThrownBy(() -> sessionService.applyFollowerDamage(1L, 40L, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        session.setStatus(SessionStatus.ENDED);
+        assertThatThrownBy(() -> sessionService.applyFollowerDamage(1L, 40L, 3, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(followerRepository, never()).save(any());
     }
 
     private static int status(Throwable e) {
