@@ -284,6 +284,90 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":2,\"thirst\":1,\"fatigue\":2}");
     }
 
+    // --- prepared spells change during a long rest, not by an owner's save (campaign characters) ---
+
+    private static final String STORED_SPELLS = "["
+            + "{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":true},"
+            + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":true},"
+            + "{\"name\":\"Command\",\"lvl\":1,\"prepared\":false},"
+            + "{\"name\":\"Aid\",\"lvl\":2}]";
+
+    private PC ownerSaveWithSpells(String spells) {
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("Wizard");
+        incoming.setSpells(spells);
+        return incoming;
+    }
+
+    @Test
+    void updatePC_keepsStoredPreparedFlags_forACampaignCharacter() {
+        pc.setCampaignId(7L);
+        pc.setSpells(STORED_SPELLS);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        // The player's sheet flips Bless off and Command on, and stamps a flag on Aid.
+        PC incoming = ownerSaveWithSpells("["
+                + "{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":true},"
+                + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":false},"
+                + "{\"name\":\"Command\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Aid\",\"lvl\":2,\"prepared\":false}]");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSpells()).isEqualTo(STORED_SPELLS);
+    }
+
+    @Test
+    void updatePC_letsANewSpellKeepItsFlag_andDropsARemovedOne() {
+        pc.setCampaignId(7L);
+        pc.setSpells(STORED_SPELLS);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        // Command removed, Shield learned (prepared) and Sleep learned (not prepared).
+        PC incoming = ownerSaveWithSpells("["
+                + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Shield\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Sleep\",\"lvl\":1,\"prepared\":false}]");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getSpells()).isEqualTo(incoming.getSpells())
+                .contains("\"Shield\",\"lvl\":1,\"prepared\":true")
+                .contains("\"Sleep\",\"lvl\":1,\"prepared\":false")
+                .doesNotContain("Command");
+    }
+
+    @Test
+    void updatePC_leavesPreparedFlagsToTheOwner_whenTheCharacterIsInNoCampaign() {
+        pc.setSpells(STORED_SPELLS); // campaignId null
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        String flipped = STORED_SPELLS.replace("\"Bless\",\"lvl\":1,\"prepared\":true",
+                "\"Bless\",\"lvl\":1,\"prepared\":false");
+
+        PC result = pcService.updatePC(ownerSaveWithSpells(flipped), ownerId);
+
+        assertThat(result.getSpells()).isEqualTo(flipped);
+    }
+
+    @Test
+    void updatePCAsDm_mayChangePreparedFlags_onACampaignCharacter() {
+        pc.setCampaignId(7L);
+        pc.setSpells(STORED_SPELLS);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        String flipped = STORED_SPELLS.replace("\"Bless\",\"lvl\":1,\"prepared\":true",
+                "\"Bless\",\"lvl\":1,\"prepared\":false");
+        PC incoming = ownerSaveWithSpells(flipped);
+        incoming.setCampaignId(7L);
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getSpells()).isEqualTo(flipped);
+    }
+
     @Test
     void updatePCAsDm_preservesSurvival_whenTheBodyOmitsIt() {
         PC existing = new PC();

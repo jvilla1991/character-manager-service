@@ -239,6 +239,100 @@ class LongRestRulesTest {
     }
 
     @Test
+    void isRanged_asksTheCatalogFirst_byKeyThenByExactName() {
+        // The catalog knows these whatever their properties say (or do not say).
+        assertThat(LongRestRules.isRanged("Dart", null)).isTrue();
+        assertThat(LongRestRules.isRanged("net", null)).isTrue();
+        assertThat(LongRestRules.isRanged("Javelin", List.of("thrown (30/120)"))).isFalse();
+        assertThat(LongRestRules.isRanged("Trident", null)).isFalse();
+        // A renamed catalog item is still what its key says.
+        assertThat(LongRestRules.isRanged("Heartseeker", "longbow", null)).isTrue();
+        assertThat(LongRestRules.isRanged("Bowbreaker", "greataxe", null)).isFalse(); // the name alone would say ranged
+    }
+
+    @Test
+    void isRanged_fallsBackToPropertiesAndName_forWeaponsTheCatalogDoesNotKnow() {
+        assertThat(LongRestRules.isRanged("Musket", null, null)).isTrue();
+        assertThat(LongRestRules.isRanged("Pistol", null, null)).isTrue();
+        assertThat(LongRestRules.isRanged("Elven Courtbow", null, null)).isTrue();
+        assertThat(LongRestRules.isRanged("Thunder Tube", null, List.of("Ammunition (40/120)"))).isTrue();
+        assertThat(LongRestRules.isRanged("Greataxe 'Splitter'", null, null)).isFalse();
+        assertThat(LongRestRules.isRanged("Handaxes (4)", null, null)).isFalse();
+        assertThat(LongRestRules.isRanged("Frostmourne", "frostmourne", null)).isFalse();
+    }
+
+    @Test
+    void meleeWeapons_usesTheCatalogKeyOnInventoryItems() {
+        PC knight = deathKnight(5, "Blood");
+        knight.setWeapons("[]");
+        knight.setInventory("["
+                + "{\"name\":\"Heartseeker\",\"catalogKey\":\"longbow\",\"category\":\"weapon\",\"qty\":1},"
+                + "{\"name\":\"Bowbreaker\",\"catalogKey\":\"greataxe\",\"category\":\"weapon\",\"qty\":1},"
+                + "{\"name\":\"Dart\",\"category\":\"weapon\",\"qty\":5}]");
+
+        assertThat(LongRestRules.meleeWeapons(knight)).containsExactly("Bowbreaker");
+    }
+
+    @Test
+    void requireRuneChoice_onlyBindsAKnightWithAMeleeWeaponAndNoRuneOnOne() {
+        PC knight = deathKnight(5, "Blood");
+        assertRejected(() -> LongRestRules.requireRuneChoice(knight, null),
+                "Choose the weapon that carries Thorne's rune before readying");
+        assertRejected(() -> LongRestRules.requireRuneChoice(knight, new LongRestChoices(List.of(), " ")),
+                "Choose the weapon");
+        assertThatCode(() -> LongRestRules.requireRuneChoice(knight, new LongRestChoices(null, "Greatsword")))
+                .doesNotThrowAnyException();
+
+        PC inscribed = deathKnight(5, "Blood");
+        inscribed.setRuneWeapon("Greatsword");
+        assertThatCode(() -> LongRestRules.requireRuneChoice(inscribed, null)).doesNotThrowAnyException();
+
+        PC unarmed = deathKnight(5, "Blood");
+        unarmed.setInventory("[]");
+        unarmed.setWeapons("[]");
+        assertThatCode(() -> LongRestRules.requireRuneChoice(unarmed, null)).doesNotThrowAnyException();
+
+        assertThatCode(() -> LongRestRules.requireRuneChoice(deathKnight(2, "Blood"), null))
+                .doesNotThrowAnyException(); // no Runeforging yet
+        assertThatCode(() -> LongRestRules.requireRuneChoice(caster("Cleric", 5), null))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void keepStoredPreparedFlags_restoresEveryStoredFlag_includingAMissingOne() {
+        PC existing = caster("Cleric", 3); // Bless true, Command false, Shield no flag, Aid true, Hold Person false
+        PC incoming = caster("Cleric", 3);
+        incoming.setSpells("["
+                + "{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":false},"
+                + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":false},"
+                + "{\"name\":\"Command\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Shield\",\"lvl\":1,\"prepared\":false},"
+                + "{\"name\":\"Aid\",\"lvl\":2},"
+                + "{\"name\":\"Hold Person\",\"lvl\":2,\"prepared\":false}]");
+
+        LongRestRules.keepStoredPreparedFlags(incoming, existing);
+
+        assertThat(LongRestRules.preparedNow(incoming)).containsExactly("bless", "shield", "aid");
+        assertThat(incoming.getSpells())
+                .contains("{\"name\":\"Shield\",\"lvl\":1}")                          // still no flag
+                .contains("{\"name\":\"Aid\",\"lvl\":2,\"prepared\":true}")
+                .contains("{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":false}");   // cantrips are not policed
+    }
+
+    @Test
+    void keepStoredPreparedFlags_leavesAnUnchangedBodyByteForByte() {
+        PC existing = caster("Cleric", 3);
+        PC incoming = caster("Cleric", 3);
+        LongRestRules.keepStoredPreparedFlags(incoming, existing);
+        assertThat(incoming.getSpells()).isEqualTo(SPELLS);
+
+        PC noSpells = caster("Cleric", 3);
+        noSpells.setSpells(null);
+        LongRestRules.keepStoredPreparedFlags(noSpells, existing);
+        assertThat(noSpells.getSpells()).isNull();
+    }
+
+    @Test
     void runeWeaponOf_isUnset_whenTheStoredWeaponIsGone() {
         PC knight = deathKnight(5, "Blood");
         assertThat(LongRestRules.runeWeaponOf(knight)).isNull();
