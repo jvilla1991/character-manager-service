@@ -25,6 +25,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -140,8 +141,19 @@ public class PCService {
      * <p>The Death Knight's rune weapon (V53) is kept when the body omits it and replaced when
      * the body names a melee weapon on its own sheet; a value that no longer fits is stored as
      * unset instead of failing the save — see {@link LongRestRules#normalizeRuneWeapon}.
+     *
+     * <p>The species origin (V56: {@code speciesSource}, {@code lineage}, {@code size}) is chosen
+     * once, in the create wizard. A body carrying NULL for any of them keeps the stored value
+     * while the species itself is unchanged — so a client built before V56, or a body made from a
+     * projection without the fields, can't wipe a character's lineage. Changing the species takes
+     * the body as sent, NULLs included: a Night Elf turned into a Dwarf does not stay a Night Elf.
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
+        if (Objects.equals(incoming.getSpecies(), existing.getSpecies())) {
+            if (incoming.getSpeciesSource() == null) incoming.setSpeciesSource(existing.getSpeciesSource());
+            if (incoming.getLineage() == null) incoming.setLineage(existing.getLineage());
+            if (incoming.getSize() == null) incoming.setSize(existing.getSize());
+        }
         boolean carriesSpecialization = ClassProgression.isHeroSubclass(incoming.getSubclass())
                 || ClassProgression.isClassSpecialization(incoming.getClazz(), existing.getSpecialization());
         if (incoming.getSpecialization() == null && carriesSpecialization) {
