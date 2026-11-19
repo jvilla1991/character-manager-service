@@ -2484,4 +2484,87 @@ class PCServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
     }
+
+    // --- WoW Mage (wizard + Arcane/Fire/Frost) ---
+
+    @Test
+    void addPC_acceptsEachMageSpecialization() {
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        for (String spec : List.of("Arcane", "Fire", "Frost")) {
+            PC wizard = new PC();
+            wizard.setClazz("wizard");
+            wizard.setSpecialization(spec);
+
+            PC saved = pcService.addPC(wizard);
+
+            assertThat(saved.getSpecialization()).isEqualTo(spec);
+            assertThat(saved.getSubclass()).isNull();
+        }
+    }
+
+    @Test
+    void addPC_rejectsInvalidMageSpecialization_andMageSpecsOnOtherClasses() {
+        for (String bad : List.of("arcane", "Holy", "Destruction", "Brewmaster", "Devastation")) {
+            PC wizard = new PC();
+            wizard.setClazz("wizard");
+            wizard.setSpecialization(bad);
+            assertThatThrownBy(() -> pcService.addPC(wizard))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        for (String clazz : List.of("sorcerer", "warlock", "rogue", "bard")) {
+            PC other = new PC();
+            other.setClazz(clazz);
+            other.setSpecialization("Arcane");
+            assertThatThrownBy(() -> pcService.addPC(other))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatePC_ownerMayChangeMageSpecialization() {
+        pc.setClazz("wizard");
+        pc.setSubclass("Evoker");
+        pc.setSpecialization("Fire");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("wizard");
+        incoming.setSubclass("Evoker");
+        incoming.setSpecialization("Frost");
+        assertThat(pcService.updatePC(incoming, ownerId).getSpecialization()).isEqualTo("Frost");
+    }
+
+    @Test
+    void updatePC_rejectsInvalidMageSpecialization() {
+        pc.setClazz("wizard");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("wizard");
+        incoming.setSpecialization("Shadow");
+        assertThatThrownBy(() -> pcService.updatePC(incoming, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_acceptsMageSpecialization() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC wizard = new PC();
+        wizard.setId(1L);
+        wizard.setClazz("wizard");
+        wizard.setSpecialization("Arcane");
+        assertThat(pcService.updatePCAsDm(wizard, null, dmId).getSpecialization()).isEqualTo("Arcane");
+    }
 }

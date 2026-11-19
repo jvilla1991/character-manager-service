@@ -414,7 +414,8 @@ public final class ClassProgression {
     // Elements and the Path of the Spiritual Guardian. The Shaman is also the first variant whose
     // specialization swaps a generic class feature (Totems for Primal Knowledge) — see
     // ClassFeatures' variant feature overrides. The WoW Warlock (Affliction/Demonology/
-    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides. The
+    // Destruction) adds only the specialization: no WoW-only patron and no feature overrides, and the
+    // WoW Mage (wizard + Arcane/Fire/Frost) is the same — its WoW General feats live in FeatCatalog. The
     // WoW Priest — a cleric with Discipline/Holy/Shadow — unlocks the Discipline Domain and the
     // Shadow Domain at its level-3 choice, with no feature overrides. The WoW Evoker — a sorcerer
     // with Augmentation/Devastation/Preservation — is the first variant that REQUIRES a subclass:
@@ -527,7 +528,14 @@ public final class ClassProgression {
             new ClassSpecializations("warlock", List.of("Affliction", "Demonology", "Destruction"), true,
                     Map.of("Affliction", "Great Old One Patron",
                             "Demonology", "Fiend Patron",
-                            "Destruction", "Fiend Patron"))
+                            "Destruction", "Fiend Patron")),
+            // WoW Mage. No WoW-only school, no Fighting Style choice and no feature overrides; every
+            // specialization recommends the PHB Evoker. The mage's WoW content is its General feats
+            // (Clearcasting, Fingers of Frost, Hot Streak — see FeatCatalog), open to any class.
+            new ClassSpecializations("wizard", List.of("Arcane", "Fire", "Frost"), true,
+                    Map.of("Arcane", "Evoker",
+                            "Fire", "Evoker",
+                            "Frost", "Evoker"))
     );
 
     /** The WoW specializations for a class (case-insensitive, trimmed), if it has any. */

@@ -15,7 +15,8 @@ import java.util.function.BiPredicate;
  *
  * <p>Three 2024 PHB categories are selectable, with prerequisite gating:
  * <ul>
- *   <li><b>General feats</b> — always offered at an ASI level.</li>
+ *   <li><b>General feats</b> — always offered at an ASI level, together with the World of
+ *       Warcraft module's General feats (level 4+).</li>
  *   <li><b>Fighting Style feats</b> — offered only to classes with the Fighting Style class
  *       feature (Fighter, Paladin, Ranger).</li>
  *   <li><b>Epic Boon feats</b> — offered only at level 19+.</li>
@@ -82,6 +83,21 @@ public final class FeatCatalog {
             "Telepathic",
             "War Caster",
             "Weapon Master"
+    );
+
+    /** The level prerequisite every General feat carries (PHB 2024 and World of Warcraft alike). */
+    public static final int GENERAL_FEAT_MIN_LEVEL = 4;
+
+    /**
+     * World of Warcraft tabletop module General feats (prerequisite: level 4+). Written primarily
+     * for mages, but — like any General feat — offered to every class at an ASI level. Each gives
+     * +1 Intelligence (max 20), which, as with the PHB half-feats, the player records via the
+     * normal sheet flow; the server records the feat name only.
+     */
+    private static final Set<String> WOW_GENERAL_FEATS = Set.of(
+            "Clearcasting",
+            "Fingers of Frost",
+            "Hot Streak"
     );
 
     /** The 10 Fighting Style feats from the 2024 PHB (prerequisite: Fighting Style feature). */
@@ -224,11 +240,14 @@ public final class FeatCatalog {
 
     /**
      * Every feat selectable by the given class at the given (new) level, sorted: General feats
-     * always, Fighting Style feats when the class has the Fighting Style feature, Epic Boons at
-     * level 19+.
+     * always, the World of Warcraft General feats at level {@value #GENERAL_FEAT_MIN_LEVEL}+,
+     * Fighting Style feats when the class has the Fighting Style feature, Epic Boons at level 19+.
      */
     public static List<String> featOptions(String clazz, int newLevel) {
         List<String> options = new ArrayList<>(GENERAL_FEATS);
+        if (newLevel >= GENERAL_FEAT_MIN_LEVEL) {
+            options.addAll(WOW_GENERAL_FEATS);
+        }
         if (hasFightingStyleFeature(clazz)) {
             options.addAll(FIGHTING_STYLE_FEATS);
         }
