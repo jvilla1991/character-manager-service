@@ -4,7 +4,10 @@ import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.CastSpellRequest;
+import com.moo.charactermanagerservice.dto.LongRestOptionsRequest;
+import com.moo.charactermanagerservice.dto.LongRestReadyRequest;
 import com.moo.charactermanagerservice.dto.LongRestRequest;
+import com.moo.charactermanagerservice.dto.RestVoteRequest;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
@@ -24,6 +27,7 @@ import com.moo.charactermanagerservice.dto.SpendHitDieRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.dto.XpAwardRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
+import com.moo.charactermanagerservice.models.RestType;
 import com.moo.charactermanagerservice.services.SessionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -257,16 +261,57 @@ public class SessionController {
     }
 
     /**
-     * DM long rest for the seated party: recovers all spell slots and (in a
-     * survival campaign) sheds fatigue — 3 for an undisturbed rest, 1 otherwise.
+     * DM opens a long rest phase for the seated party (no vote). Nothing is
+     * recovered yet: players mark Ready, and recovery lands on
+     * {@code /long-rest/finish} or when the last able player readies up. The
+     * optional body seeds the undisturbed option (default true).
      */
     @PostMapping("/session/{id}/long-rest")
     public ResponseEntity<SessionStateView> longRest(@PathVariable Long id,
-                                                     @RequestBody LongRestRequest request,
+                                                     @RequestBody(required = false) LongRestRequest request,
                                                      Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(sessionService.longRest(
-                id, Boolean.TRUE.equals(request.undisturbed()), user.getUuid()));
+        return ResponseEntity.ok(sessionService.openLongRest(
+                id, request == null ? null : request.undisturbed(), user.getUuid()));
+    }
+
+    /**
+     * A player marks their own seated PC ready (or not ready) for the open
+     * long rest. The last able player's Ready finishes the rest.
+     */
+    @PostMapping("/session/{id}/long-rest/ready")
+    public ResponseEntity<SessionStateView> longRestReady(@PathVariable Long id,
+                                                          @RequestBody LongRestReadyRequest request,
+                                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.setLongRestReady(
+                id, request.pcId(), request.ready(), user.getUuid()));
+    }
+
+    /** DM sets the open long rest's options (advance the clock, undisturbed). */
+    @PutMapping("/session/{id}/long-rest/options")
+    public ResponseEntity<SessionStateView> longRestOptions(@PathVariable Long id,
+                                                            @RequestBody LongRestOptionsRequest request,
+                                                            Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.setLongRestOptions(
+                id, request.advanceClock(), request.undisturbed(), user.getUuid()));
+    }
+
+    /** DM finishes the open long rest now: recovery is applied to every seated hero. */
+    @PostMapping("/session/{id}/long-rest/finish")
+    public ResponseEntity<SessionStateView> finishLongRest(@PathVariable Long id,
+                                                           Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.finishLongRest(id, user.getUuid()));
+    }
+
+    /** DM interrupts the open long rest: the phase closes and nobody recovers. */
+    @PostMapping("/session/{id}/long-rest/interrupt")
+    public ResponseEntity<SessionStateView> interruptLongRest(@PathVariable Long id,
+                                                              Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.interruptLongRest(id, user.getUuid()));
     }
 
     /**
@@ -281,15 +326,19 @@ public class SessionController {
     }
 
     /**
-     * A seated player calls a short rest: opens a 60-second unanimous vote
-     * among every seated PC (the caller's ballot is pre-set to yes). Passing
-     * opens the same short-rest window as the DM's toggle.
+     * A seated player calls a rest: opens a 60-second unanimous vote among
+     * every seated PC (the caller's ballot is pre-set to yes). The optional
+     * body picks the rest ({@code restType} SHORT or LONG, default SHORT). A
+     * passed SHORT vote opens the same short-rest window as the DM's toggle;
+     * a passed LONG vote opens the long rest phase.
      */
     @PostMapping("/session/{id}/rest-vote")
     public ResponseEntity<SessionStateView> initiateRestVote(@PathVariable Long id,
+                                                             @RequestBody(required = false) RestVoteRequest request,
                                                              Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(sessionService.initiateRestVote(id, user.getUuid()));
+        return ResponseEntity.ok(sessionService.initiateRestVote(
+                id, RestType.parse(request == null ? null : request.restType()), user.getUuid()));
     }
 
     /** A player answers the active rest vote (true = yes, false = no). */
