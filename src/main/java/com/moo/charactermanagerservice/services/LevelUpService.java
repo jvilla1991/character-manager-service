@@ -351,7 +351,7 @@ public class LevelUpService {
                     "An ability score improvement or feat is required at level " + newLevel);
         }
         if (hasAsi) {
-            applyAsiAllocation(pc, increases);
+            applyAsiAllocation(pc, newLevel, increases);
         } else {
             applyFeatChoice(pc, newLevel, feat);
         }
@@ -360,8 +360,13 @@ public class LevelUpService {
     /**
      * Validate and apply an ASI allocation: exactly 2 points (+2 to one ability or +1 to two
      * distinct ones), no score past {@value ClassProgression#MAX_ABILITY_SCORE}.
+     *
+     * <p>Each raised score also gets a labelled line, {@code Level N Increase}, among the PC's
+     * stat adjustments, so the sheet's ability breakdown says where the points came from. A score
+     * that already carries the most lines it may hold still rises; only the line is left out
+     * (see {@link StatAdjustmentRules#appendLine}).
      */
-    private void applyAsiAllocation(PC pc, Map<String, Integer> increases) {
+    private void applyAsiAllocation(PC pc, int newLevel, Map<String, Integer> increases) {
         // Normalize keys and total the points.
         Map<String, Integer> allocation = new LinkedHashMap<>();
         int total = 0;
@@ -390,8 +395,11 @@ public class LevelUpService {
                         ability + " cannot exceed " + ClassProgression.MAX_ABILITY_SCORE);
             }
         });
-        allocation.forEach((ability, points) ->
-                setAbilityScore(pc, ability, (short) (abilityScore(pc, ability) + points)));
+        allocation.forEach((ability, points) -> {
+            setAbilityScore(pc, ability, (short) (abilityScore(pc, ability) + points));
+            pc.setStatAdjustments(StatAdjustmentRules.appendLine(
+                    pc.getStatAdjustments(), ability, points, "Level " + newLevel + " Increase"));
+        });
     }
 
     /**

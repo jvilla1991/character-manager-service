@@ -152,6 +152,59 @@ class StatAdjustmentRulesTest {
         assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
     }
 
+    // --- appendLine -----------------------------------------------------------
+
+    @Test
+    void appendLine_startsAValue_andAddsAfterWhatIsThere() {
+        String first = StatAdjustmentRules.appendLine(null, "STR", 1, "Level 4 Increase");
+        assertThat(first).isEqualTo("{\"STR\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+
+        String second = StatAdjustmentRules.appendLine(first, "STR", 2, "Level 8 Increase");
+        assertThat(second).isEqualTo("{\"STR\":[{\"value\":1,\"label\":\"Level 4 Increase\"},"
+                + "{\"value\":2,\"label\":\"Level 8 Increase\"}]}");
+
+        assertThat(StatAdjustmentRules.appendLine("  ", "DEX", 1, "Level 4 Increase"))
+                .isEqualTo("{\"DEX\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+    }
+
+    @Test
+    void appendLine_keepsTheOtherNumbersExactlyAsStored() {
+        String stored = "{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}";
+
+        assertThat(StatAdjustmentRules.appendLine(stored, "CON", 1, "Level 4 Increase"))
+                .isEqualTo("{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                        + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}],"
+                        + "\"CON\":[{\"value\":1,\"label\":\"Level 4 Increase\"}]}");
+    }
+
+    @Test
+    void appendLine_leavesTheValueAlone_whenTheNumberIsFull() {
+        String line = "{\"value\":1,\"label\":\"Tome\"}";
+        String full = "{\"STR\":[" + String.join(",", Collections.nCopies(StatAdjustmentRules.LINES_MAX, line)) + "]}";
+
+        assertThat(StatAdjustmentRules.appendLine(full, "STR", 1, "Level 4 Increase")).isEqualTo(full);
+        // Another number on the same character still has room.
+        assertThat(StatAdjustmentRules.parse(StatAdjustmentRules.appendLine(full, "DEX", 1, "Level 4 Increase")))
+                .containsKey("DEX");
+    }
+
+    @Test
+    void appendLine_leavesTheValueAlone_whenThereIsNoRoomForAnotherNumber() {
+        String full = withKeys(StatAdjustmentRules.STATS_MAX);
+
+        assertThat(StatAdjustmentRules.appendLine(full, "STR", 1, "Level 4 Increase")).isEqualTo(full);
+        // A number that is already there can still take a line.
+        assertThat(StatAdjustmentRules.parse(StatAdjustmentRules.appendLine(full, "stat0", 1, "More")).get("stat0"))
+                .hasSize(2);
+    }
+
+    @Test
+    void appendLine_leavesAnUnreadableValueAlone() {
+        assertThat(StatAdjustmentRules.appendLine("not json", "STR", 1, "Level 4 Increase")).isEqualTo("not json");
+        assertThat(StatAdjustmentRules.appendLine("{\"STR\":5}", "STR", 1, "Level 4 Increase")).isEqualTo("{\"STR\":5}");
+    }
+
     // --- parse ---------------------------------------------------------------
 
     @Test

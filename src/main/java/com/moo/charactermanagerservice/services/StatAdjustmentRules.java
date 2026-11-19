@@ -192,6 +192,52 @@ public final class StatAdjustmentRules {
         return out;
     }
 
+    /**
+     * Add one line under a number in a stored value, for a change the server
+     * makes itself (a level-up raising an ability score records where the
+     * points came from). Everything already stored is kept as it is.
+     *
+     * <p>Never fails and never breaks a limit: when the number already carries
+     * {@link #LINES_MAX} lines, when a new key would go past {@link #STATS_MAX},
+     * or when the stored value cannot be read, the value comes back unchanged
+     * and the line is simply not recorded. The number itself still changes;
+     * the SPA shows the unexplained part as its base.
+     */
+    public static String appendLine(String json, String stat, int value, String label) {
+        Map<String, Object> raw;
+        if (json == null || json.isBlank()) {
+            raw = new LinkedHashMap<>();
+        } else {
+            try {
+                raw = MAPPER.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {});
+            } catch (JsonProcessingException e) {
+                return json;
+            }
+            if (raw == null) raw = new LinkedHashMap<>();
+        }
+        List<Object> lines;
+        Object existing = raw.get(stat);
+        if (existing == null) {
+            if (raw.size() >= STATS_MAX) return json;
+            lines = new ArrayList<>();
+        } else if (existing instanceof List<?> stored) {
+            if (stored.size() >= LINES_MAX) return json;
+            lines = new ArrayList<>(stored);
+        } else {
+            return json;
+        }
+        Map<String, Object> line = new LinkedHashMap<>();
+        line.put("value", value);
+        line.put("label", label);
+        lines.add(line);
+        raw.put(stat, lines);
+        try {
+            return MAPPER.writeValueAsString(raw);
+        } catch (JsonProcessingException e) {
+            return json;
+        }
+    }
+
     private static ResponseStatusException bad(String message) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
