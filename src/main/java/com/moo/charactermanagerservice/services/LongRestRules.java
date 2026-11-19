@@ -56,7 +56,7 @@ final class LongRestRules {
     // The 2024 PHB "Prepared Spells" column by class level — the same table as
     // PREPARED_SPELLS in the client's utils/spell-preparation.ts. Kept apart
     // from ClassProgression.preparedSpellsFor on purpose: that one drives the
-    // level-up spell picks and has no half-caster rows.
+    // level-up spell picks, this one the cap on the prepared list.
     private static final Map<String, int[]> PREPARED_CAP = Map.of(
             "bard",     new int[] {4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22},
             "cleric",   new int[] {4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22},
@@ -79,11 +79,24 @@ final class LongRestRules {
 
     // ── Prepared spells ────────────────────────────────────────────────────────
 
-    /** Lower-cased names of the hero's leveled spells that count as prepared right now. */
+    /**
+     * True for a leveled spell a feature always keeps prepared ({@code alwaysPrepared} on the
+     * saved spell: a Ranger's Hunter's Mark, a Paladin's Find Steed, a DM grant marked so). Such a
+     * spell is outside the prepared list altogether: it never counts against the cap, is never
+     * part of a long-rest choice, and keeps its flags.
+     */
+    static boolean isAlwaysPrepared(Map<String, Object> spell) {
+        return isLeveled(spell) && Boolean.TRUE.equals(spell.get("alwaysPrepared"));
+    }
+
+    /**
+     * Lower-cased names of the hero's leveled spells that count as prepared right now —
+     * the ones chosen for the prepared list, so always-prepared spells are left out.
+     */
     static Set<String> preparedNow(PC pc) {
         Set<String> names = new LinkedHashSet<>();
         for (Map<String, Object> spell : JSON.parse(pc.getSpells())) {
-            if (isLeveled(spell) && !Boolean.FALSE.equals(spell.get("prepared"))) {
+            if (isLeveled(spell) && !isAlwaysPrepared(spell) && !Boolean.FALSE.equals(spell.get("prepared"))) {
                 names.add(key(spellName(spell)));
             }
         }
@@ -95,7 +108,9 @@ final class LongRestRules {
      * message the player can act on. Rules:
      * <ul>
      *   <li>every name is a leveled spell already on the hero's spell list
-     *       (cantrips are always prepared and are not part of the choice);</li>
+     *       (cantrips are always prepared and are not part of the choice); a
+     *       spell a feature always keeps prepared is not part of it either, and
+     *       is ignored if a list names it;</li>
      *   <li>a class that cannot change spells at a long rest sends its current
      *       list or nothing;</li>
      *   <li>a Paladin or Ranger differs from the current list by at most one
@@ -125,6 +140,9 @@ final class LongRestRules {
             }
             if (!isLeveled(spell)) {
                 throw bad(name.trim() + " is a cantrip. Cantrips are always prepared and are not part of this choice");
+            }
+            if (isAlwaysPrepared(spell)) {
+                continue;
             }
             wanted.add(key(name));
         }
@@ -160,17 +178,24 @@ final class LongRestRules {
         if (requested == null) {
             return null;
         }
+        List<Map<String, Object>> spells = JSON.parse(pc.getSpells());
+        Set<String> alwaysPrepared = new LinkedHashSet<>();
+        for (Map<String, Object> spell : spells) {
+            if (isAlwaysPrepared(spell)) {
+                alwaysPrepared.add(key(spellName(spell)));
+            }
+        }
         Set<String> wanted = new LinkedHashSet<>();
         requested.forEach(name -> wanted.add(key(name)));
+        wanted.removeAll(alwaysPrepared);
         Set<String> current = preparedNow(pc);
         if (wanted.equals(current)) {
             return null;
         }
         List<String> added = new ArrayList<>();
         List<String> removed = new ArrayList<>();
-        List<Map<String, Object>> spells = JSON.parse(pc.getSpells());
         for (Map<String, Object> spell : spells) {
-            if (!isLeveled(spell)) {
+            if (!isLeveled(spell) || isAlwaysPrepared(spell)) {
                 continue;
             }
             String name = key(spellName(spell));
@@ -206,6 +231,11 @@ final class LongRestRules {
      * or granted since — keeps the flag it arrives with, and a spell the body
      * drops is simply gone. Nothing is rejected, like the other server-owned
      * fields. Mutates {@code incoming}.
+     *
+     * <p>The {@code alwaysPrepared} marker (and the {@code grantedBy} label that
+     * goes with it) is kept the same way: it decides whether a spell counts
+     * against the cap, so on a spell already on the stored sheet it is set by
+     * the create wizard, a level-up or the DM, never by an owner's save.
      */
     static void keepStoredPreparedFlags(PC incoming, PC existing) {
         Map<String, Map<String, Object>> stored = new LinkedHashMap<>();
@@ -233,6 +263,16 @@ final class LongRestRules {
             } else if (spell.containsKey("prepared")) {
                 spell.remove("prepared");
                 changed = true;
+            }
+            for (String marker : List.of("alwaysPrepared", "grantedBy")) {
+                if (!java.util.Objects.equals(was.get(marker), spell.get(marker))) {
+                    if (was.containsKey(marker)) {
+                        spell.put(marker, was.get(marker));
+                    } else {
+                        spell.remove(marker);
+                    }
+                    changed = true;
+                }
             }
         }
         if (changed) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
+import com.moo.charactermanagerservice.dto.SpellGrant;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
@@ -228,10 +229,10 @@ class LevelUpServiceTest {
         assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
     }
 
-    // --- half casters (Paladin, Ranger): slots, but no spell choices at level-up ---
+    // --- half casters (Paladin, Ranger): slots and prepared-spell picks at level-up ---
 
     @Test
-    void preview_halfCaster_reportsSlotChanges_butNoSpellChoices() {
+    void preview_halfCaster_reportsSlotChanges_andThePreparedSpellDelta() {
         PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5: the first 2nd-level slots
         paladin.setSubclass("Oath of Devotion");
         paladin.setSpellSlots("{\"1\":{\"max\":3,\"used\":1}}");
@@ -240,11 +241,35 @@ class LevelUpServiceTest {
 
         assertThat(p.currentSpellSlots()).isEqualTo(Map.of(1, 3));
         assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 4, 2, 2));
-        // No cantrip or prepared-spell delta: the level-up offers a half caster no spells.
+        // The class teaches no cantrips; prepared spells go 5 -> 6.
         assertThat(p.currentCantripsKnown()).isZero();
         assertThat(p.newCantripsKnown()).isZero();
-        assertThat(p.currentSpellsKnown()).isZero();
-        assertThat(p.newSpellsKnown()).isZero();
+        assertThat(p.currentSpellsKnown()).isEqualTo(5);
+        assertThat(p.newSpellsKnown()).isEqualTo(6);
+    }
+
+    @Test
+    void preview_halfCaster_preparedSpellDelta_followsThe2024Table() {
+        // New prepared spells gained on reaching each level 2..20 (2024 PHB Paladin / Ranger).
+        int[] gained = {1, 1, 1, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 1, 0, 2, 0, 1, 0};
+        for (String clazz : List.of("Paladin", "Ranger")) {
+            for (int level = 1; level < 20; level++) {
+                LevelUpPreview p = service.preview(pc(clazz, level, 14, 10 * level, 10 * level));
+                assertThat(p.newSpellsKnown() - p.currentSpellsKnown()).as(clazz + " " + level + " -> " + (level + 1))
+                        .isEqualTo(gained[level - 1]);
+            }
+        }
+    }
+
+    @Test
+    void preview_wowVariantsOnHalfCasters_getTheSamePreparedSpellDelta() {
+        // Death Knight and WoW Paladin are stored as paladins; Demon Hunter and WoW Hunter as rangers.
+        for (PC hero : List.of(deathKnight(1), demonHunter(1), wowPaladin(1, "Holy"), hunter(1, null, "Survival"))) {
+            LevelUpPreview p = service.preview(hero);
+            assertThat(p.currentSpellsKnown()).as(hero.getClazz()).isEqualTo(2);
+            assertThat(p.newSpellsKnown()).as(hero.getClazz()).isEqualTo(3);
+            assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 2));
+        }
     }
 
     @Test
@@ -279,10 +304,29 @@ class LevelUpServiceTest {
     }
 
     @Test
-    void applyLevelUp_halfCaster_stillLearnsNoLeveledSpells() {
-        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5
-        paladin.setSubclass("Oath of Devotion");
+    void applyLevelUp_halfCaster_learnsItsNewPreparedSpell() {
+        PC paladin = pc("Paladin", 1, 14, 12, 12); // 1 -> 2: prepared 2 -> 3
+        paladin.setSpells("[{\"lvl\":1,\"name\":\"Bless\"},{\"lvl\":1,\"name\":\"Heroism\"}]");
 
+        service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Cure Wounds")));
+
+        assertThat(paladin.getLevel()).isEqualTo((short) 2);
+        assertThat(paladin.getSpells()).contains("Bless").contains("Heroism").contains("Cure Wounds");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_rejectsMoreSpellsThanTheDelta() {
+        PC ranger = pc("Ranger", 1, 14, 12, 12); // 1 -> 2: one new spell
+        assertThatThrownBy(() -> service.applyLevelUp(ranger, null, null, null,
+                List.of(spell(1, "Cure Wounds"), spell(1, "Goodberry"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("at most 1 new spell");
+        assertThat(ranger.getLevel()).isEqualTo((short) 1);
+
+        // 5 -> 6 has no new prepared spell at all.
+        PC paladin = pc("Paladin", 5, 14, 50, 50);
+        paladin.setSubclass("Oath of Devotion");
         assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Bless"))))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
@@ -325,6 +369,231 @@ class LevelUpServiceTest {
         service.applyLevelUp(fighter);
 
         assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_capsSpellLevelAtItsHighestSlot() {
+        // Paladin 3 -> 4 (an ASI level): still only 1st-level slots, so a 2nd-level spell is refused.
+        PC low = pc("Paladin", 3, 14, 30, 30);
+        low.setSubclass("Oath of Devotion");
+        assertThatThrownBy(() -> service.applyLevelUp(low, null, Map.of("STR", 2), null, List.of(spell(2, "Aid"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400))
+                .hasMessageContaining("highest spell level");
+
+        // Ranger 4 -> 5: the first 2nd-level slots arrive with the new prepared spell.
+        PC ranger = pc("Ranger", 4, 14, 40, 40);
+        ranger.setSubclass("Hunter");
+        service.applyLevelUp(ranger, null, null, null, List.of(spell(2, "Pass without Trace")));
+        assertThat(ranger.getSpells()).contains("Pass without Trace");
+        assertThat(ranger.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
+    }
+
+    // --- always-prepared spells from class and subclass features (ClassSpellGrants) ---
+
+    private static final String FIND_STEED_HELD =
+            "{\"lvl\":2,\"name\":\"Find Steed\",\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Faithful Steed\"}";
+
+    private static List<String> grantNames(List<SpellGrant> grants) {
+        return grants.stream().map(SpellGrant::name).toList();
+    }
+
+    @Test
+    void preview_listsTheAlwaysPreparedSpellsOwedAtTheNewLevel() {
+        assertThat(service.preview(pc("Paladin", 1, 14, 12, 12)).alwaysPreparedSpells())
+                .containsExactly(new SpellGrant("Divine Smite", "Divine Smite"));
+        // A Death Knight's Runic Smite replaces Divine Smite, spell and all.
+        assertThat(service.preview(deathKnight(1)).alwaysPreparedSpells()).isEmpty();
+        assertThat(service.preview(deathKnight(4)).alwaysPreparedSpells())
+                .containsExactly(new SpellGrant("Find Steed", "Faithful Steed"));
+        assertThat(service.preview(pc("Fighter", 4, 14, 40, 40)).alwaysPreparedSpells()).isEmpty();
+        assertThat(service.preview(pc("Bard", 4, 14, 30, 30)).alwaysPreparedSpells()).isEmpty();
+    }
+
+    @Test
+    void preview_leavesOutTheSpellsTheCharacterAlreadyHoldsAsAlwaysPrepared() {
+        // Oath of Devotion paladin 4 -> 5 who was given everything so far: only level 5 is new.
+        PC paladin = paladin(4);
+        paladin.setSpells("["
+                + "{\"lvl\":1,\"name\":\"Divine Smite\",\"alwaysPrepared\":true},"
+                + "{\"lvl\":1,\"name\":\"protection from evil and good\",\"alwaysPrepared\":true},"
+                + "{\"lvl\":1,\"name\":\"Shield of Faith\",\"alwaysPrepared\":true},"
+                + "{\"lvl\":1,\"name\":\"Bless\",\"prepared\":true}]");
+        assertThat(service.preview(paladin).alwaysPreparedSpells()).containsExactly(
+                new SpellGrant("Aid", "Oath of Devotion Spells"),
+                new SpellGrant("Zone of Truth", "Oath of Devotion Spells"),
+                new SpellGrant("Find Steed", "Faithful Steed"));
+    }
+
+    @Test
+    void preview_catchesUpACharacterThatPassedItsGrantLevels() {
+        // Made before grants existed: everything owed through the new level is offered, earliest first.
+        assertThat(grantNames(service.preview(paladin(5)).alwaysPreparedSpells())).containsExactly(
+                "Divine Smite", "Protection from Evil and Good", "Shield of Faith", "Aid", "Zone of Truth", "Find Steed");
+        // Level-1 feature spells too: an older Ranger's Hunter's Mark, an older Druid's Speak with Animals.
+        assertThat(service.preview(pc("Ranger", 1, 14, 12, 12)).alwaysPreparedSpells())
+                .containsExactly(new SpellGrant("Hunter's Mark", "Favored Enemy"));
+        assertThat(service.preview(druid(4)).alwaysPreparedSpells())
+                .contains(new SpellGrant("Speak with Animals", "Druidic"));
+        // A spell held as an ordinary pick is still owed: the level-up marks it.
+        PC ranger = pc("Ranger", 1, 14, 12, 12);
+        ranger.setSpells("[{\"lvl\":1,\"name\":\"Hunter's Mark\",\"prepared\":true}]");
+        assertThat(grantNames(service.preview(ranger).alwaysPreparedSpells())).containsExactly("Hunter's Mark");
+    }
+
+    @Test
+    void preview_whenASubclassIsDue_listsTheSpellsEachOptionAdds() {
+        PC paladin = pc("Paladin", 2, 14, 20, 20); // 2 -> 3: the oath is chosen now
+        paladin.setSpells("[{\"lvl\":1,\"name\":\"Divine Smite\",\"alwaysPrepared\":true}]");
+
+        LevelUpPreview p = service.preview(paladin);
+
+        assertThat(p.subclassDue()).isTrue();
+        assertThat(p.alwaysPreparedSpells()).isEmpty();
+        assertThat(p.alwaysPreparedSpellsBySubclass().keySet()).containsExactly(
+                "Oath of Devotion", "Oath of Glory", "Oath of the Ancients", "Oath of Vengeance");
+        assertThat(p.alwaysPreparedSpellsBySubclass().get("Oath of Vengeance")).containsExactly(
+                new SpellGrant("Bane", "Oath of Vengeance Spells"),
+                new SpellGrant("Hunter's Mark", "Oath of Vengeance Spells"));
+
+        // A World of Warcraft paladin is also offered Oath of the Holy, whose spells stay on the app's table.
+        PC holy = wowPaladin(2, "Holy");
+        assertThat(service.preview(holy).subclassOptions()).contains("Oath of the Holy");
+        assertThat(service.preview(holy).alwaysPreparedSpellsBySubclass()).doesNotContainKey("Oath of the Holy");
+
+        // No subclass due: nothing per option.
+        assertThat(service.preview(paladin(4)).alwaysPreparedSpellsBySubclass()).isEmpty();
+        // A fighter's subclasses grant no spells.
+        assertThat(service.preview(pc("Fighter", 2, 14, 20, 20)).alwaysPreparedSpellsBySubclass()).isEmpty();
+    }
+
+    @Test
+    void applyLevelUp_savesAGrantedSpellAsAlwaysPrepared_outsideThePickCount() {
+        // Paladin 4 -> 5: one new prepared spell (5 -> 6) plus Find Steed from Faithful Steed.
+        PC paladin = paladin(4);
+        Map<String, Object> findSteed = new LinkedHashMap<>(spell(2, "Find Steed"));
+        findSteed.put("school", "Conjuration");
+
+        service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Bless"), findSteed));
+
+        assertThat(paladin.getLevel()).isEqualTo((short) 5);
+        assertThat(paladin.getSpells())
+                .contains("{\"lvl\":1,\"name\":\"Bless\"}")
+                .contains("{\"lvl\":2,\"name\":\"Find Steed\",\"school\":\"Conjuration\","
+                        + "\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Faithful Steed\"}");
+    }
+
+    @Test
+    void applyLevelUp_aGrantedSpellIsNotAPick_soThePickLimitStillHolds() {
+        // Two picks plus the grant: the grant is free, the second pick is one too many.
+        PC paladin = paladin(4);
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null,
+                List.of(spell(1, "Heroism"), spell(1, "Bless"), spell(2, "Find Steed"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("at most 1 new spell");
+
+        // Paladin 1 -> 2: Divine Smite rides with the level 2 pick and a cantrip Fighting Style.
+        PC novice = pc("Paladin", 1, 14, 10, 10);
+        service.applyLevelUp(novice, null, null, null,
+                List.of(cantrip("Sacred Flame"), cantrip("Guidance"), spell(1, "Bless"), spell(1, "divine smite")),
+                HpMode.AVERAGE, null, "Blessed Warrior");
+        assertThat(novice.getSpells()).contains("Sacred Flame").contains("Bless")
+                .contains("\"name\":\"divine smite\",\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Divine Smite\"");
+    }
+
+    @Test
+    void applyLevelUp_grantsTheSpellsOfTheSubclassChosenInTheSameRequest() {
+        // Paladin 2 -> 3: the oath, its two 3rd-level spells, and the level's one pick.
+        PC paladin = pc("Paladin", 2, 14, 20, 20);
+
+        service.applyLevelUp(paladin, "Oath of Devotion", null, null, List.of(
+                spell(1, "Bless"), spell(1, "Protection from Evil and Good"), spell(1, "Shield of Faith")));
+
+        assertThat(paladin.getSubclass()).isEqualTo("Oath of Devotion");
+        assertThat(paladin.getSpells()).isEqualTo("[{\"lvl\":1,\"name\":\"Bless\"},"
+                + "{\"lvl\":1,\"name\":\"Protection from Evil and Good\",\"prepared\":true,\"alwaysPrepared\":true,"
+                + "\"grantedBy\":\"Oath of Devotion Spells\"},"
+                + "{\"lvl\":1,\"name\":\"Shield of Faith\",\"prepared\":true,\"alwaysPrepared\":true,"
+                + "\"grantedBy\":\"Oath of Devotion Spells\"}]");
+
+        // Another oath's spells are not this character's: they count as picks, and two is too many.
+        PC other = pc("Paladin", 2, 14, 20, 20);
+        assertThatThrownBy(() -> service.applyLevelUp(other, "Oath of Glory", null, null, List.of(
+                spell(1, "Protection from Evil and Good"), spell(1, "Shield of Faith"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("at most 1 new spell");
+    }
+
+    @Test
+    void applyLevelUp_subclassListSpells_areGrants_notPicks() {
+        // Life Domain cleric 4 -> 5 owed its 3rd- and 5th-level rows; none of it is a pick.
+        PC cleric = cleric(4);
+        cleric.setSubclass("Life Domain");
+        service.applyLevelUp(cleric, null, null, null, List.of(
+                spell(3, "Mass Healing Word"), spell(3, "Revivify"), spell(1, "Bless"), spell(3, "Dispel Magic"),
+                spell(2, "Hold Person")));
+        assertThat(cleric.getSpells())
+                .contains("\"name\":\"Revivify\",\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Life Domain Spells\"")
+                .contains("\"name\":\"Bless\",\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Life Domain Spells\"")
+                .contains("{\"lvl\":3,\"name\":\"Dispel Magic\"}")
+                .contains("{\"lvl\":2,\"name\":\"Hold Person\"}");
+    }
+
+    @Test
+    void applyLevelUp_marksAGrantedSpellTheCharacterAlreadyHas_insteadOfRejectingIt() {
+        // Picked (or DM-granted) earlier: it stops counting against the prepared limit.
+        PC paladin = paladin(4);
+        paladin.setSpells("[{\"lvl\":2,\"name\":\"Find Steed\",\"prepared\":false}]");
+
+        service.applyLevelUp(paladin, null, null, null, List.of(spell(2, "Find Steed"), spell(1, "Bless")));
+
+        assertThat(paladin.getSpells()).isEqualTo("[" + FIND_STEED_HELD + ",{\"lvl\":1,\"name\":\"Bless\"}]");
+
+        // A grant from a level already passed is accepted too (catching up).
+        PC late = paladin(5); // 5 -> 6: no pick, Find Steed was due at 5
+        service.applyLevelUp(late, null, null, null, List.of(spell(2, "Find Steed")));
+        assertThat(late.getSpells()).isEqualTo("[" + FIND_STEED_HELD + "]");
+    }
+
+    @Test
+    void applyLevelUp_aSpellOutsideTheGrantTable_isAnOrdinaryPick_evenIfItClaimsTheMarker() {
+        // The client cannot mint always-prepared spells: Bless is on no paladin grant list.
+        Map<String, Object> sneaky = new LinkedHashMap<>(spell(1, "Bless"));
+        sneaky.put("alwaysPrepared", true);
+        sneaky.put("grantedBy", "Me");
+        PC noPick = paladin(5); // 5 -> 6: no new prepared spell
+        assertThatThrownBy(() -> service.applyLevelUp(noPick, null, null, null, List.of(sneaky)))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+
+        // Where a pick is allowed it is saved as a pick, with the marker dropped.
+        PC onePick = paladin(4);
+        service.applyLevelUp(onePick, null, null, null, List.of(sneaky));
+        assertThat(onePick.getSpells()).isEqualTo("[{\"lvl\":1,\"name\":\"Bless\"}]");
+
+        // A Death Knight has no Divine Smite grant at 2, so it counts as the level's one pick.
+        PC knight = deathKnight(1);
+        service.applyLevelUp(knight, null, null, null, List.of(spell(1, "Divine Smite")));
+        assertThat(knight.getSpells()).isEqualTo("[{\"lvl\":1,\"name\":\"Divine Smite\"}]");
+    }
+
+    @Test
+    void applyLevelUp_withoutTheGrantedSpellInTheRequest_addsNone() {
+        PC paladin = paladin(4);
+        service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Bless")));
+        assertThat(paladin.getSpells()).isEqualTo("[{\"lvl\":1,\"name\":\"Bless\"}]");
+
+        PC silent = paladin(4);
+        service.applyLevelUp(silent);
+        assertThat(silent.getSpells()).isNull();
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_rejectsACantripWithoutACantripFightingStyle() {
+        PC paladin = pc("Paladin", 1, 14, 12, 12);
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, List.of(spell(0, "Light"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
     }
 
     // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
@@ -1509,6 +1778,34 @@ class LevelUpServiceTest {
             assertThat(r.getFeatures()).contains("\"name\":\"Druidic Warrior\"").contains("Druid cantrips")
                     .contains("Wisdom");
         }
+    }
+
+    @Test
+    void applyLevelUp_cantripFightingStyle_ridesWithTheLevelTwoPreparedSpell() {
+        // Level 2 gives a half caster one new prepared spell AND the Fighting Style choice: the
+        // style's two cantrips and the spell arrive in the same request.
+        PC paladin = pc("Paladin", 1, 14, 10, 10);
+        paladin.setSpells("[{\"lvl\":1,\"name\":\"Bless\"},{\"lvl\":1,\"name\":\"Heroism\"}]");
+        List<Map<String, Object>> picks = List.of(cantrip("Sacred Flame"), cantrip("Guidance"), spell(1, "Cure Wounds"));
+        service.applyLevelUp(paladin, null, null, null, picks, HpMode.AVERAGE, null, "Blessed Warrior");
+        assertThat(paladin.getLevel()).isEqualTo((short) 2);
+        assertThat(paladin.getSpells()).contains("Bless").contains("Sacred Flame").contains("Guidance").contains("Cure Wounds");
+        assertThat(paladin.getFeatures()).contains("\"name\":\"Blessed Warrior\"");
+
+        PC ranger = pc("Ranger", 1, 14, 10, 10);
+        service.applyLevelUp(ranger, null, null, null,
+                List.of(spell(1, "Goodberry"), cantrip("Druidcraft"), cantrip("Thorn Whip")),
+                HpMode.AVERAGE, null, "Druidic Warrior");
+        assertThat(ranger.getSpells()).contains("Goodberry").contains("Druidcraft").contains("Thorn Whip");
+
+        // The style's cantrip count is still exact, and the spell count still capped.
+        PC tooMany = pc("Paladin", 1, 14, 10, 10);
+        assertThatThrownBy(() -> service.applyLevelUp(tooMany, null, null, null,
+                List.of(cantrip("Sacred Flame"), cantrip("Guidance"), spell(1, "Cure Wounds"), spell(1, "Bless")),
+                HpMode.AVERAGE, null, "Blessed Warrior"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThat(tooMany.getLevel()).isEqualTo((short) 1);
     }
 
     @Test

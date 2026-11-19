@@ -319,6 +319,70 @@ class LongRestRulesTest {
                 .contains("{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":false}");   // cantrips are not policed
     }
 
+    // --- always-prepared spells (alwaysPrepared on the saved spell) ---
+
+    private static PC rangerWithHuntersMark() {
+        PC ranger = caster("Ranger", 1); // cap 2
+        ranger.setSpells("["
+                + "{\"name\":\"Hunter's Mark\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Favored Enemy\"},"
+                + "{\"name\":\"Goodberry\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Cure Wounds\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Jump\",\"lvl\":1,\"prepared\":false}]");
+        return ranger;
+    }
+
+    @Test
+    void alwaysPreparedSpells_areOutsideThePreparedList_andNeverEatTheCap() {
+        PC ranger = rangerWithHuntersMark();
+        assertThat(LongRestRules.preparedNow(ranger)).containsExactly("goodberry", "cure wounds");
+
+        // Two chosen spells is exactly the level 1 cap, with Hunter's Mark on top: a swap is fine.
+        assertThatCode(() -> LongRestRules.validatePrepared(ranger, List.of("Goodberry", "Jump")))
+                .doesNotThrowAnyException();
+        // A list that names the always-prepared spell is read without it.
+        assertThatCode(() -> LongRestRules.validatePrepared(ranger, List.of("Hunter's Mark", "Goodberry", "Jump")))
+                .doesNotThrowAnyException();
+        // A third chosen spell is still over the cap.
+        assertRejected(() -> LongRestRules.validatePrepared(ranger, List.of("Goodberry", "Cure Wounds", "Jump")),
+                "the limit is 2");
+    }
+
+    @Test
+    void applyPrepared_leavesAlwaysPreparedSpellsAlone() {
+        PC ranger = rangerWithHuntersMark();
+        String change = LongRestRules.applyPrepared(ranger, List.of("Goodberry", "Jump"));
+
+        assertThat(change).isEqualTo("prepared Jump; unprepared Cure Wounds");
+        assertThat(ranger.getSpells())
+                .contains("{\"name\":\"Hunter's Mark\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Favored Enemy\"}")
+                .contains("{\"name\":\"Cure Wounds\",\"lvl\":1,\"prepared\":false}")
+                .contains("{\"name\":\"Jump\",\"lvl\":1,\"prepared\":true}");
+        // Naming it, or leaving it out, changes nothing.
+        assertThat(LongRestRules.applyPrepared(ranger, List.of("Hunter's Mark", "Goodberry", "Jump"))).isNull();
+    }
+
+    @Test
+    void keepStoredPreparedFlags_alsoKeepsTheAlwaysPreparedMarker() {
+        PC existing = rangerWithHuntersMark();
+        PC incoming = caster("Ranger", 1);
+        // An owner's save that drops the marker from Hunter's Mark and puts one on Goodberry.
+        incoming.setSpells("["
+                + "{\"name\":\"Hunter's Mark\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Goodberry\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Me\"},"
+                + "{\"name\":\"Cure Wounds\",\"lvl\":1,\"prepared\":true},"
+                + "{\"name\":\"Jump\",\"lvl\":1,\"prepared\":false},"
+                + "{\"name\":\"Alarm\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"DM grant\"}]");
+
+        LongRestRules.keepStoredPreparedFlags(incoming, existing);
+
+        assertThat(LongRestRules.preparedNow(incoming)).containsExactly("goodberry", "cure wounds");
+        assertThat(incoming.getSpells())
+                .contains("\"name\":\"Hunter's Mark\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"Favored Enemy\"")
+                .contains("{\"name\":\"Goodberry\",\"lvl\":1,\"prepared\":true}")
+                // A spell that is new in the body keeps what it arrives with.
+                .contains("\"name\":\"Alarm\",\"lvl\":1,\"prepared\":true,\"alwaysPrepared\":true,\"grantedBy\":\"DM grant\"");
+    }
+
     @Test
     void keepStoredPreparedFlags_leavesAnUnchangedBodyByteForByte() {
         PC existing = caster("Cleric", 3);
