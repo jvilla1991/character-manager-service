@@ -241,6 +241,12 @@ public class PcActivityLogService {
      * per line added or removed, matched by amount and label together, so a
      * relabel reads as one removed and one added. The total itself is covered
      * by the scalar diff above ("DM changed AC 15 → 16").
+     *
+     * <p>A companion key ({@code acRemoved}) is not a set of adjustments: it
+     * lists the calculated lines the DM took out of the number, so an entry
+     * appearing there reads "DM removed the calculated Dexterity line from AC"
+     * and one disappearing reads "DM restored the calculated Dexterity line on
+     * AC". Those are matched by label alone; the stored value means nothing.
      */
     private void diffStatAdjustments(List<String> changes, String beforeJson, String afterJson) {
         Map<String, List<StatAdjustmentRules.Line>> before = StatAdjustmentRules.parse(beforeJson);
@@ -249,6 +255,11 @@ public class PcActivityLogService {
         Set<String> stats = new LinkedHashSet<>(before.keySet());
         stats.addAll(after.keySet());
         for (String stat : stats) {
+            if (StatAdjustmentRules.isRemovedKey(stat)) {
+                diffRemovedLines(changes, statLabel(StatAdjustmentRules.statOfRemovedKey(stat)),
+                        before.getOrDefault(stat, List.of()), after.getOrDefault(stat, List.of()));
+                continue;
+            }
             String label = statLabel(stat);
             List<StatAdjustmentRules.Line> removed = new ArrayList<>(before.getOrDefault(stat, List.of()));
             for (StatAdjustmentRules.Line line : after.getOrDefault(stat, List.of())) {
@@ -262,9 +273,25 @@ public class PcActivityLogService {
         }
     }
 
+    /** One entry per calculated line taken out of a number or put back, matched by label. */
+    private void diffRemovedLines(List<String> changes, String label,
+                                  List<StatAdjustmentRules.Line> before, List<StatAdjustmentRules.Line> after) {
+        List<String> restored = new ArrayList<>(before.stream().map(StatAdjustmentRules.Line::label).toList());
+        for (StatAdjustmentRules.Line line : after) {
+            if (!restored.remove(line.label())) {
+                changes.add("DM removed the calculated " + line.label() + " line from " + label);
+            }
+        }
+        for (String name : restored) {
+            changes.add("DM restored the calculated " + name + " line on " + label);
+        }
+    }
+
     /**
      * The diff's name for an adjusted number: "AC" (as in the scalar diff), "level 3 spell slot"
-     * for a bonus-slot key ({@code slot3}, see {@link SpellSlotState}), else the key itself.
+     * for a bonus-slot key ({@code slot3}, see {@link SpellSlotState}), the key itself for an
+     * ability score ("STR", again the scalar diff's word), and the key as sent for any number
+     * this service has no name for yet.
      */
     private String statLabel(String stat) {
         if ("ac".equals(stat)) return "AC";

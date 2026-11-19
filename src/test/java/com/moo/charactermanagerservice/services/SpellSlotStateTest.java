@@ -45,6 +45,16 @@ class SpellSlotStateTest {
     }
 
     @Test
+    void maxFor_readsOnlyTheSlotKeysThemselves_notACompanionKeyThatStartsLikeOne() {
+        // "slot3Removed" would list removed calculated lines; its placeholder value is not a slot.
+        String companionOnly = "{\"slot3Removed\":[{\"value\":1,\"label\":\"Class table\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}";
+
+        assertThat(SpellSlotState.maxFor("Wizard", 5, companionOnly))
+                .isEqualTo(SpellSlotState.maxFor("Wizard", 5, null));
+    }
+
+    @Test
     void maxFor_aBonusLineCanOpenASpellLevelTheTableDoesNotHaveYet() {
         assertThat(SpellSlotState.maxFor(pc("Wizard", 1, null, line("slot4", 1, "Scroll study"))))
                 .isEqualTo(Map.of(1, 2, 4, 1));

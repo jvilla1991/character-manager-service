@@ -33,6 +33,19 @@ import java.util.regex.Pattern;
  * are bonus spell slots of that spell level. {@link SpellSlotState} adds them
  * to the class table to get the maximum stored in {@code pc.spell_slots}, so a
  * line there changes a number the server owns, not one the SPA works out.
+ *
+ * <p>A number can also have a companion key, its own name plus
+ * {@value #REMOVED_SUFFIX} ({@code acRemoved}). It lists the lines the SPA
+ * works out by itself that the DM took out of the total, one entry per line,
+ * named by that line's label:
+ *
+ * <pre>{"acRemoved":[{"value":1,"label":"Dexterity"}]}</pre>
+ *
+ * <p>An entry there has the shape of a line so it passes the same checks, but
+ * only its label means anything; the value is a placeholder. A companion key
+ * is never one of the numbers themselves: {@link SpellSlotState} reads the
+ * exact keys {@code slot1} .. {@code slot9} and nothing that merely starts
+ * like one, so {@code slot3Removed} adds no slots.
  */
 public final class StatAdjustmentRules {
 
@@ -46,6 +59,24 @@ public final class StatAdjustmentRules {
     public static final int LINES_MAX = 12;
     /** Most numbers one character may carry lines for. */
     public static final int STATS_MAX = 16;
+
+    /** What a number's companion key ends in: {@code acRemoved} holds the removed lines of {@code ac}. */
+    public static final String REMOVED_SUFFIX = "Removed";
+
+    /** Whether a key is the companion key of some number, listing its removed calculated lines. */
+    public static boolean isRemovedKey(String key) {
+        return key != null && key.length() > REMOVED_SUFFIX.length() && key.endsWith(REMOVED_SUFFIX);
+    }
+
+    /** The companion key of a number: {@code ac} gives {@code acRemoved}. */
+    public static String removedKey(String stat) {
+        return stat + REMOVED_SUFFIX;
+    }
+
+    /** The number a companion key belongs to: {@code acRemoved} gives {@code ac}. */
+    public static String statOfRemovedKey(String key) {
+        return key.substring(0, key.length() - REMOVED_SUFFIX.length());
+    }
 
     /** A stat key: a short camelCase name such as {@code ac}, {@code hpMax} or {@code STR}. */
     private static final Pattern STAT_KEY = Pattern.compile("[A-Za-z][A-Za-z0-9]{0,23}");

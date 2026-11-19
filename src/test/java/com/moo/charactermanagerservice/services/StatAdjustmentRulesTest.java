@@ -94,6 +94,39 @@ class StatAdjustmentRulesTest {
                         .isEqualTo(HttpStatus.BAD_REQUEST));
     }
 
+    // --- companion key for removed calculated lines ---------------------------
+
+    @Test
+    void removedKey_isTheNumbersNamePlusRemoved_andReadsBack() {
+        assertThat(StatAdjustmentRules.removedKey("ac")).isEqualTo("acRemoved");
+        assertThat(StatAdjustmentRules.isRemovedKey("acRemoved")).isTrue();
+        assertThat(StatAdjustmentRules.statOfRemovedKey("acRemoved")).isEqualTo("ac");
+        assertThat(StatAdjustmentRules.isRemovedKey("ac")).isFalse();
+        assertThat(StatAdjustmentRules.isRemovedKey("Removed")).isFalse(); // no number in front of it
+        assertThat(StatAdjustmentRules.isRemovedKey(null)).isFalse();
+    }
+
+    @Test
+    void isRemovedKey_neverTakesARealNumberForACompanionKey() {
+        // Every key that is a number in its own right: Armor Class, the ability scores, the
+        // bonus spell slots of each spell level, and the shapes the key pattern was written for.
+        List<String> numbers = new java.util.ArrayList<>(
+                List.of("ac", "STR", "DEX", "CON", "INT", "WIS", "CHA", "hpMax", "speed", "removed", "acremoved"));
+        for (int spellLevel = 1; spellLevel <= 9; spellLevel++) numbers.add(SpellSlotState.bonusKey(spellLevel));
+
+        assertThat(numbers).noneMatch(StatAdjustmentRules::isRemovedKey);
+        // A slot level's own companion key reads back to that slot level, not to anything shorter.
+        assertThat(StatAdjustmentRules.statOfRemovedKey(StatAdjustmentRules.removedKey("slot3"))).isEqualTo("slot3");
+    }
+
+    @Test
+    void normalizeJson_storesRemovedLinesBesideTheAdjustments() {
+        String json = "{\"ac\":[{\"value\":1,\"label\":\"Taunka\"}],"
+                + "\"acRemoved\":[{\"value\":1,\"label\":\"Dexterity\"}]}";
+
+        assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
+    }
+
     // --- parse ---------------------------------------------------------------
 
     @Test
