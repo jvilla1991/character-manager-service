@@ -196,6 +196,12 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String notes;
 
+    // Death Knight Runeforging (V53): the NAME of the melee weapon the rune is
+    // inscribed on — weapons on the sheet have no id, they are told apart by
+    // name. Set as a long rest ends, or from the sheet. A value that no longer
+    // names a melee weapon the character has counts as unset (LongRestRules).
+    private String runeWeapon;
+
     // --- Setters (all fields; needed by Jackson + controller) ---
 
     public void setId(Long id) { this.id = id; }
@@ -253,6 +259,7 @@ public class PC implements Serializable {
     public void setFeat(String feat) { this.feat = feat; }
     public void setBio(String bio) { this.bio = bio; }
     public void setNotes(String notes) { this.notes = notes; }
+    public void setRuneWeapon(String runeWeapon) { this.runeWeapon = runeWeapon; }
 
     // --- Builder (kept for backward compat; not used by current REST layer) ---
     public static class Builder {

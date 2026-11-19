@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -11,7 +12,9 @@ import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.RestType;
 import com.moo.charactermanagerservice.models.RestVoteStatus;
+import com.moo.charactermanagerservice.models.SessionLongRestResult;
 import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionRestVote;
@@ -28,6 +31,7 @@ import com.moo.charactermanagerservice.repositories.PCRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionLongRestResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
@@ -81,6 +85,7 @@ class SessionServiceTest {
     @Mock private SessionRestVoteRepository restVoteRepository;
     @Mock private SessionRestVoteBallotRepository restVoteBallotRepository;
     @Mock private SessionLootResultRepository lootResultRepository;
+    @Mock private SessionLongRestResultRepository longRestResultRepository;
 
     private SessionService sessionService;
 
@@ -96,7 +101,8 @@ class SessionServiceTest {
                 shopAttendeeRepository, lootRepository, lootItemRepository, pcRepository, pcService,
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
                 activityLogService, sessionRollRepository, restVoteRepository,
-                restVoteBallotRepository, lootResultRepository, new ObjectMapper());
+                restVoteBallotRepository, lootResultRepository, longRestResultRepository,
+                new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -1447,87 +1453,944 @@ class SessionServiceTest {
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
 
-    // --- longRest ---
+    // --- long rest phase ---
 
-    private void seatForLongRest(PC pc) {
-        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
-        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
-                .thenReturn(List.of(participant(50L, 7L)));
-        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
-        when(pcRepository.findAllById(any())).thenReturn(List.of(pc)); // buildState's batch load
-    }
-
-    @Test
-    void longRest_restoresSlots_andShedsFatigue_undisturbed() {
-        campaign.setVariantRules("{\"survivalConditions\":true}");
-        PC pc = pc(7L, "Gorath", 0);
+    /** A hero with every number a long rest touches set to something worth restoring. */
+    private static PC tiredPc(Long id, String name) {
+        PC pc = pc(id, name, 0);
+        pc.setLevel((short) 5);
+        pc.setHpMax((short) 30);
+        pc.setHpCurrent((short) 12);
+        pc.setHpTemp((short) 5);
+        pc.setHitDiceUsed((short) 4);
+        pc.setExhaustion((short) 2);
         pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":2}}");
-        pc.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
-        seatForLongRest(pc);
+        return pc;
+    }
 
-        sessionService.longRest(1L, true, dmId); // undisturbed → -3 fatigue
+    /**
+     * A LOBBY session with an OPEN long rest phase and the standard party
+     * (mine: seat 5 → pc 7, theirs: seat 6 → pc 8, plus an NPC). The phase
+     * claim behaves like the real conditional update, and a saved outcome row
+     * is served back to the snapshot.
+     */
+    private List<SessionParticipant> armLongRest(PC mine, PC theirs) {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        List<SessionParticipant> party = restVoteParty();
+        lenient().when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(party);
+        lenient().when(participantRepository.findBySessionIdAndPcId(1L, 7L))
+                .thenReturn(Optional.of(party.get(0)));
+        lenient().when(participantRepository.findBySessionIdAndPcId(1L, 8L))
+                .thenReturn(Optional.of(party.get(1)));
+        lenient().when(pcRepository.findAllById(any())).thenReturn(List.of(mine, theirs));
+        lenient().when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(mine));
+        lenient().when(pcRepository.findByIdForUpdate(8L)).thenReturn(Optional.of(theirs));
+        lenient().when(sessionRepository.closeLongRest(1L))
+                .thenAnswer(inv -> Boolean.TRUE.equals(session.getLongRestOpen()) ? 1 : 0);
+        armLongRestResult();
+        return party;
+    }
 
-        assertThat(pc.getSpellSlots()).contains("\"used\":0").doesNotContain("\"used\":3");
-        assertThat(pc.getSurvival()).contains("\"fatigue\":2"); // 5 - 3
-        verify(sessionRepository).save(session); // version bumped
-        verify(activityLogService).log(7L, PcActivityType.LONG_REST, "Completed a long rest", dmId);
+    /** Serve a saved long rest outcome row back to the snapshot (id 77). */
+    private void armLongRestResult() {
+        lenient().when(longRestResultRepository.save(any(SessionLongRestResult.class))).thenAnswer(inv -> {
+            SessionLongRestResult r = inv.getArgument(0);
+            r.setId(77L);
+            lenient().when(longRestResultRepository.findBySessionId(1L)).thenReturn(Optional.of(r));
+            return r;
+        });
     }
 
     @Test
-    void longRest_disturbed_shedsOnlyOneFatigue() {
-        campaign.setVariantRules("{\"survivalConditions\":true}");
-        PC pc = pc(7L, "Gorath", 0);
-        pc.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
-        seatForLongRest(pc);
+    void openLongRest_opensThePhase_andRecoversNothingYet() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setShortRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        List<SessionParticipant> party = restVoteParty();
+        party.get(0).setLongRestReady(true); // stale flag from an earlier rest
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(party);
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        when(pcRepository.findAllById(any())).thenReturn(List.of(mine, theirs));
 
-        sessionService.longRest(1L, false, dmId);
+        SessionStateView state = sessionService.openLongRest(1L, null, dmId);
 
-        assertThat(pc.getSurvival()).contains("\"fatigue\":4"); // 5 - 1
+        assertThat(state.longRest()).isNotNull();
+        assertThat(state.longRest().advanceClock()).isTrue();
+        assertThat(state.longRest().undisturbed()).isTrue();
+        assertThat(state.longRest().readyCount()).isZero();
+        assertThat(state.longRest().ableCount()).isEqualTo(2);
+        assertThat(state.longRest().readiness()).hasSize(2); // the NPC is not listed
+        assertThat(state.longRest().readiness().get(0).displayName()).isEqualTo("Gorath");
+        assertThat(state.longRest().readiness().get(0).ready()).isFalse(); // reset on open
+        assertThat(state.shortRestOpen()).isFalse(); // the longer rest supersedes it
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 12); // nothing recovered yet
+        assertThat(mine.getHitDiceUsed()).isEqualTo((short) 4);
+        verify(pcRepository, never()).save(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+        assertThat(session.getVersion()).isEqualTo(1L);
     }
 
     @Test
-    void longRest_nonSurvivalCampaign_restoresSlotsOnly() {
-        PC pc = pc(7L, "Gorath", 0); // campaign has no variant rules
-        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":4}}");
-        seatForLongRest(pc);
+    void openLongRest_canBeSeededAsDisturbed() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra")));
 
-        sessionService.longRest(1L, true, dmId);
+        SessionStateView state = sessionService.openLongRest(1L, false, dmId);
 
-        assertThat(pc.getSpellSlots()).contains("\"used\":0");
-        assertThat(pc.getSurvival()).isNull(); // no fatigue to shed
+        assertThat(state.longRest().undisturbed()).isFalse();
     }
 
     @Test
-    void longRest_throws403_forNonDm() {
+    void openLongRest_throws403_forNonDm() {
+        session.setStatus(SessionStatus.LOBBY);
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.longRest(1L, true, strangerId))
+        assertThatThrownBy(() -> sessionService.openLongRest(1L, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThat(Boolean.TRUE.equals(session.getLongRestOpen())).isFalse();
+    }
+
+    @Test
+    void openLongRest_throws409_duringAnEncounter() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // ACTIVE
+
+        assertThatThrownBy(() -> sessionService.openLongRest(1L, true, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void openLongRest_throws409_whileAVoteIsBeingTallied() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
+                .thenReturn(Optional.of(new SessionRestVote()));
+
+        assertThatThrownBy(() -> sessionService.openLongRest(1L, true, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void openLongRest_throws409_whenAPhaseIsAlreadyOpen() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.openLongRest(1L, true, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void setLongRestReady_marksTheSeat_andWaitsForTheRestOfTheParty() {
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+
+        assertThat(party.get(0).getLongRestReady()).isTrue();
+        assertThat(state.longRest()).isNotNull(); // still open — Lyra is getting ready
+        assertThat(state.longRest().readyCount()).isEqualTo(1);
+        assertThat(state.longRest().ableCount()).isEqualTo(2);
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 12);
+        verify(sessionRepository, never()).closeLongRest(anyLong());
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void setLongRestReady_theLastReady_finishesTheRestForEveryone() {
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+        session.setLongRestAdvanceClock(false);
+        party.get(1).setLongRestReady(true);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+
+        assertThat(state.longRest()).isNull();
+        assertThat(state.longRestResult().outcome()).isEqualTo("FINISHED");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);
+        assertThat(theirs.getHpCurrent()).isEqualTo((short) 30);
+        verify(sessionRepository).closeLongRest(1L);
+    }
+
+    @Test
+    void setLongRestReady_canBeTakenBack() {
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+        party.get(0).setLongRestReady(true);
+        party.get(1).setLongRestReady(true); // would be settled — but this call un-readies
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, false, null, playerId);
+
+        assertThat(party.get(0).getLongRestReady()).isFalse();
+        assertThat(state.longRest().readyCount()).isEqualTo(1);
+        verify(sessionRepository, never()).closeLongRest(anyLong());
+    }
+
+    @Test
+    void setLongRestReady_throws403_forSomeoneElsesCharacter() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 8L, true, null, playerId)) // Lyra is the stranger's
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
 
     @Test
-    void longRest_restoresHitDice_halfLevelMinimumOne() {
-        PC fighter = pc(7L, "Gorath", 0);
-        fighter.setLevel((short) 5);
-        fighter.setHitDiceUsed((short) 5);
-        seatForLongRest(fighter);
+    void setLongRestReady_throws403_whenThePcIsNotSeated() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+        when(participantRepository.findBySessionIdAndPcId(1L, 99L)).thenReturn(Optional.empty());
 
-        sessionService.longRest(1L, true, dmId);
-
-        assertThat(fighter.getHitDiceUsed()).isEqualTo((short) 3); // 5 - max(1, 5/2) = 5 - 2
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 99L, true, null, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
 
     @Test
-    void longRest_restoresAtLeastOneHitDie_atLevelOne() {
-        PC novice = pc(7L, "Pip", 0);
-        novice.setLevel((short) 1);
-        novice.setHitDiceUsed((short) 1);
-        seatForLongRest(novice);
+    void setLongRestReady_throws409_whenNoLongRestIsOpen() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        sessionService.longRest(1L, true, dmId);
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, null, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
 
-        assertThat(novice.getHitDiceUsed()).isEqualTo((short) 0); // max(1, 1/2) = 1
+    @Test
+    void finishLongRest_appliesFullRecovery_andLogsWhatChanged() {
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        armLongRest(mine, theirs);
+        session.setLongRestAdvanceClock(false);
+
+        SessionStateView state = sessionService.finishLongRest(1L, dmId); // nobody was ready — the DM decides
+
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);   // to maximum
+        assertThat(mine.getHpTemp()).isEqualTo((short) 0);       // temporary HP fades
+        assertThat(mine.getHitDiceUsed()).isEqualTo((short) 0);  // ALL hit dice, not half
+        assertThat(mine.getExhaustion()).isEqualTo((short) 1);   // down one level
+        assertThat(mine.getSpellSlots()).contains("\"used\":0").doesNotContain("\"used\":3")
+                .doesNotContain("\"used\":2");
+        assertThat(mine.getSurvival()).isNull(); // not a survival campaign — no fatigue to shed
+        assertThat(state.longRest()).isNull();
+        assertThat(state.longRestResult().outcome()).isEqualTo("FINISHED");
+        assertThat(state.longRestResult().skipped()).isEmpty();
+        assertThat(state.longRestResult().clockAdvanced()).isFalse();
+        verify(pcRepository).save(mine);
+        verify(pcRepository).save(theirs);
+        verify(activityLogService).log(7L, PcActivityType.LONG_REST,
+                "Completed a long rest: HP 12 → 30, 5 temporary HP faded, 4 Hit Dice back, "
+                        + "spell slots restored, Exhaustion 2 → 1", dmId);
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void finishLongRest_aRestedHero_getsThePlainLogLine_andExhaustionStaysAtZero() {
+        PC fresh = pc(7L, "Gorath", 0);
+        fresh.setHpMax((short) 30);
+        fresh.setHpCurrent((short) 30);
+        armLongRest(fresh, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(fresh.getExhaustion()).isNull(); // never below zero, never invented
+        verify(activityLogService).log(7L, PcActivityType.LONG_REST, "Completed a long rest", dmId);
+    }
+
+    @Test
+    void finishLongRest_skipsAHeroAtZeroHitPoints_andNamesThem() {
+        PC mine = tiredPc(7L, "Gorath");
+        PC down = tiredPc(8L, "Lyra");
+        down.setHpCurrent((short) 0);
+        armLongRest(mine, down);
+        session.setLongRestAdvanceClock(false);
+
+        SessionStateView before = sessionService.getState(1L, dmId, null);
+        assertThat(before.longRest().readiness().get(1).cannotRest()).isTrue();
+        assertThat(before.longRest().ableCount()).isEqualTo(1); // Lyra is not waited on
+
+        SessionStateView state = sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);
+        assertThat(down.getHpCurrent()).isEqualTo((short) 0);    // untouched
+        assertThat(down.getHitDiceUsed()).isEqualTo((short) 4);
+        assertThat(down.getExhaustion()).isEqualTo((short) 2);
+        assertThat(down.getSpellSlots()).contains("\"used\":3");
+        assertThat(state.longRestResult().skipped()).containsExactly("Lyra");
+        verify(pcRepository, never()).save(down);
+        verify(activityLogService, never()).log(eq(8L), any(), any(), any());
+    }
+
+    @Test
+    void finishLongRest_survivalCampaign_shedsThreeFatigue_whenUndisturbed() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        PC mine = tiredPc(7L, "Gorath");
+        mine.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSurvival()).contains("\"fatigue\":2"); // 5 - 3
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).endsWith("Fatigue 5 → 2");
+    }
+
+    @Test
+    void finishLongRest_survivalCampaign_shedsOneFatigue_whenDisturbed() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        PC mine = tiredPc(7L, "Gorath");
+        mine.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        session.setLongRestUndisturbed(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSurvival()).contains("\"fatigue\":4"); // 5 - 1
+    }
+
+    @Test
+    void finishLongRest_clockOn_walksToTheNextMorning_applyingEachSegmentsSurvivalBumps() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
+        PC mine = tiredPc(7L, "Gorath");
+        mine.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":4,\"seeded\":true}");
+        PC theirs = tiredPc(8L, "Lyra");
+        theirs.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":4,\"seeded\":true}");
+        armLongRest(mine, theirs);
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(mine, theirs));
+
+        SessionStateView state = sessionService.finishLongRest(1L, dmId);
+
+        // noon → night (+1 hunger/thirst/fatigue) → next morning (+1 hunger/thirst)
+        assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"morning\"").contains("\"day\":\"2\"");
+        assertThat(mine.getSurvival()).contains("\"hunger\":4").contains("\"thirst\":4");
+        assertThat(mine.getSurvival()).contains("\"fatigue\":2"); // 4 + 1 (night) - 3 (rest)
+        assertThat(state.gameTime()).containsEntry("timeOfDay", "morning");
+        assertThat(state.longRestResult().clockAdvanced()).isTrue();
+        verify(campaignRepository).save(campaign);
+    }
+
+    @Test
+    void finishLongRest_clockOn_fromMorning_passesAFullDay() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"3\",\"timeOfDay\":\"morning\"}");
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"morning\"").contains("\"day\":\"4\"");
+        verify(pcRepository, never()).findByCampaignId(any()); // no survival variant — no bumps
+    }
+
+    @Test
+    void finishLongRest_clockOn_establishesANeverSetClock_withoutBumps() {
+        campaign.setVariantRules("{\"survivalConditions\":true}");
+        PC mine = tiredPc(7L, "Gorath");
+        mine.setSurvival("{\"hunger\":2,\"thirst\":2,\"fatigue\":5}");
+        PC theirs = tiredPc(8L, "Lyra");
+        armLongRest(mine, theirs);
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of(mine, theirs));
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getGameTime()).contains("\"day\":\"1\"").contains("\"timeOfDay\":\"morning\"");
+        assertThat(mine.getSurvival()).contains("\"hunger\":2").contains("\"fatigue\":2"); // rest only
+    }
+
+    @Test
+    void finishLongRest_clockOff_leavesTheClockAlone() {
+        campaign.setGameTime("{\"year\":\"1\",\"month\":\"1\",\"day\":\"1\",\"timeOfDay\":\"noon\"}");
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(campaign.getGameTime()).contains("\"timeOfDay\":\"noon\"");
+        verify(campaignRepository, never()).save(any());
+    }
+
+    @Test
+    void finishLongRest_locksPcRowsInAscendingIdOrder_beforeClaimingThePhase() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        org.mockito.InOrder order = inOrder(pcRepository, sessionRepository);
+        order.verify(pcRepository).findByIdForUpdate(7L);
+        order.verify(pcRepository).findByIdForUpdate(8L);
+        order.verify(sessionRepository).closeLongRest(1L);
+    }
+
+    @Test
+    void finishLongRest_changesNothing_whenAnotherRequestClosedThePhaseFirst() {
+        PC mine = tiredPc(7L, "Gorath");
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        when(sessionRepository.closeLongRest(1L)).thenReturn(0); // lost the race
+
+        assertThatThrownBy(() -> sessionService.finishLongRest(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 12);
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void finishLongRest_throws403_forAPlayer() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.finishLongRest(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void finishLongRest_throws409_whenNoLongRestIsOpen() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.finishLongRest(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void interruptLongRest_closesThePhase_andNobodyRecovers() {
+        PC mine = tiredPc(7L, "Gorath");
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        party.get(0).setLongRestReady(true);
+
+        SessionStateView state = sessionService.interruptLongRest(1L, dmId);
+
+        assertThat(state.longRest()).isNull();
+        assertThat(state.longRestResult().outcome()).isEqualTo("INTERRUPTED");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 12);
+        assertThat(mine.getHitDiceUsed()).isEqualTo((short) 4);
+        verify(pcRepository, never()).save(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+    }
+
+    @Test
+    void interruptLongRest_throws403_forAPlayer() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.interruptLongRest(1L, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        assertThat(session.getLongRestOpen()).isTrue();
+    }
+
+    @Test
+    void setLongRestOptions_changesOnlyTheFieldsSent() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.setLongRestOptions(1L, false, null, dmId);
+
+        assertThat(state.longRest().advanceClock()).isFalse();
+        assertThat(state.longRest().undisturbed()).isTrue(); // null = unchanged
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void setLongRestOptions_throws403_forAPlayer() {
+        armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestOptions(1L, false, false, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void startEncounter_closesAnOpenLongRest_withoutRecovery() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(combatants(2));
+
+        SessionStateView state = sessionService.startEncounter(1L, dmId);
+
+        assertThat(session.getLongRestOpen()).isFalse();
+        assertThat(state.longRest()).isNull();
+        ArgumentCaptor<SessionLongRestResult> saved = ArgumentCaptor.forClass(SessionLongRestResult.class);
+        verify(longRestResultRepository).save(saved.capture());
+        assertThat(saved.getValue().getOutcome()).isEqualTo("INTERRUPTED");
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void getState_lazilyFinishesARestEveryoneIsReadyFor_andBumpsVersion() {
+        // Two Readys landed at the same instant (each saw the other as not
+        // ready), or the last holdout left — no request settled it.
+        PC mine = tiredPc(7L, "Gorath");
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+        session.setLongRestAdvanceClock(false);
+        party.get(0).setLongRestReady(true);
+        party.get(1).setLongRestReady(true);
+
+        SessionStateView state = sessionService.getState(1L, playerId, 0L);
+
+        assertThat(state).isNotNull(); // version moved, so no 204
+        assertThat(state.longRest()).isNull();
+        assertThat(state.longRestResult().outcome()).isEqualTo("FINISHED");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);
+        assertThat(session.getVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void getState_leavesAnUnsettledRestOpen_andStays204() {
+        List<SessionParticipant> party = armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
+        party.get(0).setLongRestReady(true);
+
+        assertThat(sessionService.getState(1L, playerId, 0L)).isNull();
+        verify(sessionRepository, never()).closeLongRest(anyLong());
+    }
+
+    @Test
+    void toggleShortRest_throws409_whileALongRestIsOpen() {
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.toggleShortRest(1L, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+    }
+
+    @Test
+    void endSession_closesAnOpenLongRest_andPurgesItsOutcome() {
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(CombatSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>());
+
+        SessionStateView state = sessionService.endSession(1L, dmId);
+
+        assertThat(session.getLongRestOpen()).isFalse();
+        assertThat(state.longRest()).isNull();
+        verify(longRestResultRepository).deleteBySessionId(1L);
+        verify(pcRepository, never()).save(any());
+    }
+
+    // --- long rest choices (prepared spells, rune weapon) ---
+
+    private static final String CLERIC_SPELLS = "["
+            + "{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":true},"
+            + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":true},"
+            + "{\"name\":\"Command\",\"lvl\":1,\"prepared\":false},"
+            + "{\"name\":\"Aid\",\"lvl\":2,\"prepared\":true}]";
+
+    /** Mine (pc 7): a tired level 5 cleric with a spell to swap in. */
+    private static PC tiredCleric() {
+        PC pc = tiredPc(7L, "Gorath");
+        pc.setClazz("Cleric");
+        pc.setSpells(CLERIC_SPELLS);
+        return pc;
+    }
+
+    /** Mine (pc 7): a tired level 5 Death Knight (CHA 16) carrying a Greatsword, a Handaxe and a Longbow. */
+    private static PC tiredDeathKnight(String rune) {
+        PC pc = tiredPc(7L, "Gorath");
+        pc.setClazz("Paladin");
+        pc.setSubclass("Oath of the Ebon Blade");
+        pc.setSpecialization(rune);
+        pc.setAbilityCha((short) 16);
+        pc.setInventory("["
+                + "{\"name\":\"Greatsword\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"heavy\"]},"
+                + "{\"name\":\"Handaxe\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"light\"]},"
+                + "{\"name\":\"Longbow\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"ammunition (150/600)\"]}]");
+        return pc;
+    }
+
+    private static LongRestChoices prepared(String... names) {
+        return new LongRestChoices(List.of(names), null);
+    }
+
+    private static LongRestChoices rune(String weapon) {
+        return new LongRestChoices(null, weapon);
+    }
+
+    @Test
+    void ready_withChoices_storesThemOnTheSeat_andChangesNothingYet() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isEqualTo("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS); // applied only when the rest finishes
+        assertThat(state.longRest().myChoices().preparedSpells()).containsExactly("Command", "Aid");
+    }
+
+    @Test
+    void myChoices_areNeverShownToAnotherPlayer_orTheDm() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(sessionService.getState(1L, strangerId, null).longRest().myChoices()).isNull();
+        assertThat(sessionService.getState(1L, dmId, null).longRest().myChoices()).isNull();
+        assertThat(sessionService.getState(1L, playerId, null).longRest().myChoices()).isNotNull();
+        assertThat(party.get(1).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void ready_rejectsInvalidChoices_with400_andDoesNotMarkTheSeatReady() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, prepared("Fireball"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Fireball is not on Gorath's spell list");
+        assertThat(Boolean.TRUE.equals(party.get(0).getLongRestReady())).isFalse();
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+        verify(participantRepository, never()).save(any(SessionParticipant.class));
+    }
+
+    @Test
+    void ready_rejectsASpellChange_fromAClassThatCannotChangeAtALongRest() {
+        PC bard = tiredCleric();
+        bard.setClazz("Bard");
+        armLongRest(bard, tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void ready_rejectsARuneWeapon_fromSomeoneWhoIsNotADeathKnight() {
+        armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, rune("Greatsword"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void unready_discardsTheChoices() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, false, prepared("Command", "Aid"), playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull(); // choices on an un-ready are ignored
+        assertThat(state.longRest().myChoices()).isNull();
+    }
+
+    @Test
+    void aLaterReady_withoutChoices_replacesTheEarlierOnes() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void openingAPhase_clearsChoicesLeftFromAnEarlierRest() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        List<SessionParticipant> party = restVoteParty();
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\"]}");
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(party);
+        when(pcRepository.findAllById(any())).thenReturn(List.of(tiredCleric(), tiredPc(8L, "Lyra")));
+
+        sessionService.openLongRest(1L, null, dmId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void finish_appliesAReadyHerosPreparedSpells_withRecovery_andLogsBoth() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells())
+                .contains("{\"name\":\"Command\",\"lvl\":1,\"prepared\":true}")
+                .contains("{\"name\":\"Bless\",\"lvl\":1,\"prepared\":false}")
+                .contains("{\"name\":\"Aid\",\"lvl\":2,\"prepared\":true}");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30); // recovery landed in the same pass
+        assertThat(party.get(0).getLongRestChoices()).isNull(); // spent
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue())
+                .startsWith("Completed a long rest: HP 12 → 30")
+                .endsWith("prepared Command; unprepared Bless");
+    }
+
+    @Test
+    void finish_whileAHeroIsNotReady_recoversThem_butKeepsTheirSpellsAndRuneWeapon() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        // Choices sitting on a seat that is NOT ready (as if un-ready had not cleared them).
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);
+        assertThat(mine.getHitDiceUsed()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void interrupt_leavesChoicesUnapplied() {
+        PC mine = tiredCleric();
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.interruptLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void finish_doesNotApplyChoices_forAHeroAtZeroHitPoints() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        party.get(0).setLongRestReady(true);
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+        mine.setHpCurrent((short) 0); // dropped after readying
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        verify(pcRepository, never()).save(mine);
+    }
+
+    @Test
+    void finish_dropsChoicesThatNoLongerFitTheSheet_withoutFailingTheRest() {
+        PC mine = tiredCleric();
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+        // The DM removes Command from the sheet before the rest finishes.
+        mine.setSpells(CLERIC_SPELLS.replace("{\"name\":\"Command\",\"lvl\":1,\"prepared\":false},", ""));
+        String withoutCommand = mine.getSpells();
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(withoutCommand);
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);   // still rested
+        assertThat(theirs.getHpCurrent()).isEqualTo((short) 30); // and so did everyone else
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).endsWith("long rest choices no longer fit the sheet and were not applied");
+    }
+
+    @Test
+    void finish_inscribesTheRune_andABloodRuneGivesTemporaryHitPoints() {
+        PC knight = tiredDeathKnight("Blood"); // 5 temp HP from before, CHA +3, level 5
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, rune("greatsword"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Greatsword");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 8); // old 5 faded, then +3 CHA + level 5
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue())
+                .contains("5 temporary HP faded, 8 temporary HP from the Blood Rune")
+                .endsWith("Blood Rune inscribed on Greatsword");
+    }
+
+    @Test
+    void finish_movesTheRune_whenTheKnightChoosesAnotherWeapon() {
+        PC knight = tiredDeathKnight("Frost");
+        knight.setRuneWeapon("Greatsword");
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, rune("Handaxe"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Handaxe");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 0); // Frost gives no temporary hit points
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).endsWith("Frost Rune moved from Greatsword to Handaxe");
+    }
+
+    @Test
+    void finish_givesBloodRuneTempHp_toAKnightAlreadyInscribed_evenIfNotReady() {
+        PC knight = tiredDeathKnight("Blood");
+        knight.setRuneWeapon("Greatsword");
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId); // nobody readied
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Greatsword");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 8);
+    }
+
+    @Test
+    void finish_givesNoBloodRuneTempHp_whenNoWeaponCarriesTheRune() {
+        PC knight = tiredDeathKnight("Blood"); // never inscribed, and not ready
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isNull();
+        assertThat(knight.getHpTemp()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void ready_rejectsARangedRuneWeapon() {
+        armLongRest(tiredDeathKnight("Blood"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, rune("Longbow"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Longbow is not a melee weapon Gorath has");
+    }
+
+    @Test
+    void theLastReady_appliesItsOwnChoices_asItFinishesTheRest() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        party.get(1).setLongRestReady(true);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(state.longRest()).isNull();
+        assertThat(mine.getSpells()).contains("{\"name\":\"Command\",\"lvl\":1,\"prepared\":true}");
+    }
+
+    // --- rest vote: rest type ---
+
+    @Test
+    void initiateRestVote_carriesTheRestType_andDefaultsToShort() {
+        armRestVote();
+
+        SessionStateView longVote = sessionService.initiateRestVote(1L, RestType.LONG, playerId);
+        assertThat(longVote.restVote().restType()).isEqualTo("LONG");
+
+        SessionStateView shortVote = sessionService.initiateRestVote(1L, null, playerId); // an older client
+        assertThat(shortVote.restVote().restType()).isEqualTo("SHORT");
+    }
+
+    @Test
+    void restTypeParse_isLenient_andRejectsUnknownValues() {
+        assertThat(RestType.parse(null)).isEqualTo(RestType.SHORT);
+        assertThat(RestType.parse(" ")).isEqualTo(RestType.SHORT);
+        assertThat(RestType.parse("long")).isEqualTo(RestType.LONG);
+        assertThatThrownBy(() -> RestType.parse("NAP"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void initiateRestVote_long_soloParty_opensTheLongRestPhase_notTheShortRestWindow() {
+        armRestVote();
+        SessionParticipant mine = participant(5L, 7L);
+        mine.setOwnerUserId(playerId);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(new ArrayList<>(List.of(mine)));
+
+        SessionStateView state = sessionService.initiateRestVote(1L, RestType.LONG, playerId);
+
+        assertThat(state.restVote().status()).isEqualTo("PASSED");
+        assertThat(state.shortRestOpen()).isFalse();
+        assertThat(state.longRest()).isNotNull();
+        assertThat(state.longRest().readyCount()).isZero(); // voting yes is not being ready
+        verify(pcRepository, never()).save(any()); // nothing recovered by the vote itself
+    }
+
+    @Test
+    void castRestVote_lastYes_onALongVote_opensTheLongRestPhase() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        SessionRestVote vote = activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+        vote.setRestType(RestType.LONG);
+
+        SessionStateView state = sessionService.castRestVote(1L, true, strangerId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.PASSED);
+        assertThat(state.restVote().restType()).isEqualTo("LONG");
+        assertThat(state.longRest()).isNotNull();
+        assertThat(state.longRest().readiness()).hasSize(2);
+        assertThat(state.shortRestOpen()).isFalse();
+    }
+
+    @Test
+    void castRestVote_no_onALongVote_opensNothing() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        List<SessionRestVoteBallot> ballots = new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null)));
+        SessionRestVote vote = activeVote(ballots, Instant.now().plus(Duration.ofSeconds(60)));
+        vote.setRestType(RestType.LONG);
+
+        SessionStateView state = sessionService.castRestVote(1L, false, strangerId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.FAILED);
+        assertThat(state.longRest()).isNull();
+    }
+
+    @Test
+    void overrideRestVote_yes_onALongVote_opensTheLongRestPhase() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
+        when(pcRepository.findAllById(any()))
+                .thenReturn(List.of(pc(7L, "Gorath", 0), pc(8L, "Lyra", 0)));
+        SessionRestVote vote = activeVote(new ArrayList<>(List.of(
+                ballot(5L, "Gorath", true), ballot(6L, "Lyra", null))),
+                Instant.now().plus(Duration.ofSeconds(60)));
+        vote.setRestType(RestType.LONG);
+
+        SessionStateView state = sessionService.overrideRestVote(1L, true, dmId);
+
+        assertThat(vote.getStatus()).isEqualTo(RestVoteStatus.PASSED);
+        assertThat(state.longRest()).isNotNull();
+        assertThat(state.shortRestOpen()).isFalse();
+    }
+
+    @Test
+    void initiateRestVote_throws409_whileALongRestIsOpen() {
+        session.setStatus(SessionStatus.LOBBY);
+        session.setLongRestOpen(true);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.SHORT, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(restVoteRepository, never()).save(any());
     }
 
     // --- short rest window + hit-die spend ---
@@ -2320,7 +3183,7 @@ class SessionServiceTest {
     void initiateRestVote_ballotsForSeatedPcsOnly_initiatorPreYes() {
         List<SessionRestVoteBallot> saved = armRestVote();
 
-        SessionStateView state = sessionService.initiateRestVote(1L, playerId);
+        SessionStateView state = sessionService.initiateRestVote(1L, RestType.SHORT, playerId);
 
         assertThat(saved).hasSize(2); // the NPC holds no ballot
         SessionRestVoteBallot mine = saved.stream()
@@ -2347,7 +3210,7 @@ class SessionServiceTest {
         when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
                 .thenReturn(new ArrayList<>(List.of(mine)));
 
-        SessionStateView state = sessionService.initiateRestVote(1L, playerId);
+        SessionStateView state = sessionService.initiateRestVote(1L, RestType.SHORT, playerId);
 
         assertThat(state.restVote().status()).isEqualTo("PASSED");
         assertThat(state.shortRestOpen()).isTrue();
@@ -2360,7 +3223,7 @@ class SessionServiceTest {
         when(restVoteRepository.findBySessionIdAndStatus(1L, RestVoteStatus.ACTIVE))
                 .thenReturn(Optional.of(new SessionRestVote()));
 
-        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.SHORT, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(409));
     }
@@ -2371,7 +3234,7 @@ class SessionServiceTest {
         session.setShortRestOpen(true);
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.SHORT, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(409));
     }
@@ -2380,7 +3243,7 @@ class SessionServiceTest {
     void initiateRestVote_throws409_duringAnEncounter() {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session)); // ACTIVE
 
-        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, playerId))
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.SHORT, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(409));
     }
@@ -2391,7 +3254,7 @@ class SessionServiceTest {
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
         when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(restVoteParty());
 
-        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, dmId)) // DM holds no seat
+        assertThatThrownBy(() -> sessionService.initiateRestVote(1L, RestType.SHORT, dmId)) // DM holds no seat
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
         verify(restVoteRepository, never()).save(any());

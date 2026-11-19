@@ -62,6 +62,15 @@ public class CombatSession implements Serializable {
     // and on session end.
     private Boolean shortRestOpen = false;
 
+    // Long rest phase (V52): while open, seated players review what the rest
+    // restores and mark Ready; recovery lands when the DM finishes it or the
+    // last able player readies up. The two options are the DM's and reset to
+    // their defaults each time a phase opens. Cleared on encounter start and
+    // on session end.
+    private Boolean longRestOpen = false;
+    private Boolean longRestAdvanceClock = true;
+    private Boolean longRestUndisturbed = true;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -98,5 +107,8 @@ public class CombatSession implements Serializable {
     public void setEnemyHpHidden(Boolean enemyHpHidden) { this.enemyHpHidden = enemyHpHidden; }
     public void setTurnSound(String turnSound) { this.turnSound = turnSound; }
     public void setShortRestOpen(Boolean shortRestOpen) { this.shortRestOpen = shortRestOpen; }
+    public void setLongRestOpen(Boolean longRestOpen) { this.longRestOpen = longRestOpen; }
+    public void setLongRestAdvanceClock(Boolean longRestAdvanceClock) { this.longRestAdvanceClock = longRestAdvanceClock; }
+    public void setLongRestUndisturbed(Boolean longRestUndisturbed) { this.longRestUndisturbed = longRestUndisturbed; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

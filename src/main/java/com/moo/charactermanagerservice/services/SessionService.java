@@ -5,8 +5,11 @@ import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
+import com.moo.charactermanagerservice.dto.LongRestResultView;
+import com.moo.charactermanagerservice.dto.LongRestView;
 import com.moo.charactermanagerservice.dto.LootResultView;
 import com.moo.charactermanagerservice.dto.RestVoteView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
@@ -20,7 +23,9 @@ import com.moo.charactermanagerservice.models.Encounter;
 import com.moo.charactermanagerservice.models.EncounterCreature;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
+import com.moo.charactermanagerservice.models.RestType;
 import com.moo.charactermanagerservice.models.RestVoteStatus;
+import com.moo.charactermanagerservice.models.SessionLongRestResult;
 import com.moo.charactermanagerservice.models.SessionLoot;
 import com.moo.charactermanagerservice.models.SessionParticipant;
 import com.moo.charactermanagerservice.models.SessionRestVote;
@@ -36,6 +41,7 @@ import com.moo.charactermanagerservice.repositories.EncounterRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootItemRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootRepository;
 import com.moo.charactermanagerservice.repositories.SessionParticipantRepository;
+import com.moo.charactermanagerservice.repositories.SessionLongRestResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
@@ -61,6 +67,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.random.RandomGenerator;
@@ -107,6 +114,7 @@ public class SessionService {
     private final SessionRestVoteRepository restVoteRepository;
     private final SessionRestVoteBallotRepository restVoteBallotRepository;
     private final SessionLootResultRepository lootResultRepository;
+    private final SessionLongRestResultRepository longRestResultRepository;
     private final PcJsonColumns json;
 
     /**
@@ -135,6 +143,7 @@ public class SessionService {
                           SessionRestVoteRepository restVoteRepository,
                           SessionRestVoteBallotRepository restVoteBallotRepository,
                           SessionLootResultRepository lootResultRepository,
+                          SessionLongRestResultRepository longRestResultRepository,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -153,6 +162,7 @@ public class SessionService {
         this.restVoteRepository = restVoteRepository;
         this.restVoteBallotRepository = restVoteBallotRepository;
         this.lootResultRepository = lootResultRepository;
+        this.longRestResultRepository = longRestResultRepository;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -195,7 +205,8 @@ public class SessionService {
      * may take the vote row lock and write a resolution — see
      * {@link #resolveStaleRestVote}. That check runs BEFORE the sinceVersion
      * short-circuit on purpose: resolving bumps the version, which is exactly
-     * what wakes the idle 204 pollers up to the outcome.
+     * what wakes the idle 204 pollers up to the outcome. The long rest phase
+     * gets the same lazy treatment ({@link #resolveSettledLongRest}).
      */
     @Transactional
     public SessionStateView getState(Long sessionId, UUID userId, Long sinceVersion) {
@@ -210,6 +221,7 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
         resolveStaleRestVote(session);
+        resolveSettledLongRest(session, participants);
         if (sinceVersion != null && sinceVersion.equals(session.getVersion())) {
             return null;
         }
@@ -334,8 +346,11 @@ public class SessionService {
      * Start the encounter: LOBBY → ACTIVE. DM only. Recomputes the order (so
      * combatants without initiative sit at the bottom, per the nulls-last sort)
      * and points the turn at the top of it. Requires at least one combatant —
-     * an empty encounter has no turn to point at.
+     * an empty encounter has no turn to point at. Combat also cuts short any
+     * rest: the short-rest window closes, an active rest vote is cancelled and
+     * an open long rest phase ends with nobody recovering.
      */
+    @Transactional
     public SessionStateView startEncounter(Long sessionId, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
@@ -360,6 +375,11 @@ public class SessionService {
                     vote.setStatus(RestVoteStatus.CANCELLED);
                     restVoteRepository.save(vote);
                 });
+        // ... and a long rest the party had not finished: nobody recovers.
+        if (Boolean.TRUE.equals(session.getLongRestOpen())) {
+            session.setLongRestOpen(false);
+            recordLongRestResult(session, LONG_REST_INTERRUPTED, List.of(), false);
+        }
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
@@ -776,31 +796,43 @@ public class SessionService {
         if (stored == null || stored.isBlank()) {
             campaign.setGameTime(json.writeObject(GameClock.initial()));
         } else {
-            Map<String, Object> advanced = GameClock.advanceSegment(
-                    json.parseObject(stored), campaignService.parseWeekDays(campaign));
-            campaign.setGameTime(json.writeObject(advanced));
-            String segment = String.valueOf(advanced.get("timeOfDay"));
-            // Survival campaigns: each member auto-eats/drinks their supplies as
-            // time passes (hunger/thirst rise only when the ration/waterskin runs
-            // out); fatigue always climbs on its segments.
-            if (campaignService.isVariantEnabled(campaign, "survivalConditions")) {
-                // Lock member rows one at a time in ascending-id order — the same
-                // row lock purchase/sell take, so a concurrent buy can't be
-                // overwritten and lock acquisition can't deadlock.
-                List<Long> memberIds = pcRepository.findByCampaignId(campaign.getId()).stream()
-                        .map(PC::getId)
-                        .sorted()
-                        .toList();
-                for (Long pcId : memberIds) {
-                    pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> advanceSurvival(pc, segment));
-                }
-            }
+            advanceClockOneSegment(campaign);
         }
         campaignRepository.save(campaign);
 
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /**
+     * Move an already-set campaign clock forward one segment and, in a
+     * survival campaign, apply that segment's condition bumps to every member
+     * PC. Shared by the DM's Advance Time and the long rest's "move the clock
+     * to the next morning". Returns the segment just entered. The caller saves
+     * the campaign.
+     */
+    private String advanceClockOneSegment(Campaign campaign) {
+        Map<String, Object> advanced = GameClock.advanceSegment(
+                json.parseObject(campaign.getGameTime()), campaignService.parseWeekDays(campaign));
+        campaign.setGameTime(json.writeObject(advanced));
+        String segment = String.valueOf(advanced.get("timeOfDay"));
+        // Survival campaigns: each member auto-eats/drinks their supplies as
+        // time passes (hunger/thirst rise only when the ration/waterskin runs
+        // out); fatigue always climbs on its segments.
+        if (campaignService.isVariantEnabled(campaign, "survivalConditions")) {
+            // Lock member rows one at a time in ascending-id order — the same
+            // row lock purchase/sell take, so a concurrent buy can't be
+            // overwritten and lock acquisition can't deadlock.
+            List<Long> memberIds = pcRepository.findByCampaignId(campaign.getId()).stream()
+                    .map(PC::getId)
+                    .sorted()
+                    .toList();
+            for (Long pcId : memberIds) {
+                pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> advanceSurvival(pc, segment));
+            }
+        }
+        return segment;
     }
 
     /**
@@ -883,50 +915,489 @@ public class SessionService {
         return new ConsumeResult(pcId, survival, inventory);
     }
 
+    // --- long rest phase ---
+
+    /** {@link SessionLongRestResult#getOutcome()} values. */
+    private static final String LONG_REST_FINISHED = "FINISHED";
+    private static final String LONG_REST_INTERRUPTED = "INTERRUPTED";
+
     /**
-     * DM long rest for the seated party: every seated PC recovers all spell
-     * slots, and — in a survival campaign — sheds fatigue (3 for an undisturbed
-     * rest, 1 for a disturbed one). Bumps the version so the party's sheets
-     * update live.
+     * DM opens a long rest phase for the seated party without a vote. Nothing
+     * is recovered here — see {@link #completeLongRest} for what lands when the
+     * rest finishes. Lobby only (an encounter start closes the phase, so
+     * opening one mid-encounter would be self-contradictory); 409 while a rest
+     * vote is being tallied or a phase is already open. {@code undisturbed}
+     * seeds the fatigue-relief option (null = the default, undisturbed).
      */
     @Transactional
-    public SessionStateView longRest(Long sessionId, boolean undisturbed, UUID dmUserId) {
+    public SessionStateView openLongRest(Long sessionId, Boolean undisturbed, UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
-        boolean survival = survivalConditionsEnabled(session);
-        int fatigueRelief = undisturbed ? 3 : 1;
+        if (session.getStatus() != SessionStatus.LOBBY) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Cannot start a long rest during an encounter");
+        }
+        if (restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE).isPresent()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A rest vote is in progress — allow or deny it instead");
+        }
+        if (Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A long rest is already in progress");
+        }
 
-        List<Long> pcIds = participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId).stream()
-                .map(SessionParticipant::getPcId)
-                .filter(Objects::nonNull)
-                .sorted()
-                .toList();
-        for (Long pcId : pcIds) {
-            pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> {
-                pc.setSpellSlots(json.writeObject(restoreAllSlots(json.parseObject(pc.getSpellSlots()))));
-                // 2024 PHB: a long rest restores spent hit dice equal to half
-                // the character's level (minimum 1).
-                int used = pc.getHitDiceUsed() == null ? 0 : pc.getHitDiceUsed();
-                if (used > 0) {
-                    int level = pc.getLevel() == null ? 1 : pc.getLevel();
-                    int restored = Math.max(1, level / 2);
-                    pc.setHitDiceUsed((short) Math.max(0, used - restored));
-                }
-                if (survival) {
-                    pc.setSurvival(json.writeObject(
-                            SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", -fatigueRelief)));
-                }
-                pcRepository.save(pc);
-                activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
-                        "Completed a long rest", dmUserId);
-            });
+        openLongRestPhase(session, undisturbed);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /**
+     * Open the phase on the session: options back to their defaults (advance
+     * the clock, undisturbed unless seeded otherwise), every seat not ready,
+     * and the short-rest window closed — the longer rest supersedes it. Shared
+     * by the DM's button and a passed LONG vote. The caller bumps and saves
+     * the session.
+     */
+    private void openLongRestPhase(CombatSession session, Boolean undisturbed) {
+        session.setLongRestOpen(true);
+        session.setLongRestAdvanceClock(true);
+        session.setLongRestUndisturbed(!Boolean.FALSE.equals(undisturbed));
+        session.setShortRestOpen(false);
+
+        List<SessionParticipant> seats =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(session.getId());
+        for (SessionParticipant p : seats) {
+            p.setLongRestReady(Boolean.FALSE);
+            p.setLongRestChoices(null);
+        }
+        participantRepository.saveAll(seats);
+    }
+
+    /**
+     * A player marks their own seated PC ready (or takes it back) while the
+     * phase is open. When this Ready is the last one outstanding, the rest
+     * finishes right here, in the same transaction.
+     *
+     * <p>A Ready carries the hero's choices (prepared spells, rune weapon —
+     * see {@link LongRestRules}). They are validated now, so the player hears
+     * about a problem while they can still fix it (400), then wait on the seat
+     * until the rest finishes. Taking Ready back discards them, and so does a
+     * later Ready without any.
+     */
+    @Transactional
+    public SessionStateView setLongRestReady(Long sessionId, Long pcId, Boolean ready,
+                                             LongRestChoices choices, UUID userId) {
+        CombatSession session = findSession(sessionId);
+        if (session.getStatus() == SessionStatus.ENDED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
+        }
+        if (!Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No long rest is in progress");
+        }
+        if (pcId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "pcId is required");
+        }
+        if (ready == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "ready is required");
+        }
+
+        SessionParticipant seated = participantRepository.findBySessionIdAndPcId(sessionId, pcId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Character is not seated in this session"));
+        if (!userId.equals(seated.getOwnerUserId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+        }
+
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        Map<Long, PC> pcsById = loadPcs(participants);
+        String pending = null;
+        if (ready) {
+            PC pc = pcsById.get(pcId);
+            if (pc == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found");
+            }
+            LongRestRules.validate(pc, choices);
+            pending = LongRestRules.serialize(choices);
+        }
+
+        seated.setLongRestReady(ready);
+        seated.setLongRestChoices(pending);
+        participantRepository.save(seated);
+
+        if (ready && longRestSettled(participants, pcsById)) {
+            completeLongRest(session, participants, userId);
+        }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, participants, userId);
+    }
+
+    /**
+     * DM sets the open phase's options. A null field is left as it is.
+     * {@code advanceClock}: move the campaign clock to the next morning when
+     * the rest finishes. {@code undisturbed}: survival fatigue relief of 3
+     * (true) or 1 (false) — it has no effect outside a survival campaign.
+     */
+    @Transactional
+    public SessionStateView setLongRestOptions(Long sessionId, Boolean advanceClock,
+                                               Boolean undisturbed, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (!Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No long rest is in progress");
+        }
+        if (advanceClock != null) {
+            session.setLongRestAdvanceClock(advanceClock);
+        }
+        if (undisturbed != null) {
+            session.setLongRestUndisturbed(undisturbed);
         }
         session.bumpVersion();
         sessionRepository.save(session);
         return buildState(session, dmUserId);
+    }
+
+    /** DM finishes the open long rest now, whoever is or is not ready. */
+    @Transactional
+    public SessionStateView finishLongRest(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (!Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No long rest is in progress");
+        }
+        List<SessionParticipant> participants =
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
+        if (!completeLongRest(session, participants, dmUserId)) {
+            // The last player's Ready finished it a moment ago.
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No long rest is in progress");
+        }
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, participants, dmUserId);
+    }
+
+    /** DM interrupts the open long rest: the phase closes and nobody recovers. */
+    @Transactional
+    public SessionStateView interruptLongRest(Long sessionId, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        if (!Boolean.TRUE.equals(session.getLongRestOpen())
+                || sessionRepository.closeLongRest(sessionId) == 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "No long rest is in progress");
+        }
+        session.setLongRestOpen(false);
+        recordLongRestResult(session, LONG_REST_INTERRUPTED, List.of(), false);
+        session.bumpVersion();
+        sessionRepository.save(session);
+        return buildState(session, dmUserId);
+    }
+
+    /** A hero at 0 hit points cannot start a long rest (2024 PHB) and gains nothing from one. */
+    private static boolean cannotRest(PC pc) {
+        return pc.getHpCurrent() != null && pc.getHpCurrent() <= 0;
+    }
+
+    /**
+     * True when every seated hero who can rest has marked Ready (and at least
+     * one can). Heroes at 0 hit points are not waited on; a party made up only
+     * of them never auto-finishes — the DM finishes or interrupts.
+     */
+    private boolean longRestSettled(List<SessionParticipant> participants, Map<Long, PC> pcsById) {
+        boolean anyAble = false;
+        for (SessionParticipant p : participants) {
+            PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
+            if (pc == null || cannotRest(pc)) {
+                continue;
+            }
+            anyAble = true;
+            if (!Boolean.TRUE.equals(p.getLongRestReady())) {
+                return false;
+            }
+        }
+        return anyAble;
+    }
+
+    /**
+     * Lazy finish from the poll path, mirroring {@link #resolveStaleRestVote}:
+     * covers the cases no single request settles — two players readying at the
+     * same instant (each saw the other as not ready), or the last holdout
+     * leaving the session. The version bump wakes idle 204 pollers.
+     */
+    private void resolveSettledLongRest(CombatSession session, List<SessionParticipant> participants) {
+        if (!Boolean.TRUE.equals(session.getLongRestOpen())
+                || session.getStatus() == SessionStatus.ENDED) {
+            return;
+        }
+        if (longRestSettled(participants, loadPcs(participants))
+                && completeLongRest(session, participants, session.getDmUserId())) {
+            session.bumpVersion();
+            sessionRepository.save(session);
+        }
+    }
+
+    /**
+     * Finish the long rest: close the phase and apply 2024 PHB recovery to
+     * every seated hero, all in the caller's transaction. Returns false —
+     * having changed nothing — when another request closed the phase first.
+     *
+     * <p>Order matters. (1) Take every PC row lock this will need, in
+     * ascending id order (the fleet-wide rule that keeps PC locks deadlock
+     * free): the seated heroes, plus every campaign member when the clock will
+     * apply survival bumps. (2) Claim the phase with the conditional
+     * {@code closeLongRest} update — only now, so PC locks are always taken
+     * before the session row, the same order cast / consume / spend use.
+     * (3) Move the clock to the next morning if the DM left that on, one
+     * segment at a time through {@link #advanceClockOneSegment} so a survival
+     * campaign gets hunger/thirst/fatigue for every segment slept through.
+     * (4) Recover each seated hero: hit points to maximum, temporary hit
+     * points gone, ALL hit dice back, all spell slots back, exhaustion down
+     * one, and in a survival campaign fatigue down 3 (undisturbed) or 1.
+     * A hero at 0 hit points is skipped entirely and named in the outcome.
+     *
+     * <p>Choices ride the same transaction: a hero who is READY has the
+     * choices their Ready carried applied first (prepared spells, the Death
+     * Knight's rune weapon). A hero who is not ready — the DM finished early —
+     * recovers but keeps their prepared list and rune weapon exactly as they
+     * were. A Blood-rune Death Knight whose rune is on a weapon after that
+     * then gains temporary hit points (Charisma modifier + level).
+     */
+    private boolean completeLongRest(CombatSession session, List<SessionParticipant> participants,
+                                     UUID actorUserId) {
+        Campaign campaign = campaignService.findById(session.getCampaignId());
+        boolean survival = campaignService.isVariantEnabled(campaign, "survivalConditions");
+        boolean advanceClock = !Boolean.FALSE.equals(session.getLongRestAdvanceClock());
+        int fatigueRelief = Boolean.FALSE.equals(session.getLongRestUndisturbed()) ? 1 : 3;
+
+        List<Long> seatedPcIds = participants.stream()
+                .map(SessionParticipant::getPcId)
+                .filter(Objects::nonNull)
+                .sorted()
+                .toList();
+        Set<Long> lockIds = new TreeSet<>(seatedPcIds);
+        if (advanceClock && survival) {
+            pcRepository.findByCampaignId(campaign.getId()).forEach(pc -> lockIds.add(pc.getId()));
+        }
+        Map<Long, PC> locked = new LinkedHashMap<>();
+        for (Long pcId : lockIds) {
+            pcRepository.findByIdForUpdate(pcId).ifPresent(pc -> locked.put(pcId, pc));
+        }
+
+        if (sessionRepository.closeLongRest(session.getId()) == 0) {
+            return false;
+        }
+        session.setLongRestOpen(false);
+
+        // Who can benefit is decided as the rest begins, before a night of
+        // hunger and thirst can move anything.
+        List<String> skipped = new ArrayList<>();
+        List<PC> resting = new ArrayList<>();
+        for (Long pcId : seatedPcIds) {
+            PC pc = locked.get(pcId);
+            if (pc == null) {
+                continue;
+            }
+            if (cannotRest(pc)) {
+                skipped.add(pc.getName());
+            } else {
+                resting.add(pc);
+            }
+        }
+
+        if (advanceClock) {
+            advanceClockToNextMorning(campaign);
+        }
+
+        Map<Long, SessionParticipant> seatByPc = new LinkedHashMap<>();
+        for (SessionParticipant p : participants) {
+            if (p.getPcId() != null) {
+                seatByPc.putIfAbsent(p.getPcId(), p);
+            }
+        }
+
+        for (PC pc : resting) {
+            List<String> changes = new ArrayList<>();
+            // The rune weapon is settled first: this rest's temporary hit
+            // points depend on where the rune ends up.
+            List<String> choiceChanges = applyLongRestChoices(pc, seatByPc.get(pc.getId()));
+
+            if (pc.getHpMax() != null) {
+                Short before = pc.getHpCurrent();
+                if (before == null || before < pc.getHpMax()) {
+                    changes.add(before == null
+                            ? "HP restored to " + pc.getHpMax()
+                            : "HP " + before + " → " + pc.getHpMax());
+                    pc.setHpCurrent(pc.getHpMax());
+                }
+            }
+            if (pc.getHpTemp() != null && pc.getHpTemp() > 0) {
+                changes.add(pc.getHpTemp() + " temporary HP faded");
+                pc.setHpTemp((short) 0);
+            }
+            int runeTempHp = LongRestRules.bloodRuneTempHp(pc);
+            if (runeTempHp > 0) {
+                changes.add(runeTempHp + " temporary HP from the Blood Rune");
+                pc.setHpTemp((short) runeTempHp);
+            }
+            int diceUsed = pc.getHitDiceUsed() == null ? 0 : pc.getHitDiceUsed();
+            if (diceUsed > 0) {
+                changes.add(diceUsed + (diceUsed == 1 ? " Hit Die back" : " Hit Dice back"));
+                pc.setHitDiceUsed((short) 0);
+            }
+            Map<String, Object> slots = json.parseObject(pc.getSpellSlots());
+            if (anySlotUsed(slots)) {
+                changes.add("spell slots restored");
+            }
+            pc.setSpellSlots(json.writeObject(restoreAllSlots(slots)));
+            int exhaustion = pc.getExhaustion() == null ? 0 : pc.getExhaustion();
+            if (exhaustion > 0) {
+                changes.add("Exhaustion " + exhaustion + " → " + (exhaustion - 1));
+                pc.setExhaustion((short) (exhaustion - 1));
+            }
+            if (survival) {
+                Map<String, Object> before = json.parseObject(pc.getSurvival());
+                Map<String, Object> after = SurvivalRules.bump(before, "fatigue", -fatigueRelief);
+                int was = SurvivalRules.stageOf(before, "fatigue");
+                int now = SurvivalRules.stageOf(after, "fatigue");
+                if (was != now) {
+                    changes.add("Fatigue " + was + " → " + now);
+                }
+                pc.setSurvival(json.writeObject(after));
+            }
+            changes.addAll(choiceChanges);
+
+            pcRepository.save(pc);
+            activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
+                    changes.isEmpty()
+                            ? "Completed a long rest"
+                            : "Completed a long rest: " + String.join(", ", changes),
+                    actorUserId);
+        }
+
+        // The choices are spent (applied, or left behind by a hero who was
+        // not ready or could not rest).
+        List<SessionParticipant> withChoices = participants.stream()
+                .filter(p -> p.getLongRestChoices() != null)
+                .toList();
+        if (!withChoices.isEmpty()) {
+            withChoices.forEach(p -> p.setLongRestChoices(null));
+            participantRepository.saveAll(withChoices);
+        }
+
+        recordLongRestResult(session, LONG_REST_FINISHED, skipped, advanceClock);
+        return true;
+    }
+
+    /**
+     * Apply a ready hero's long rest choices to their (locked) sheet and
+     * return what changed, for the activity log. Nothing happens for a hero
+     * who is not ready or chose nothing. The choices were validated at Ready;
+     * they are checked again here because the sheet may have changed since (a
+     * weapon sold, a spell removed) — choices that no longer fit are dropped
+     * and the log says so, rather than failing the whole party's rest.
+     */
+    private List<String> applyLongRestChoices(PC pc, SessionParticipant seat) {
+        List<String> changes = new ArrayList<>();
+        if (seat == null || !Boolean.TRUE.equals(seat.getLongRestReady())) {
+            return changes;
+        }
+        LongRestChoices choices = LongRestRules.parse(seat.getLongRestChoices());
+        if (choices == null) {
+            return changes;
+        }
+        try {
+            LongRestRules.validate(pc, choices);
+        } catch (ResponseStatusException stale) {
+            changes.add("long rest choices no longer fit the sheet and were not applied");
+            return changes;
+        }
+        String spells = LongRestRules.applyPrepared(pc, choices.preparedSpells());
+        if (spells != null) {
+            changes.add(spells);
+        }
+        String rune = LongRestRules.applyRuneWeapon(pc, choices.runeWeapon());
+        if (rune != null) {
+            changes.add(rune);
+        }
+        return changes;
+    }
+
+    /**
+     * Move the campaign clock to the next morning, a segment at a time (noon →
+     * night → morning is two steps, morning → morning a full day of three). A
+     * clock the DM never set follows {@link #advanceTime}'s rule: it is
+     * established at day 1 morning with no condition bumps — the rest sets
+     * the clock, it doesn't pass time on a calendar that did not exist.
+     */
+    private void advanceClockToNextMorning(Campaign campaign) {
+        String stored = campaign.getGameTime();
+        if (stored == null || stored.isBlank()) {
+            campaign.setGameTime(json.writeObject(GameClock.initial()));
+        } else {
+            for (int step = 0; step < GameClock.SEGMENTS.size(); step++) {
+                if ("morning".equals(advanceClockOneSegment(campaign))) {
+                    break;
+                }
+            }
+        }
+        campaignRepository.save(campaign);
+    }
+
+    /** True when any spell level has an expended slot. */
+    private static boolean anySlotUsed(Map<String, Object> slots) {
+        return slots.values().stream().anyMatch(v ->
+                v instanceof Map<?, ?> lvl && lvl.get("used") instanceof Number n && n.intValue() > 0);
+    }
+
+    /** Replace the session's long rest outcome row (one per session, like the loot result). */
+    private void recordLongRestResult(CombatSession session, String outcome,
+                                      List<String> skipped, boolean clockAdvanced) {
+        longRestResultRepository.findBySessionId(session.getId()).ifPresent(old -> {
+            longRestResultRepository.delete(old);
+            longRestResultRepository.flush(); // free the one-per-session unique index before re-inserting
+        });
+        SessionLongRestResult result = new SessionLongRestResult();
+        result.setSessionId(session.getId());
+        result.setOutcome(outcome);
+        result.setSkippedNames(skipped.isEmpty() ? null : String.join("\n", skipped));
+        result.setClockAdvanced(clockAdvanced);
+        longRestResultRepository.save(result);
+    }
+
+    /** The open phase for the snapshot: options plus every seated hero's readiness. */
+    private LongRestView buildLongRestView(CombatSession session, List<SessionParticipant> participants,
+                                           Map<Long, PC> pcsById, UUID requesterId) {
+        List<LongRestView.ReadinessView> readiness = new ArrayList<>();
+        int ready = 0;
+        int able = 0;
+        LongRestChoices myChoices = null;
+        for (SessionParticipant p : participants) {
+            PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
+            if (pc == null) {
+                continue; // NPCs don't rest
+            }
+            boolean down = cannotRest(pc);
+            boolean isReady = !down && Boolean.TRUE.equals(p.getLongRestReady());
+            if (isReady && myChoices == null && requesterId.equals(p.getOwnerUserId())) {
+                myChoices = LongRestRules.parse(p.getLongRestChoices()); // the caller's own, never a teammate's
+            }
+            if (!down) {
+                able++;
+                if (isReady) {
+                    ready++;
+                }
+            }
+            readiness.add(new LongRestView.ReadinessView(
+                    p.getId(), pc.getId(), pc.getName(), isReady, down));
+        }
+        return new LongRestView(
+                !Boolean.FALSE.equals(session.getLongRestAdvanceClock()),
+                !Boolean.FALSE.equals(session.getLongRestUndisturbed()),
+                ready, able, readiness, myChoices);
     }
 
     /**
@@ -945,6 +1416,10 @@ public class SessionService {
             // Mid-vote, the DM's verbs are the override buttons — not the toggle.
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "A rest vote is in progress — allow or deny it instead");
+        }
+        if (Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A long rest is in progress — finish or interrupt it first");
         }
 
         session.setShortRestOpen(!Boolean.TRUE.equals(session.getShortRestOpen()));
@@ -1030,27 +1505,32 @@ public class SessionService {
     }
 
     /**
-     * A seated player calls a short rest, opening a {@link #REST_VOTE_WINDOW}
-     * vote among every seated PC participant (ad-hoc NPCs and the DM hold no
+     * A seated player calls a rest, opening a {@link #REST_VOTE_WINDOW} vote
+     * among every seated PC participant (ad-hoc NPCs and the DM hold no
      * ballot). The initiator's ballot is pre-set to yes. Unanimous yes — checked
-     * eagerly here for a solo party — passes the vote and opens the session's
-     * {@code shortRestOpen} window; any no fails it instantly. The previous
-     * (terminal) vote's rows are replaced so the snapshot carries only the
-     * latest vote.
+     * eagerly here for a solo party — passes the vote: a SHORT vote opens the
+     * session's {@code shortRestOpen} window, a LONG vote opens the long rest
+     * phase. Any no fails it instantly. The previous (terminal) vote's rows
+     * are replaced so the snapshot carries only the latest vote.
      */
     @Transactional
-    public SessionStateView initiateRestVote(Long sessionId, UUID userId) {
+    public SessionStateView initiateRestVote(Long sessionId, RestType restType, UUID userId) {
         CombatSession session = findSession(sessionId);
+        RestType type = restType == null ? RestType.SHORT : restType;
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
         }
         if (session.getStatus() != SessionStatus.LOBBY) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Cannot call a short rest during an encounter");
+                    "Cannot call a rest during an encounter");
         }
         if (Boolean.TRUE.equals(session.getShortRestOpen())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "A short rest is already in progress");
+        }
+        if (Boolean.TRUE.equals(session.getLongRestOpen())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A long rest is already in progress");
         }
         if (restVoteRepository.findBySessionIdAndStatus(sessionId, RestVoteStatus.ACTIVE).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -1063,7 +1543,7 @@ public class SessionService {
                 .filter(p -> p.getPcId() != null && userId.equals(p.getOwnerUserId()))
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Only a seated player may call a short rest"));
+                        "Only a seated player may call a rest"));
 
         // Replace the previous vote (terminal by the ACTIVE check above) so the
         // poll snapshot carries exactly one vote per session.
@@ -1072,6 +1552,7 @@ public class SessionService {
         Map<Long, PC> pcsById = loadPcs(participants);
         SessionRestVote vote = new SessionRestVote();
         vote.setSessionId(sessionId);
+        vote.setRestType(type);
         vote.setInitiatorParticipantId(initiator.getId());
         vote.setInitiatorName(ballotDisplayName(initiator, pcsById));
         vote.setExpiresAt(Instant.now().plus(REST_VOTE_WINDOW));
@@ -1215,11 +1696,16 @@ public class SessionService {
         return false;
     }
 
-    /** A passed vote opens the same window the DM's manual toggle does. The
-     *  campaign clock is deliberately untouched — time stays DM-controlled. */
+    /** A passed SHORT vote opens the same window the DM's manual toggle does
+     *  (the campaign clock is deliberately untouched — time stays
+     *  DM-controlled). A passed LONG vote opens the long rest phase. */
     private void applyRestVotePass(SessionRestVote vote, CombatSession session) {
         vote.setStatus(RestVoteStatus.PASSED);
-        session.setShortRestOpen(true);
+        if (vote.getRestType() == RestType.LONG) {
+            openLongRestPhase(session, null);
+        } else {
+            session.setShortRestOpen(true);
+        }
     }
 
     /**
@@ -1698,6 +2184,7 @@ public class SessionService {
 
         session.setStatus(SessionStatus.ENDED);
         session.setShortRestOpen(false);
+        session.setLongRestOpen(false); // an unfinished long rest ends with the session — no recovery
         session.bumpVersion();
         CombatSession saved = sessionRepository.save(session);
         sessionRollRepository.deleteBySessionId(session.getId());
@@ -1705,6 +2192,8 @@ public class SessionService {
         restVoteRepository.deleteBySessionId(session.getId());
         // So is the last loot-split outcome.
         lootResultRepository.deleteBySessionId(session.getId());
+        // ... and the last long rest outcome.
+        longRestResultRepository.deleteBySessionId(session.getId());
         return saved;
     }
 
@@ -1964,6 +2453,7 @@ public class SessionService {
                 .map(v -> new RestVoteView(
                         v.getId(),
                         v.getStatus().name(),
+                        (v.getRestType() == null ? RestType.SHORT : v.getRestType()).name(),
                         v.getInitiatorParticipantId(),
                         v.getInitiatorName(),
                         v.getExpiresAt() == null ? null : v.getExpiresAt().toString(),
@@ -1983,6 +2473,22 @@ public class SessionService {
                         r.getPvpCallers() == null ? List.of() : List.of(r.getPvpCallers().split(",")),
                         r.getAgreeCount(),
                         r.getObjectCount(),
+                        r.getCreatedAt() == null ? null : r.getCreatedAt().toString()))
+                .orElse(null);
+
+        // The open long rest phase (null when none) and the latest long rest
+        // outcome — both broadcast; see LongRestView / LongRestResultView.
+        LongRestView longRest = Boolean.TRUE.equals(session.getLongRestOpen())
+                ? buildLongRestView(session, participants, pcsById, requesterId)
+                : null;
+        LongRestResultView longRestResult = longRestResultRepository.findBySessionId(session.getId())
+                .map(r -> new LongRestResultView(
+                        r.getId(),
+                        r.getOutcome(),
+                        r.getSkippedNames() == null || r.getSkippedNames().isBlank()
+                                ? List.of()
+                                : List.of(r.getSkippedNames().split("\n")),
+                        r.isClockAdvanced(),
                         r.getCreatedAt() == null ? null : r.getCreatedAt().toString()))
                 .orElse(null);
 
@@ -2012,7 +2518,9 @@ public class SessionService {
                 views,
                 rolls,
                 restVote,
-                lootResult
+                lootResult,
+                longRest,
+                longRestResult
         );
     }
 

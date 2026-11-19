@@ -85,6 +85,14 @@ import java.util.Map;
  * <p>{@code lootResult} is the latest party loot-split outcome (or null) —
  * broadcast, and kept after the pool it describes is distributed or hidden
  * again, so every client can announce it once. See {@link LootResultView}.
+ *
+ * <p>{@code longRest} is the open long rest phase (null when none is open):
+ * the DM's options and every seated hero's readiness. Nothing has been
+ * recovered while it is present. See {@link LongRestView}.
+ *
+ * <p>{@code longRestResult} is the latest long rest outcome (or null) —
+ * FINISHED or INTERRUPTED — broadcast so every client can announce it once
+ * and refresh its sheet. See {@link LongRestResultView}.
  */
 public record SessionStateView(
         Long sessionId,
@@ -112,5 +120,7 @@ public record SessionStateView(
         List<ParticipantView> participants,
         List<SessionRollView> rolls,
         RestVoteView restVote,
-        LootResultView lootResult
+        LootResultView lootResult,
+        LongRestView longRest,
+        LongRestResultView longRestResult
 ) {}
