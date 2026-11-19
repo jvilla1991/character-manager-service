@@ -228,6 +228,73 @@ class SpellSlotStateTest {
         assertThat(SpellSlotState.rebuild(pc("Fighter", 5, "{}", null))).isEqualTo("{}");
     }
 
+    // --- spend / restore: one slot at a time ---
+
+    @Test
+    void spend_usesOneSlot_andSaysNoWhenNoneIsFree() {
+        PC wizard = pc("Wizard", 3, "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":2}}", null);
+
+        assertThat(SpellSlotState.spend(wizard, 1)).isTrue();
+        assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":4},\"2\":{\"max\":2,\"used\":2}}");
+        assertThat(SpellSlotState.spend(wizard, 1)).isFalse(); // all four spent now
+        assertThat(SpellSlotState.spend(wizard, 2)).isFalse();
+        assertThat(SpellSlotState.spend(wizard, 3)).isFalse(); // no 3rd-level slots at level 3
+        assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":4},\"2\":{\"max\":2,\"used\":2}}");
+    }
+
+    @Test
+    void spend_goesByTheWorkedOutMaximum_notAStaleStoredOne() {
+        // Nothing stored for a paladin: the table still gives two slots to spend.
+        PC paladin = pc("Paladin", 1, null, null);
+        assertThat(SpellSlotState.spend(paladin, 1)).isTrue();
+        assertThat(paladin.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}");
+
+        // A stored max of 9 buys nothing beyond the table's 2.
+        PC wizard = pc("Wizard", 1, "{\"1\":{\"max\":9,\"used\":2}}", null);
+        assertThat(SpellSlotState.spend(wizard, 1)).isFalse();
+    }
+
+    @Test
+    void spend_mayUseABonusSlot() {
+        PC fighter = pc("Fighter", 5, null, line("slot1", 1, "Eldritch Knight"));
+
+        assertThat(SpellSlotState.spend(fighter, 1)).isTrue();
+        assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":1,\"used\":1}}");
+        assertThat(SpellSlotState.spend(fighter, 1)).isFalse();
+    }
+
+    @Test
+    void restore_givesOneSlotBack_andSaysNoWhenNoneIsSpent() {
+        PC wizard = pc("Wizard", 3, "{\"1\":{\"max\":4,\"used\":2},\"2\":{\"max\":2,\"used\":0}}", null);
+
+        assertThat(SpellSlotState.restore(wizard, 1)).isTrue();
+        assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":1},\"2\":{\"max\":2,\"used\":0}}");
+        assertThat(SpellSlotState.restore(wizard, 2)).isFalse();
+        assertThat(SpellSlotState.restore(wizard, 5)).isFalse();
+    }
+
+    @Test
+    void restoreAll_givesEverythingBack_andCountsIt() {
+        PC wizard = pc("Wizard", 3, "{\"1\":{\"max\":4,\"used\":3},\"2\":{\"max\":2,\"used\":1}}", null);
+
+        assertThat(SpellSlotState.restoreAll(wizard)).isEqualTo(4);
+        assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
+        assertThat(SpellSlotState.restoreAll(wizard)).isZero();
+        assertThat(SpellSlotState.restoreAll(pc("Fighter", 5, null, null))).isZero();
+    }
+
+    @Test
+    void view_andDescribe_showTheSlotsAsTheyStand() {
+        PC wizard = pc("Wizard", 3, "{\"1\":{\"max\":4,\"used\":3}}", null);
+
+        assertThat(SpellSlotState.view(wizard)).isEqualTo(Map.of(
+                "1", Map.of("max", 4, "used", 3),
+                "2", Map.of("max", 2, "used", 0)));
+        assertThat(SpellSlotState.describe(wizard, 1)).isEqualTo("1 of 4 left");
+        assertThat(SpellSlotState.describe(wizard, 2)).isEqualTo("2 of 2 left");
+        assertThat(SpellSlotState.view(pc("Fighter", 5, "{}", null))).isEmpty();
+    }
+
     // --- reading the column ---
 
     @Test

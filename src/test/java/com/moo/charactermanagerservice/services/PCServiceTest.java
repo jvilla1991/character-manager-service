@@ -1076,6 +1076,267 @@ class PCServiceTest {
         assertThat(result.getHeroicInspiration()).isFalse();
     }
 
+    // --- spell slots by hand: spend (owner or DM) / restore (DM, or the owner outside a campaign) ---
+
+    /** Store the level 3 wizard (4 / 2 slots, three and one spent) behind the row lock. */
+    private void lockWizardWithSlots(Long campaignId) {
+        pc.setLevel((short) 3);
+        pc.setCampaignId(campaignId);
+        pc.setSpellSlots(WIZARD_3_SLOTS);
+        when(pcRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(pc));
+        lenient().when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        if (campaignId != null) {
+            lenient().when(campaignRepository.findById(campaignId)).thenReturn(Optional.of(campaignOwnedByDm()));
+        }
+    }
+
+    private static int statusOf(Throwable e) {
+        return ((ResponseStatusException) e).getStatusCode().value();
+    }
+
+    @Test
+    void spendSpellSlot_ownerSpendsOne_logsIt_andReturnsTheSlots() {
+        lockWizardWithSlots(7L);
+
+        var result = pcService.spendSpellSlot(1L, 1, ownerId);
+
+        assertThat(result.pcId()).isEqualTo(1L);
+        assertThat(result.spellSlots()).isEqualTo(Map.of(
+                "1", Map.of("max", 4, "used", 4),
+                "2", Map.of("max", 2, "used", 1)));
+        assertThat(pc.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":4},\"2\":{\"max\":2,\"used\":1}}");
+        verify(pcRepository).save(pc);
+        verify(activityLogService).log(1L, PcActivityType.SPELL_SLOT,
+                "Spent a level 1 spell slot (0 of 4 left)", ownerId);
+    }
+
+    @Test
+    void spendSpellSlot_locksTheRow_likeACast() {
+        lockWizardWithSlots(null);
+
+        pcService.spendSpellSlot(1L, 2, ownerId);
+
+        verify(pcRepository).findByIdForUpdate(1L);
+        verify(pcRepository, never()).findById(any());
+    }
+
+    @Test
+    void spendSpellSlot_theCampaignDmMaySpendForThePlayer() {
+        lockWizardWithSlots(7L);
+
+        var result = pcService.spendSpellSlot(1L, 2, dmId);
+
+        assertThat(result.spellSlots().get("2")).isEqualTo(Map.of("max", 2, "used", 2));
+        verify(activityLogService).log(1L, PcActivityType.SPELL_SLOT,
+                "DM spent a level 2 spell slot (0 of 2 left)", dmId);
+    }
+
+    @Test
+    void spendSpellSlot_throws403_forAStranger_inACampaignOrNot() {
+        lockWizardWithSlots(7L);
+        assertThatThrownBy(() -> pcService.spendSpellSlot(1L, 1, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+
+        pc.setCampaignId(null);
+        assertThatThrownBy(() -> pcService.spendSpellSlot(1L, 1, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+    }
+
+    @Test
+    void spendSpellSlot_throws409_whenNoSlotOfThatLevelIsFree() {
+        lockWizardWithSlots(7L);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":4},\"2\":{\"max\":2,\"used\":0}}");
+
+        assertThatThrownBy(() -> pcService.spendSpellSlot(1L, 1, ownerId)) // all four spent
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(409));
+        assertThatThrownBy(() -> pcService.spendSpellSlot(1L, 3, ownerId)) // no 3rd-level slots yet
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+    }
+
+    @Test
+    void spendSpellSlot_throws400_forAMissingOrImpossibleLevel() {
+        lockWizardWithSlots(7L);
+
+        for (Integer level : new Integer[] {null, 0, -1, 10}) {
+            assertThatThrownBy(() -> pcService.spendSpellSlot(1L, level, ownerId))
+                    .as("level " + level)
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(statusOf(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void spendSpellSlot_throwsNotFound_forAnUnknownCharacter() {
+        when(pcRepository.findByIdForUpdate(99L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> pcService.spendSpellSlot(99L, 1, ownerId))
+                .isInstanceOf(PCNotFoundException.class);
+    }
+
+    @Test
+    void spendSpellSlot_cannotBeBoughtWithAStoredMaximum_butABonusSlotCounts() {
+        lockWizardWithSlots(7L);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0},\"3\":{\"max\":5,\"used\":0}}");
+        assertThatThrownBy(() -> pcService.spendSpellSlot(1L, 3, ownerId)) // stale column, no such slot
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(409));
+
+        pc.setStatAdjustments(PEARL); // the DM's +1 3rd-level slot
+        var result = pcService.spendSpellSlot(1L, 3, ownerId);
+        assertThat(result.spellSlots().get("3")).isEqualTo(Map.of("max", 1, "used", 1));
+    }
+
+    @Test
+    void spendSpellSlot_bumpsTheSeatedLiveSessionsVersion() {
+        lockWizardWithSlots(7L);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.spendSpellSlot(1L, 1, ownerId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void spendSpellSlot_outsideAnyCampaign_touchesNoSession() {
+        lockWizardWithSlots(null);
+
+        pcService.spendSpellSlot(1L, 1, ownerId);
+
+        verifyNoInteractions(sessionRepository);
+    }
+
+    @Test
+    void restoreSpellSlots_theCampaignDmGivesOneBack_andLogsIt() {
+        lockWizardWithSlots(7L);
+
+        var result = pcService.restoreSpellSlots(1L, 1, false, dmId);
+
+        assertThat(result.spellSlots()).isEqualTo(Map.of(
+                "1", Map.of("max", 4, "used", 2),
+                "2", Map.of("max", 2, "used", 1)));
+        verify(pcRepository).findByIdForUpdate(1L);
+        verify(pcRepository).save(pc);
+        verify(activityLogService).log(1L, PcActivityType.SPELL_SLOT,
+                "DM restored a level 1 spell slot (2 of 4 left)", dmId);
+    }
+
+    @Test
+    void restoreSpellSlots_throws403_forTheOwner_whenTheCharacterIsInACampaign() {
+        lockWizardWithSlots(7L);
+
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, 1, false, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, null, true, ownerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+        assertThat(pc.getSpellSlots()).isEqualTo(WIZARD_3_SLOTS);
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+    }
+
+    @Test
+    void restoreSpellSlots_theOwnerMay_whenTheCharacterIsInNoCampaign() {
+        lockWizardWithSlots(null); // no campaign, so no DM to ask
+
+        var result = pcService.restoreSpellSlots(1L, 2, false, ownerId);
+
+        assertThat(result.spellSlots().get("2")).isEqualTo(Map.of("max", 2, "used", 0));
+        verify(activityLogService).log(1L, PcActivityType.SPELL_SLOT,
+                "Restored a level 2 spell slot (2 of 2 left)", ownerId);
+    }
+
+    @Test
+    void restoreSpellSlots_throws403_forAStranger_inACampaignOrNot() {
+        lockWizardWithSlots(7L);
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, 1, false, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+
+        pc.setCampaignId(null);
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, null, true, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(403));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void restoreSpellSlots_all_givesEverySlotBack() {
+        lockWizardWithSlots(7L);
+
+        var result = pcService.restoreSpellSlots(1L, null, true, dmId);
+
+        assertThat(result.spellSlots()).isEqualTo(Map.of(
+                "1", Map.of("max", 4, "used", 0),
+                "2", Map.of("max", 2, "used", 0)));
+        verify(activityLogService).log(1L, PcActivityType.SPELL_SLOT, "DM restored all spell slots", dmId);
+    }
+
+    @Test
+    void restoreSpellSlots_all_onAFullyRestedCharacter_isANoOpSuccess() {
+        lockWizardWithSlots(7L);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
+
+        var result = pcService.restoreSpellSlots(1L, null, true, dmId);
+
+        assertThat(result.pcId()).isEqualTo(1L);
+        assertThat(result.spellSlots()).isEqualTo(Map.of(
+                "1", Map.of("max", 4, "used", 0),
+                "2", Map.of("max", 2, "used", 0)));
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+        verifyNoInteractions(sessionRepository);
+    }
+
+    @Test
+    void restoreSpellSlots_throws409_whenNothingIsSpentAtThatLevel() {
+        lockWizardWithSlots(7L);
+        pc.setSpellSlots("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":1}}");
+
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, 1, false, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(409));
+        assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, 4, false, dmId)) // no such slots
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(statusOf(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void restoreSpellSlots_throws400_withoutALevelOrAll_andForAnImpossibleLevel() {
+        lockWizardWithSlots(7L);
+
+        for (Integer level : new Integer[] {null, 0, 10}) {
+            assertThatThrownBy(() -> pcService.restoreSpellSlots(1L, level, false, dmId))
+                    .as("level " + level)
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(statusOf(e)).isEqualTo(400));
+        }
+    }
+
+    @Test
+    void restoreSpellSlots_bumpsTheSeatedLiveSessionsVersion() {
+        lockWizardWithSlots(7L);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.restoreSpellSlots(1L, null, true, dmId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
     // --- per-character notes ---
 
     @Test

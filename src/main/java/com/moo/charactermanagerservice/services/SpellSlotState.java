@@ -30,6 +30,10 @@ import java.util.TreeMap;
  * {@link #normalize}, and a level-up through {@link #rebuild}: a spell level
  * the character has no slots for is dropped, and {@code used} is clamped to
  * 0..max, so a maximum that shrank pulls the used count down with it.
+ *
+ * <p>A player may spend a slot by hand at any time ({@link #spend}); slots
+ * come back from a rest or from the Dungeon Master ({@link #restore},
+ * {@link #restoreAll}). Who may call which is {@link PCService}'s decision.
  */
 final class SpellSlotState {
 
@@ -117,6 +121,87 @@ final class SpellSlotState {
      */
     static String rebuild(PC pc) {
         return write(maxFor(pc), read(pc.getSpellSlots()), pc.getSpellSlots());
+    }
+
+    // --- one slot at a time: the spend and restore endpoints ---
+
+    /**
+     * The character's slots as they stand: the worked-out maximum and the
+     * stored {@code used} (clamped), in spell-level order. Not the raw column,
+     * so a stale stored {@code max} never decides whether a slot is free.
+     */
+    static Map<Integer, Slot> current(PC pc) {
+        Map<Integer, Slot> stored = read(pc.getSpellSlots());
+        Map<Integer, Slot> slots = new LinkedHashMap<>();
+        maxFor(pc).forEach((spellLevel, max) -> {
+            Slot prior = stored.get(spellLevel);
+            int used = prior == null || prior.used() == null ? 0 : prior.used();
+            slots.put(spellLevel, new Slot(max, Math.max(0, Math.min(used, max))));
+        });
+        return slots;
+    }
+
+    /**
+     * Spend one slot of this spell level. False — and nothing changes — when
+     * the character has no free slot there. Mutates the character.
+     */
+    static boolean spend(PC pc, int spellLevel) {
+        Map<Integer, Slot> slots = current(pc);
+        Slot slot = slots.get(spellLevel);
+        if (slot == null || slot.used() >= slot.max()) return false;
+        slots.put(spellLevel, new Slot(slot.max(), slot.used() + 1));
+        store(pc, slots);
+        return true;
+    }
+
+    /**
+     * Give one spent slot of this spell level back. False — and nothing
+     * changes — when none is spent there. Mutates the character.
+     */
+    static boolean restore(PC pc, int spellLevel) {
+        Map<Integer, Slot> slots = current(pc);
+        Slot slot = slots.get(spellLevel);
+        if (slot == null || slot.used() <= 0) return false;
+        slots.put(spellLevel, new Slot(slot.max(), slot.used() - 1));
+        store(pc, slots);
+        return true;
+    }
+
+    /**
+     * Give every spent slot back. Returns how many came back; 0 means the
+     * character was fully rested and nothing changed. Mutates the character.
+     */
+    static int restoreAll(PC pc) {
+        Map<Integer, Slot> slots = current(pc);
+        int spent = slots.values().stream().mapToInt(Slot::used).sum();
+        if (spent == 0) return 0;
+        slots.replaceAll((spellLevel, slot) -> new Slot(slot.max(), 0));
+        store(pc, slots);
+        return spent;
+    }
+
+    /** "1 of 3 left" — how a spell level reads in the activity log. */
+    static String describe(PC pc, int spellLevel) {
+        Slot slot = current(pc).get(spellLevel);
+        return slot == null ? "none left" : (slot.max() - slot.used()) + " of " + slot.max() + " left";
+    }
+
+    /** The slots as a response body carries them: {@code {"1":{"max":4,"used":1}}}. */
+    static Map<String, Object> view(PC pc) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        current(pc).forEach((spellLevel, slot) -> {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("max", slot.max());
+            entry.put("used", slot.used());
+            view.put(String.valueOf(spellLevel), entry);
+        });
+        return view;
+    }
+
+    private static void store(PC pc, Map<Integer, Slot> slots) {
+        Map<Integer, Integer> max = new LinkedHashMap<>();
+        slots.forEach((spellLevel, slot) -> max.put(spellLevel, slot.max()));
+        pc.setSpellSlots(write(max, slots, pc.getSpellSlots()));
     }
 
     /** The stored maximum per spell level, sorted — what the sheet shows today. */

@@ -2,7 +2,10 @@ package com.moo.charactermanagerservice.controllers;
 
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.RestoreSpellSlotsRequest;
 import com.moo.charactermanagerservice.dto.SetPetRequest;
+import com.moo.charactermanagerservice.dto.SpellSlotResult;
+import com.moo.charactermanagerservice.dto.SpendSpellSlotRequest;
 import com.moo.charactermanagerservice.dto.UpdatePcAsDmRequest;
 import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
@@ -392,5 +395,76 @@ class PCControllerTest {
         assertThat(pcController.setPetFamily(1L, new SetPetRequest(null), auth).getStatusCode())
                 .isEqualTo(HttpStatus.OK);
         verify(pcService).setPetFamily(1L, null, ownerId);
+    }
+
+    // --- POST /{id}/spell-slots/spend and /restore ---
+
+    private static final SpellSlotResult SLOTS =
+            new SpellSlotResult(1L, Map.of("1", Map.of("max", 4, "used", 1)));
+
+    @Test
+    void spendSpellSlot_returns200_withTheSlots_andPassesTheLevel() {
+        when(pcService.spendSpellSlot(1L, 3, ownerId)).thenReturn(SLOTS);
+
+        ResponseEntity<SpellSlotResult> response =
+                pcController.spendSpellSlot(1L, new SpendSpellSlotRequest(3), auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(SLOTS);
+    }
+
+    @Test
+    void spendSpellSlot_withNoBody_leavesTheLevelToTheService() {
+        when(pcService.spendSpellSlot(1L, null, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST, "level must be a spell level"));
+
+        assertThatThrownBy(() -> pcController.spendSpellSlot(1L, null, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+    }
+
+    @Test
+    void spendSpellSlot_propagates409_whenNoSlotIsFree() {
+        when(pcService.spendSpellSlot(1L, 3, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "No level 3 slot available"));
+
+        assertThatThrownBy(() -> pcController.spendSpellSlot(1L, new SpendSpellSlotRequest(3), auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("409");
+    }
+
+    @Test
+    void restoreSpellSlots_passesALevel_orAll() {
+        when(pcService.restoreSpellSlots(1L, 3, false, ownerId)).thenReturn(SLOTS);
+        when(pcService.restoreSpellSlots(1L, null, true, ownerId)).thenReturn(SLOTS);
+
+        assertThat(pcController.restoreSpellSlots(1L, new RestoreSpellSlotsRequest(3, null), auth).getBody())
+                .isSameAs(SLOTS);
+        assertThat(pcController.restoreSpellSlots(1L, new RestoreSpellSlotsRequest(null, true), auth)
+                .getStatusCode()).isEqualTo(HttpStatus.OK);
+        verify(pcService).restoreSpellSlots(1L, 3, false, ownerId);
+        verify(pcService).restoreSpellSlots(1L, null, true, ownerId);
+    }
+
+    @Test
+    void restoreSpellSlots_treatsAMissingBodyOrAFalseAll_asNotAll() {
+        when(pcService.restoreSpellSlots(1L, null, false, ownerId)).thenReturn(SLOTS);
+        when(pcService.restoreSpellSlots(1L, 2, false, ownerId)).thenReturn(SLOTS);
+
+        pcController.restoreSpellSlots(1L, null, auth);
+        pcController.restoreSpellSlots(1L, new RestoreSpellSlotsRequest(2, false), auth);
+
+        verify(pcService).restoreSpellSlots(1L, null, false, ownerId);
+        verify(pcService).restoreSpellSlots(1L, 2, false, ownerId);
+    }
+
+    @Test
+    void restoreSpellSlots_propagates403_forACampaignPlayer() {
+        when(pcService.restoreSpellSlots(1L, 3, false, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+
+        assertThatThrownBy(() -> pcController.restoreSpellSlots(1L, new RestoreSpellSlotsRequest(3, null), auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("403");
     }
 }

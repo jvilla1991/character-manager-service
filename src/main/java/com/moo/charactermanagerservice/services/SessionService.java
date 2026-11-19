@@ -2041,6 +2041,19 @@ public class SessionService {
      */
     @Transactional
     public CastResult castSpell(Long sessionId, Long pcId, String spellName, Integer atLevel, UUID userId) {
+        return castSpell(sessionId, pcId, spellName, atLevel, false, userId);
+    }
+
+    /**
+     * {@link #castSpell(Long, Long, String, Integer, UUID)} with the choice to
+     * cast as a ritual. A ritual spends NO slot and ignores {@code atLevel};
+     * it is refused (409) unless the spell on the sheet is leveled and marked
+     * {@code "ritual": true}. Everything else — who may cast, material
+     * components, the version bump, the result — is the ordinary cast.
+     */
+    @Transactional
+    public CastResult castSpell(Long sessionId, Long pcId, String spellName, Integer atLevel,
+                                boolean ritual, UUID userId) {
         CombatSession session = findSession(sessionId);
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
@@ -2073,8 +2086,14 @@ public class SessionService {
         int spellLevel = SpellcastingRules.levelOf(spell);
         Map<String, Object> slots = json.parseObject(pc.getSpellSlots());
         // Cantrips (level 0) never spend a slot; a leveled spell needs a free slot
-        // at or above its level (upcasting), chosen by the caller.
-        if (spellLevel > 0) {
+        // at or above its level (upcasting), chosen by the caller — unless it is cast
+        // as a ritual, which takes longer at the table and costs no slot.
+        if (ritual) {
+            if (spellLevel == 0 || !SpellcastingRules.isRitual(spell)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        spellName + " cannot be cast as a ritual");
+            }
+        } else if (spellLevel > 0) {
             int level = atLevel == null ? spellLevel : atLevel;
             if (level < spellLevel) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,

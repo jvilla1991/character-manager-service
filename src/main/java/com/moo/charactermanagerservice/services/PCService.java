@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.SpellSlotResult;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
 import com.moo.charactermanagerservice.models.PC;
@@ -532,6 +533,96 @@ public class PCService {
         return saved;
     }
 
+    // --- Spell slots: spend by hand, restore (V58) ----------------------------
+
+    /**
+     * Spend one spell slot of the given spell level by hand — for a spell cast
+     * away from Session Mode, or one the sheet does not list. The owning player
+     * may do it at any time, and so may the campaign's DM on their behalf. The
+     * row is locked like a cast ({@code SessionService#castSpell}): the count is
+     * read-modify-write. 400 for a level that is not 1-9, 409 when the
+     * character has no free slot of that level.
+     *
+     * <p>Wakes the PC's live session ({@link #bumpLiveSessionVersion}) so the
+     * DM's board shows the spend on the next poll.
+     */
+    @Transactional
+    public SpellSlotResult spendSpellSlot(Long id, Integer level, UUID userId) {
+        PC pc = findPCByIdForUpdate(id);
+        boolean owner = userId.equals(pc.getUserId());
+        if (!owner) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        int spellLevel = requireSpellLevel(level);
+        if (!SpellSlotState.spend(pc, spellLevel)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "No level " + spellLevel + " slot available");
+        }
+        return saveSlotChange(pc, (owner ? "Spent" : "DM spent") + " a level " + spellLevel
+                + " spell slot (" + SpellSlotState.describe(pc, spellLevel) + ")", userId);
+    }
+
+    /**
+     * Give spell slots back outside a rest: one slot of {@code level}, or every
+     * spent slot when {@code all}. In a campaign that is the DM's call alone —
+     * the owning player gets a 403, slots return with a rest or from the DM. A
+     * character in no campaign has no DM, so there its owner may.
+     *
+     * <p>400 for a level that is not 1-9, 409 when nothing is spent at that
+     * level. {@code all} on a fully rested character changes nothing and is
+     * not an error (no log line, no session bump). {@code all} wins when both
+     * are sent.
+     */
+    @Transactional
+    public SpellSlotResult restoreSpellSlots(Long id, Integer level, boolean all, UUID userId) {
+        PC pc = findPCByIdForUpdate(id);
+        boolean owner = userId.equals(pc.getUserId());
+        boolean dm = runsCampaignOf(pc, userId);
+        if (!dm && !(owner && pc.getCampaignId() == null)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, owner
+                    ? "In a campaign, spell slots come back with a rest or from your Dungeon Master"
+                    : "Access denied");
+        }
+        String restored;
+        if (all) {
+            if (SpellSlotState.restoreAll(pc) == 0) {
+                return new SpellSlotResult(pc.getId(), SpellSlotState.view(pc));
+            }
+            restored = "all spell slots";
+        } else {
+            int spellLevel = requireSpellLevel(level);
+            if (!SpellSlotState.restore(pc, spellLevel)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "No spent level " + spellLevel + " slot to restore");
+            }
+            restored = "a level " + spellLevel + " spell slot ("
+                    + SpellSlotState.describe(pc, spellLevel) + ")";
+        }
+        return saveSlotChange(pc, (dm ? "DM restored " : "Restored ") + restored, userId);
+    }
+
+    /** Shared tail of spend and restore: persist, log, wake the live session. */
+    private SpellSlotResult saveSlotChange(PC pc, String description, UUID actorUserId) {
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(), PcActivityType.SPELL_SLOT, description, actorUserId);
+        bumpLiveSessionVersion(saved);
+        return new SpellSlotResult(saved.getId(), SpellSlotState.view(saved));
+    }
+
+    /** Load a PC under the row lock (see {@link PCRepository#findByIdForUpdate}); 404 like {@link #findPCById}. */
+    private PC findPCByIdForUpdate(Long id) {
+        return pcRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new PCNotFoundException("PC not found with id " + id));
+    }
+
+    private static int requireSpellLevel(Integer level) {
+        if (level == null || level < 1 || level > SpellSlotState.MAX_SPELL_LEVEL) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "level must be a spell level from 1 to " + SpellSlotState.MAX_SPELL_LEVEL);
+        }
+        return level;
+    }
+
     public void deletePC(Long id, UUID userId) {
         PC pc = findPCById(id);
         assertOwnership(pc, userId);
@@ -591,6 +682,13 @@ public class PCService {
         if (!userId.equals(pc.getUserId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
+    }
+
+    /** Whether the caller is the DM of the campaign this PC belongs to; false for a PC in no campaign. */
+    private boolean runsCampaignOf(PC pc, UUID userId) {
+        return pc.getCampaignId() != null && campaignRepository.findById(pc.getCampaignId())
+                .map(campaign -> userId.equals(campaign.getDmUserId()))
+                .orElse(false);
     }
 
     /**
