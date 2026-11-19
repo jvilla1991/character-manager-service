@@ -198,6 +198,14 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String toolProfs;
 
+    // DM-added lines on calculated numbers (V57), keyed by the number they adjust:
+    // {"ac":[{"value":1,"label":"Taunka"}]}. NULL = none. The number's own column
+    // (e.g. ac) holds the finished total, these lines included — the SPA works it
+    // out. In a campaign only the DM's update changes the lines; a body carrying
+    // null keeps the stored value (see PCService, StatAdjustmentRules).
+    @Column(columnDefinition = "TEXT")
+    private String statAdjustments;
+
     // --- Origin feat (single string — name of the feat) ---
     private String feat;
 
@@ -278,6 +286,7 @@ public class PC implements Serializable {
     public void setTraits(String traits) { this.traits = traits; }
     public void setLanguages(String languages) { this.languages = languages; }
     public void setToolProfs(String toolProfs) { this.toolProfs = toolProfs; }
+    public void setStatAdjustments(String statAdjustments) { this.statAdjustments = statAdjustments; }
     public void setFeat(String feat) { this.feat = feat; }
     public void setBio(String bio) { this.bio = bio; }
     public void setNotes(String notes) { this.notes = notes; }
