@@ -93,6 +93,18 @@ class SpellcastingRulesTest {
     }
 
     @Test
+    void isRitual_needsTheFlagToBeTrue() {
+        Map<String, Object> detectMagic = spell("Detect Magic", 1, null, null);
+        assertThat(SpellcastingRules.isRitual(detectMagic)).isFalse(); // un-enriched: no flag
+        detectMagic.put("ritual", true);
+        assertThat(SpellcastingRules.isRitual(detectMagic)).isTrue();
+        detectMagic.put("ritual", false);
+        assertThat(SpellcastingRules.isRitual(detectMagic)).isFalse();
+        detectMagic.put("ritual", "true"); // only a real boolean counts
+        assertThat(SpellcastingRules.isRitual(detectMagic)).isFalse();
+    }
+
+    @Test
     void needsCostlyComponent_requiresM_andAGpValue() {
         assertThat(SpellcastingRules.needsCostlyComponent(
                 spell("Revivify", 3, List.of("v", "m"), "diamonds worth 300+ GP"))).isTrue();

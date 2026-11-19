@@ -77,17 +77,23 @@ public final class ClassProgression {
     }
 
     // ── Spell-slot progression (Phase 2) ────────────────────────────────────────
-    // Caster set intentionally matches what the app already models as spellcasters
-    // (frontend SPELLCASTING_CLASSES + the create wizard's starting slots): five full
-    // casters plus warlock pact magic. Paladin/Ranger are NOT included — the app does
-    // not represent them as casters, and consistency with the existing data model wins
-    // over 2024-PHB half-caster rules. Add them here (and in the app) when that changes.
+    // Three slot tables: the five full casters, warlock pact magic, and the half casters
+    // (Paladin and Ranger — and with them the World of Warcraft classes stored under those
+    // two names: Death Knight, Demon Hunter, WoW Paladin, WoW Hunter).
+    //
+    // Half casters have SLOTS only. isCaster, preparedSpellsFor and cantripsKnownFor still
+    // answer for the full and pact casters alone, so a Paladin or Ranger level-up offers no
+    // spell choices — the app does not model their prepared-spell progression yet. Add them
+    // there (and in the app) when that changes.
 
     private static final Set<String> FULL_CASTERS =
             Set.of("bard", "cleric", "druid", "sorcerer", "wizard");
 
     /** Warlock — pact magic: a single slot level with a small number of short-rest slots. */
     public static final String PACT_CASTER = "warlock";
+
+    /** Paladin and Ranger — half casters (2024 PHB): slots from level 1, up to spell level 5. */
+    private static final Set<String> HALF_CASTERS = Set.of("paladin", "ranger");
 
     /**
      * Full-caster slots by character level (rows, 1-indexed via {@code level-1}) and spell
@@ -115,6 +121,34 @@ public final class ClassProgression {
             {  4, 3, 3, 3, 3, 1, 1, 1, 1 }, // L18
             {  4, 3, 3, 3, 3, 2, 1, 1, 1 }, // L19
             {  4, 3, 3, 3, 3, 2, 2, 1, 1 }, // L20
+    };
+
+    /**
+     * Half-caster slots (Paladin, Ranger) by character level (rows) and spell level (columns,
+     * spell levels 1-5). 2024 PHB / SRD 5.2 table; zeros = no slots.
+     */
+    private static final int[][] HALF_CASTER_SLOTS = {
+            //  1  2  3  4  5   <- spell level
+            {  2, 0, 0, 0, 0 }, // L1
+            {  2, 0, 0, 0, 0 }, // L2
+            {  3, 0, 0, 0, 0 }, // L3
+            {  3, 0, 0, 0, 0 }, // L4
+            {  4, 2, 0, 0, 0 }, // L5
+            {  4, 2, 0, 0, 0 }, // L6
+            {  4, 3, 0, 0, 0 }, // L7
+            {  4, 3, 0, 0, 0 }, // L8
+            {  4, 3, 2, 0, 0 }, // L9
+            {  4, 3, 2, 0, 0 }, // L10
+            {  4, 3, 3, 0, 0 }, // L11
+            {  4, 3, 3, 0, 0 }, // L12
+            {  4, 3, 3, 1, 0 }, // L13
+            {  4, 3, 3, 1, 0 }, // L14
+            {  4, 3, 3, 2, 0 }, // L15
+            {  4, 3, 3, 2, 0 }, // L16
+            {  4, 3, 3, 3, 1 }, // L17
+            {  4, 3, 3, 3, 1 }, // L18
+            {  4, 3, 3, 3, 2 }, // L19
+            {  4, 3, 3, 3, 2 }, // L20
     };
 
     /** Warlock pact slots by character level: {@code {pactSlotLevel, slotCount}}. */
@@ -178,7 +212,11 @@ public final class ClassProgression {
         return 0;
     }
 
-    /** True when the class is one the app treats as a spellcaster (full or pact). */
+    /**
+     * True when the class is one the app treats as a spellcaster (full or pact) — the classes
+     * whose level-up offers cantrips and spells. Half casters are not included although they
+     * have slots: ask {@link #spellSlotsFor} whether a class has spell slots.
+     */
     public static boolean isCaster(String clazz) {
         if (clazz == null) return false;
         String key = clazz.trim().toLowerCase();
@@ -187,8 +225,8 @@ public final class ClassProgression {
 
     /**
      * Maximum spell slots available at a class/level, as {@code spellLevel -> maxSlots}
-     * (insertion-ordered by spell level). Empty for non-casters. Levels are clamped to
-     * {@value #MAX_LEVEL}.
+     * (insertion-ordered by spell level): the full-caster, half-caster (Paladin, Ranger) or
+     * pact table. Empty for a class with no slots. Levels are clamped to {@value #MAX_LEVEL}.
      */
     public static Map<Integer, Integer> spellSlotsFor(String clazz, int level) {
         Map<Integer, Integer> slots = new LinkedHashMap<>();
@@ -196,8 +234,8 @@ public final class ClassProgression {
         String key = clazz.trim().toLowerCase();
         int idx = Math.min(level, MAX_LEVEL) - 1;
 
-        if (FULL_CASTERS.contains(key)) {
-            int[] row = FULL_CASTER_SLOTS[idx];
+        if (FULL_CASTERS.contains(key) || HALF_CASTERS.contains(key)) {
+            int[] row = (FULL_CASTERS.contains(key) ? FULL_CASTER_SLOTS : HALF_CASTER_SLOTS)[idx];
             for (int i = 0; i < row.length; i++) {
                 if (row[i] > 0) slots.put(i + 1, row[i]);
             }

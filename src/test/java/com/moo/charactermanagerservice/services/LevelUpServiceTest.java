@@ -228,6 +228,105 @@ class LevelUpServiceTest {
         assertThat(wizard.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0},\"2\":{\"max\":2,\"used\":0}}");
     }
 
+    // --- half casters (Paladin, Ranger): slots, but no spell choices at level-up ---
+
+    @Test
+    void preview_halfCaster_reportsSlotChanges_butNoSpellChoices() {
+        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5: the first 2nd-level slots
+        paladin.setSubclass("Oath of Devotion");
+        paladin.setSpellSlots("{\"1\":{\"max\":3,\"used\":1}}");
+
+        LevelUpPreview p = service.preview(paladin);
+
+        assertThat(p.currentSpellSlots()).isEqualTo(Map.of(1, 3));
+        assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 4, 2, 2));
+        // No cantrip or prepared-spell delta: the level-up offers a half caster no spells.
+        assertThat(p.currentCantripsKnown()).isZero();
+        assertThat(p.newCantripsKnown()).isZero();
+        assertThat(p.currentSpellsKnown()).isZero();
+        assertThat(p.newSpellsKnown()).isZero();
+    }
+
+    @Test
+    void preview_halfCaster_withNoStoredSlots_showsTheTableAsNew() {
+        // A paladin made before half casters had slots: nothing stored yet.
+        LevelUpPreview p = service.preview(pc("Ranger", 1, 14, 12, 12));
+
+        assertThat(p.currentSpellSlots()).isEmpty();
+        assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 2));
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_rebuildsSlotsPreservingUsed() {
+        PC ranger = pc("Ranger", 4, 14, 40, 40); // 4 -> 5 (not an ASI level)
+        ranger.setSubclass("Hunter");
+        ranger.setSpellSlots("{\"1\":{\"max\":3,\"used\":2}}");
+
+        service.applyLevelUp(ranger);
+
+        assertThat(ranger.getSpellSlots())
+                .isEqualTo("{\"1\":{\"max\":4,\"used\":2},\"2\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_withNoStoredSlots_getsTheTable() {
+        PC paladin = pc("Paladin", 1, 14, 12, 12); // 1 -> 2
+        paladin.setSpellSlots(null);
+
+        service.applyLevelUp(paladin);
+
+        assertThat(paladin.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":0}}");
+    }
+
+    @Test
+    void applyLevelUp_halfCaster_stillLearnsNoLeveledSpells() {
+        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5
+        paladin.setSubclass("Oath of Devotion");
+
+        assertThatThrownBy(() -> service.applyLevelUp(paladin, null, null, null, List.of(spell(1, "Bless"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value()).isEqualTo(400));
+    }
+
+    // --- DM bonus slot lines (statAdjustments slot1..slot9) count at level-up too ---
+
+    @Test
+    void applyLevelUp_keepsTheDmsBonusSlots_onTopOfTheNewTable() {
+        PC bard = pc("Bard", 8, 14, 50, 50); // 8 -> 9 (not an ASI level)
+        bard.setStatAdjustments("{\"slot1\":[{\"value\":1,\"label\":\"Boon\"}]}");
+        bard.setSpellSlots("{\"1\":{\"max\":5,\"used\":5},\"4\":{\"max\":2,\"used\":1}}");
+
+        service.applyLevelUp(bard);
+
+        assertThat(bard.getSpellSlots()).contains("\"1\":{\"max\":5,\"used\":5}");
+        assertThat(bard.getSpellSlots()).contains("\"4\":{\"max\":3,\"used\":1}");
+        assertThat(bard.getSpellSlots()).contains("\"5\":{\"max\":1,\"used\":0}");
+    }
+
+    @Test
+    void preview_newSpellSlots_includeTheDmsBonusSlots() {
+        PC paladin = pc("Paladin", 4, 14, 40, 40); // 4 -> 5
+        paladin.setSubclass("Oath of Devotion");
+        paladin.setStatAdjustments("{\"slot1\":[{\"value\":1,\"label\":\"Boon\"}]}");
+        paladin.setSpellSlots("{\"1\":{\"max\":4,\"used\":0}}");
+
+        LevelUpPreview p = service.preview(paladin);
+
+        assertThat(p.currentSpellSlots()).isEqualTo(Map.of(1, 4));
+        assertThat(p.newSpellSlots()).isEqualTo(Map.of(1, 5, 2, 2));
+    }
+
+    @Test
+    void applyLevelUp_aClassWithoutSlots_keepsItsDmGrantedSlots() {
+        PC fighter = pc("Fighter", 4, 16, 30, 30); // 4 -> 5
+        fighter.setStatAdjustments("{\"slot1\":[{\"value\":2,\"label\":\"Eldritch Knight\"}]}");
+        fighter.setSpellSlots("{\"1\":{\"max\":2,\"used\":1}}");
+
+        service.applyLevelUp(fighter);
+
+        assertThat(fighter.getSpellSlots()).isEqualTo("{\"1\":{\"max\":2,\"used\":1}}");
+    }
+
     // --- subclass selection mechanism (Phase 3 — catalog intentionally empty) ---
 
     @Test

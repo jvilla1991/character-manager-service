@@ -10,5 +10,6 @@ public enum PcActivityType {
     LONG_REST,
     SHORT_REST,
     INSPIRATION,
-    DM_EDIT
+    DM_EDIT,
+    SPELL_SLOT
 }

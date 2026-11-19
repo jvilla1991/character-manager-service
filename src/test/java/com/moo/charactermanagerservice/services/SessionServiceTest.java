@@ -3098,6 +3098,126 @@ class SessionServiceTest {
         assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(1);
     }
 
+    // --- castSpell as a ritual: no slot spent ---
+
+    private static final String DETECT_MAGIC = "{\"name\":\"Detect Magic\",\"lvl\":1,\"ritual\":true}";
+
+    @Test
+    void cast_asARitual_spendsNoSlot_andStillBumpsVersion() {
+        PC pc = casterPc("[" + DETECT_MAGIC + "]", "{\"1\":{\"max\":4,\"used\":1}}", "[]");
+        seatCaster(pc);
+
+        var result = sessionService.castSpell(1L, 7L, "Detect Magic", 1, true, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(1);
+        assertThat(result.warning()).isNull();
+        assertThat(pc.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":1}}");
+        verify(pcRepository).save(pc);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void cast_asARitual_worksWithEverySlotSpent_andIgnoresAtLevel() {
+        PC pc = casterPc("[" + DETECT_MAGIC + "]", "{\"1\":{\"max\":2,\"used\":2},\"3\":{\"max\":1,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        // No atLevel, a level with no slot at all, a level with a free slot: none is spent.
+        sessionService.castSpell(1L, 7L, "Detect Magic", null, true, playerId);
+        sessionService.castSpell(1L, 7L, "Detect Magic", 9, true, playerId);
+        var result = sessionService.castSpell(1L, 7L, "Detect Magic", 3, true, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(2);
+        assertThat(((Map<?, ?>) result.spellSlots().get("3")).get("used")).isEqualTo(0);
+    }
+
+    @Test
+    void cast_asARitual_throws409_forASpellThatIsNotARitual() {
+        PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1},{\"name\":\"Shield\",\"lvl\":1,\"ritual\":false}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Cure Wounds", 1, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Shield", 1, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+        assertThat(pc.getSpellSlots()).isEqualTo("{\"1\":{\"max\":4,\"used\":0}}");
+    }
+
+    @Test
+    void cast_asARitual_throws409_forACantrip_evenOneFlaggedRitual() {
+        PC pc = casterPc("[{\"name\":\"Fire Bolt\",\"lvl\":0},{\"name\":\"Odd Cantrip\",\"lvl\":0,\"ritual\":true}]",
+                "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Fire Bolt", 0, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Odd Cantrip", 0, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_asARitual_stillAnswers400_forASpellTheCharacterDoesNotKnow_and403_forAStranger() {
+        PC pc = casterPc("[" + DETECT_MAGIC + "]", "{\"1\":{\"max\":4,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Identify", 1, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Detect Magic", 1, true, strangerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    @Test
+    void cast_asARitual_stillResolvesMaterialComponents() {
+        String spells = "[{\"name\":\"Augury\",\"lvl\":2,\"ritual\":true,\"components\":[\"v\",\"s\",\"m\"],"
+                + "\"material\":\"marked sticks worth 25+ GP\"}]";
+        PC pc = casterPc(spells, "{\"2\":{\"max\":2,\"used\":0}}",
+                "[{\"category\":\"material-component\",\"spell\":\"Augury\",\"qty\":1,\"consumedOnCast\":true}]");
+        seatCaster(pc);
+
+        var consumed = sessionService.castSpell(1L, 7L, "Augury", 2, true, playerId);
+        assertThat(consumed.inventory()).isEmpty();
+        assertThat(consumed.warning()).isNull();
+
+        // The component is gone now: a lenient campaign lets the ritual through with a warning.
+        var warned = sessionService.castSpell(1L, 7L, "Augury", 2, true, playerId);
+        assertThat(warned.warning()).contains("Missing material component");
+        assertThat(((Map<?, ?>) warned.spellSlots().get("2")).get("used")).isEqualTo(0);
+    }
+
+    @Test
+    void cast_asARitual_isBlockedByAMissingCostlyComponent_whenStrict() {
+        campaign.setVariantRules("{\"strictComponents\":true}");
+        String spells = "[{\"name\":\"Augury\",\"lvl\":2,\"ritual\":true,\"components\":[\"v\",\"s\",\"m\"],"
+                + "\"material\":\"marked sticks worth 25+ GP\"}]";
+        PC pc = casterPc(spells, "{\"2\":{\"max\":2,\"used\":0}}", "[]");
+        seatCaster(pc);
+
+        assertThatThrownBy(() -> sessionService.castSpell(1L, 7L, "Augury", 2, true, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void cast_aRitualSpell_castTheOrdinaryWay_spendsASlotAsBefore() {
+        PC pc = casterPc("[" + DETECT_MAGIC + "]", "{\"1\":{\"max\":4,\"used\":1}}", "[]");
+        seatCaster(pc);
+
+        // The five-argument call and an explicit "not a ritual" are the same ordinary cast.
+        sessionService.castSpell(1L, 7L, "Detect Magic", 1, playerId);
+        var result = sessionService.castSpell(1L, 7L, "Detect Magic", 1, false, playerId);
+
+        assertThat(((Map<?, ?>) result.spellSlots().get("1")).get("used")).isEqualTo(3);
+    }
+
     @Test
     void cast_throws409_whenNoSlotAtThatLevelIsFree() {
         PC pc = casterPc("[{\"name\":\"Cure Wounds\",\"lvl\":1}]",

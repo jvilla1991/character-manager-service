@@ -154,6 +154,9 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String spells;
 
+    // Spell slots by spell level: {"1":{"max":4,"used":1},"2":{"max":3,"used":0}}. The max is
+    // server-owned (V58): class table + the DM's slot1..slot9 lines in statAdjustments, rewritten
+    // on every save — a max in a request body is ignored. Only "used" is state (SpellSlotState).
     @Column(columnDefinition = "TEXT")
     private String spellSlots;
 
@@ -202,7 +205,9 @@ public class PC implements Serializable {
     // {"ac":[{"value":1,"label":"Taunka"}]}. NULL = none. The number's own column
     // (e.g. ac) holds the finished total, these lines included — the SPA works it
     // out. In a campaign only the DM's update changes the lines; a body carrying
-    // null keeps the stored value (see PCService, StatAdjustmentRules).
+    // null keeps the stored value (see PCService, StatAdjustmentRules). The keys
+    // slot1..slot9 are the exception to "the SPA works it out": the server adds
+    // those lines to the spell-slot maximum itself (SpellSlotState).
     @Column(columnDefinition = "TEXT")
     private String statAdjustments;
 
@@ -225,7 +230,7 @@ public class PC implements Serializable {
     // Limited-use class features (V55): how much of each is USED, as JSON keyed
     // by resource — {"secondWind":1,"layOnHands":15}; NULL = nothing used. The
     // maximum is computed (progression/ClassResources), never stored. Written
-    // by the sheet like spell slots, and by the session's rests.
+    // by the sheet, and by the session's rests.
     @Column(columnDefinition = "TEXT")
     private String classResources;
 
