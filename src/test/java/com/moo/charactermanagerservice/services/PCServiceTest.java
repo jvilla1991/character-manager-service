@@ -206,6 +206,69 @@ class PCServiceTest {
         assertThat(result.getSurvival()).isEqualTo("{\"hunger\":3,\"thirst\":1,\"fatigue\":2}");
     }
 
+    // --- Death Knight rune weapon (kept, replaced or unset on a whole-character save) ---
+
+    private PC deathKnight(String runeWeapon) {
+        PC knight = new PC();
+        knight.setId(1L);
+        knight.setName("Thorne");
+        knight.setUserId(ownerId);
+        knight.setClazz("Paladin");
+        knight.setSubclass("Oath of the Ebon Blade");
+        knight.setSpecialization("Blood");
+        knight.setLevel((short) 5);
+        knight.setInventory("[{\"name\":\"Greatsword\",\"category\":\"weapon\",\"qty\":1},"
+                + "{\"name\":\"Handaxe\",\"category\":\"weapon\",\"qty\":1}]");
+        knight.setRuneWeapon(runeWeapon);
+        return knight;
+    }
+
+    @Test
+    void updatePC_keepsTheRuneWeapon_whenTheBodyOmitsIt() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(deathKnight("Greatsword")));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(deathKnight(null), ownerId);
+
+        assertThat(result.getRuneWeapon()).isEqualTo("Greatsword");
+    }
+
+    @Test
+    void updatePC_setsTheRuneWeapon_fromTheSheet() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(deathKnight(null)));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC result = pcService.updatePC(deathKnight("handaxe"), ownerId);
+
+        assertThat(result.getRuneWeapon()).isEqualTo("Handaxe");
+    }
+
+    @Test
+    void updatePC_unsetsTheRuneWeapon_whenTheWeaponLeavesTheSheet_withoutFailingTheSave() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(deathKnight("Greatsword")));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = deathKnight("Greatsword");
+        incoming.setInventory("[{\"name\":\"Handaxe\",\"category\":\"weapon\",\"qty\":1}]"); // sold it
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getRuneWeapon()).isNull();
+    }
+
+    @Test
+    void updatePC_ignoresARuneWeapon_onACharacterWhoIsNotADeathKnight() {
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setClazz("Wizard");
+        incoming.setRuneWeapon("Quarterstaff");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getRuneWeapon()).isNull();
+    }
+
     @Test
     void updatePC_acceptsAnExplicitSurvival() {
         pc.setSurvival("{\"hunger\":3,\"thirst\":1,\"fatigue\":2}");

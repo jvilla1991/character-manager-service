@@ -62,6 +62,7 @@ public class PCService {
         // subclass and must be one of that subclass's values.
         HeroClassRules.validate(pc);
         pc.setLevel((short) 1);
+        pc.setRuneWeapon(LongRestRules.normalizeRuneWeapon(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         return pcRepository.saveAndFlush(pc);
     }
@@ -130,6 +131,10 @@ public class PCService {
      * {@code petFamily} keeps the stored one while the character is still a WoW Hunter with the
      * Beast Master subclass, and drops it otherwise (so leaving Beast Master never 400s on a stale
      * family).
+     *
+     * <p>The Death Knight's rune weapon (V53) is kept when the body omits it and replaced when
+     * the body names a melee weapon on its own sheet; a value that no longer fits is stored as
+     * unset instead of failing the save — see {@link LongRestRules#normalizeRuneWeapon}.
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         boolean carriesSpecialization = ClassProgression.isHeroSubclass(incoming.getSubclass())
@@ -152,6 +157,7 @@ public class PCService {
         incoming.setHitDiceUsed(existing.getHitDiceUsed());
         incoming.setInspirationPips(existing.getInspirationPips());
         incoming.setHeroicInspiration(existing.getHeroicInspiration());
+        incoming.setRuneWeapon(LongRestRules.normalizeRuneWeapon(incoming, existing));
     }
 
     /**

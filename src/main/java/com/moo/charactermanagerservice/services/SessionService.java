@@ -5,6 +5,7 @@ import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.SurvivalAction;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.LongRestResultView;
@@ -971,6 +972,7 @@ public class SessionService {
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(session.getId());
         for (SessionParticipant p : seats) {
             p.setLongRestReady(Boolean.FALSE);
+            p.setLongRestChoices(null);
         }
         participantRepository.saveAll(seats);
     }
@@ -979,9 +981,16 @@ public class SessionService {
      * A player marks their own seated PC ready (or takes it back) while the
      * phase is open. When this Ready is the last one outstanding, the rest
      * finishes right here, in the same transaction.
+     *
+     * <p>A Ready carries the hero's choices (prepared spells, rune weapon —
+     * see {@link LongRestRules}). They are validated now, so the player hears
+     * about a problem while they can still fix it (400), then wait on the seat
+     * until the rest finishes. Taking Ready back discards them, and so does a
+     * later Ready without any.
      */
     @Transactional
-    public SessionStateView setLongRestReady(Long sessionId, Long pcId, Boolean ready, UUID userId) {
+    public SessionStateView setLongRestReady(Long sessionId, Long pcId, Boolean ready,
+                                             LongRestChoices choices, UUID userId) {
         CombatSession session = findSession(sessionId);
         if (session.getStatus() == SessionStatus.ENDED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Session has ended");
@@ -1003,12 +1012,24 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
         }
 
-        seated.setLongRestReady(ready);
-        participantRepository.save(seated);
-
         List<SessionParticipant> participants =
                 participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
-        if (ready && longRestSettled(participants, loadPcs(participants))) {
+        Map<Long, PC> pcsById = loadPcs(participants);
+        String pending = null;
+        if (ready) {
+            PC pc = pcsById.get(pcId);
+            if (pc == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found");
+            }
+            LongRestRules.validate(pc, choices);
+            pending = LongRestRules.serialize(choices);
+        }
+
+        seated.setLongRestReady(ready);
+        seated.setLongRestChoices(pending);
+        participantRepository.save(seated);
+
+        if (ready && longRestSettled(participants, pcsById)) {
             completeLongRest(session, participants, userId);
         }
         session.bumpVersion();
@@ -1137,6 +1158,13 @@ public class SessionService {
      * points gone, ALL hit dice back, all spell slots back, exhaustion down
      * one, and in a survival campaign fatigue down 3 (undisturbed) or 1.
      * A hero at 0 hit points is skipped entirely and named in the outcome.
+     *
+     * <p>Choices ride the same transaction: a hero who is READY has the
+     * choices their Ready carried applied first (prepared spells, the Death
+     * Knight's rune weapon). A hero who is not ready — the DM finished early —
+     * recovers but keeps their prepared list and rune weapon exactly as they
+     * were. A Blood-rune Death Knight whose rune is on a weapon after that
+     * then gains temporary hit points (Charisma modifier + level).
      */
     private boolean completeLongRest(CombatSession session, List<SessionParticipant> participants,
                                      UUID actorUserId) {
@@ -1184,8 +1212,18 @@ public class SessionService {
             advanceClockToNextMorning(campaign);
         }
 
+        Map<Long, SessionParticipant> seatByPc = new LinkedHashMap<>();
+        for (SessionParticipant p : participants) {
+            if (p.getPcId() != null) {
+                seatByPc.putIfAbsent(p.getPcId(), p);
+            }
+        }
+
         for (PC pc : resting) {
             List<String> changes = new ArrayList<>();
+            // The rune weapon is settled first: this rest's temporary hit
+            // points depend on where the rune ends up.
+            List<String> choiceChanges = applyLongRestChoices(pc, seatByPc.get(pc.getId()));
 
             if (pc.getHpMax() != null) {
                 Short before = pc.getHpCurrent();
@@ -1199,6 +1237,11 @@ public class SessionService {
             if (pc.getHpTemp() != null && pc.getHpTemp() > 0) {
                 changes.add(pc.getHpTemp() + " temporary HP faded");
                 pc.setHpTemp((short) 0);
+            }
+            int runeTempHp = LongRestRules.bloodRuneTempHp(pc);
+            if (runeTempHp > 0) {
+                changes.add(runeTempHp + " temporary HP from the Blood Rune");
+                pc.setHpTemp((short) runeTempHp);
             }
             int diceUsed = pc.getHitDiceUsed() == null ? 0 : pc.getHitDiceUsed();
             if (diceUsed > 0) {
@@ -1225,6 +1268,7 @@ public class SessionService {
                 }
                 pc.setSurvival(json.writeObject(after));
             }
+            changes.addAll(choiceChanges);
 
             pcRepository.save(pc);
             activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
@@ -1234,8 +1278,52 @@ public class SessionService {
                     actorUserId);
         }
 
+        // The choices are spent (applied, or left behind by a hero who was
+        // not ready or could not rest).
+        List<SessionParticipant> withChoices = participants.stream()
+                .filter(p -> p.getLongRestChoices() != null)
+                .toList();
+        if (!withChoices.isEmpty()) {
+            withChoices.forEach(p -> p.setLongRestChoices(null));
+            participantRepository.saveAll(withChoices);
+        }
+
         recordLongRestResult(session, LONG_REST_FINISHED, skipped, advanceClock);
         return true;
+    }
+
+    /**
+     * Apply a ready hero's long rest choices to their (locked) sheet and
+     * return what changed, for the activity log. Nothing happens for a hero
+     * who is not ready or chose nothing. The choices were validated at Ready;
+     * they are checked again here because the sheet may have changed since (a
+     * weapon sold, a spell removed) — choices that no longer fit are dropped
+     * and the log says so, rather than failing the whole party's rest.
+     */
+    private List<String> applyLongRestChoices(PC pc, SessionParticipant seat) {
+        List<String> changes = new ArrayList<>();
+        if (seat == null || !Boolean.TRUE.equals(seat.getLongRestReady())) {
+            return changes;
+        }
+        LongRestChoices choices = LongRestRules.parse(seat.getLongRestChoices());
+        if (choices == null) {
+            return changes;
+        }
+        try {
+            LongRestRules.validate(pc, choices);
+        } catch (ResponseStatusException stale) {
+            changes.add("long rest choices no longer fit the sheet and were not applied");
+            return changes;
+        }
+        String spells = LongRestRules.applyPrepared(pc, choices.preparedSpells());
+        if (spells != null) {
+            changes.add(spells);
+        }
+        String rune = LongRestRules.applyRuneWeapon(pc, choices.runeWeapon());
+        if (rune != null) {
+            changes.add(rune);
+        }
+        return changes;
     }
 
     /**
@@ -1282,10 +1370,11 @@ public class SessionService {
 
     /** The open phase for the snapshot: options plus every seated hero's readiness. */
     private LongRestView buildLongRestView(CombatSession session, List<SessionParticipant> participants,
-                                           Map<Long, PC> pcsById) {
+                                           Map<Long, PC> pcsById, UUID requesterId) {
         List<LongRestView.ReadinessView> readiness = new ArrayList<>();
         int ready = 0;
         int able = 0;
+        LongRestChoices myChoices = null;
         for (SessionParticipant p : participants) {
             PC pc = p.getPcId() == null ? null : pcsById.get(p.getPcId());
             if (pc == null) {
@@ -1293,6 +1382,9 @@ public class SessionService {
             }
             boolean down = cannotRest(pc);
             boolean isReady = !down && Boolean.TRUE.equals(p.getLongRestReady());
+            if (isReady && myChoices == null && requesterId.equals(p.getOwnerUserId())) {
+                myChoices = LongRestRules.parse(p.getLongRestChoices()); // the caller's own, never a teammate's
+            }
             if (!down) {
                 able++;
                 if (isReady) {
@@ -1305,7 +1397,7 @@ public class SessionService {
         return new LongRestView(
                 !Boolean.FALSE.equals(session.getLongRestAdvanceClock()),
                 !Boolean.FALSE.equals(session.getLongRestUndisturbed()),
-                ready, able, readiness);
+                ready, able, readiness, myChoices);
     }
 
     /**
@@ -2387,7 +2479,7 @@ public class SessionService {
         // The open long rest phase (null when none) and the latest long rest
         // outcome — both broadcast; see LongRestView / LongRestResultView.
         LongRestView longRest = Boolean.TRUE.equals(session.getLongRestOpen())
-                ? buildLongRestView(session, participants, pcsById)
+                ? buildLongRestView(session, participants, pcsById, requesterId)
                 : null;
         LongRestResultView longRestResult = longRestResultRepository.findBySessionId(session.getId())
                 .map(r -> new LongRestResultView(

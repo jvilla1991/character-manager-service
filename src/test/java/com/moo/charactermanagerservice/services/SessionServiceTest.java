@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.ParticipantView;
 import com.moo.charactermanagerservice.dto.SessionRollView;
 import com.moo.charactermanagerservice.dto.SessionStateView;
@@ -1594,7 +1595,7 @@ class SessionServiceTest {
         PC theirs = tiredPc(8L, "Lyra");
         List<SessionParticipant> party = armLongRest(mine, theirs);
 
-        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, playerId);
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, null, playerId);
 
         assertThat(party.get(0).getLongRestReady()).isTrue();
         assertThat(state.longRest()).isNotNull(); // still open — Lyra is getting ready
@@ -1613,7 +1614,7 @@ class SessionServiceTest {
         session.setLongRestAdvanceClock(false);
         party.get(1).setLongRestReady(true);
 
-        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, playerId);
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, null, playerId);
 
         assertThat(state.longRest()).isNull();
         assertThat(state.longRestResult().outcome()).isEqualTo("FINISHED");
@@ -1630,7 +1631,7 @@ class SessionServiceTest {
         party.get(0).setLongRestReady(true);
         party.get(1).setLongRestReady(true); // would be settled — but this call un-readies
 
-        SessionStateView state = sessionService.setLongRestReady(1L, 7L, false, playerId);
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, false, null, playerId);
 
         assertThat(party.get(0).getLongRestReady()).isFalse();
         assertThat(state.longRest().readyCount()).isEqualTo(1);
@@ -1641,7 +1642,7 @@ class SessionServiceTest {
     void setLongRestReady_throws403_forSomeoneElsesCharacter() {
         armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
 
-        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 8L, true, playerId)) // Lyra is the stranger's
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 8L, true, null, playerId)) // Lyra is the stranger's
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
@@ -1651,7 +1652,7 @@ class SessionServiceTest {
         armLongRest(tiredPc(7L, "Gorath"), tiredPc(8L, "Lyra"));
         when(participantRepository.findBySessionIdAndPcId(1L, 99L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 99L, true, playerId))
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 99L, true, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
     }
@@ -1661,7 +1662,7 @@ class SessionServiceTest {
         session.setStatus(SessionStatus.LOBBY);
         when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
 
-        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, playerId))
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, null, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(409));
     }
@@ -1983,6 +1984,303 @@ class SessionServiceTest {
         assertThat(state.longRest()).isNull();
         verify(longRestResultRepository).deleteBySessionId(1L);
         verify(pcRepository, never()).save(any());
+    }
+
+    // --- long rest choices (prepared spells, rune weapon) ---
+
+    private static final String CLERIC_SPELLS = "["
+            + "{\"name\":\"Guidance\",\"lvl\":0,\"prepared\":true},"
+            + "{\"name\":\"Bless\",\"lvl\":1,\"prepared\":true},"
+            + "{\"name\":\"Command\",\"lvl\":1,\"prepared\":false},"
+            + "{\"name\":\"Aid\",\"lvl\":2,\"prepared\":true}]";
+
+    /** Mine (pc 7): a tired level 5 cleric with a spell to swap in. */
+    private static PC tiredCleric() {
+        PC pc = tiredPc(7L, "Gorath");
+        pc.setClazz("Cleric");
+        pc.setSpells(CLERIC_SPELLS);
+        return pc;
+    }
+
+    /** Mine (pc 7): a tired level 5 Death Knight (CHA 16) carrying a Greatsword, a Handaxe and a Longbow. */
+    private static PC tiredDeathKnight(String rune) {
+        PC pc = tiredPc(7L, "Gorath");
+        pc.setClazz("Paladin");
+        pc.setSubclass("Oath of the Ebon Blade");
+        pc.setSpecialization(rune);
+        pc.setAbilityCha((short) 16);
+        pc.setInventory("["
+                + "{\"name\":\"Greatsword\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"heavy\"]},"
+                + "{\"name\":\"Handaxe\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"light\"]},"
+                + "{\"name\":\"Longbow\",\"category\":\"weapon\",\"qty\":1,\"properties\":[\"ammunition (150/600)\"]}]");
+        return pc;
+    }
+
+    private static LongRestChoices prepared(String... names) {
+        return new LongRestChoices(List.of(names), null);
+    }
+
+    private static LongRestChoices rune(String weapon) {
+        return new LongRestChoices(null, weapon);
+    }
+
+    @Test
+    void ready_withChoices_storesThemOnTheSeat_andChangesNothingYet() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isEqualTo("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS); // applied only when the rest finishes
+        assertThat(state.longRest().myChoices().preparedSpells()).containsExactly("Command", "Aid");
+    }
+
+    @Test
+    void myChoices_areNeverShownToAnotherPlayer_orTheDm() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(sessionService.getState(1L, strangerId, null).longRest().myChoices()).isNull();
+        assertThat(sessionService.getState(1L, dmId, null).longRest().myChoices()).isNull();
+        assertThat(sessionService.getState(1L, playerId, null).longRest().myChoices()).isNotNull();
+        assertThat(party.get(1).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void ready_rejectsInvalidChoices_with400_andDoesNotMarkTheSeatReady() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, prepared("Fireball"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Fireball is not on Gorath's spell list");
+        assertThat(Boolean.TRUE.equals(party.get(0).getLongRestReady())).isFalse();
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+        verify(participantRepository, never()).save(any(SessionParticipant.class));
+    }
+
+    @Test
+    void ready_rejectsASpellChange_fromAClassThatCannotChangeAtALongRest() {
+        PC bard = tiredCleric();
+        bard.setClazz("Bard");
+        armLongRest(bard, tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void ready_rejectsARuneWeapon_fromSomeoneWhoIsNotADeathKnight() {
+        armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, rune("Greatsword"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void unready_discardsTheChoices() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, false, prepared("Command", "Aid"), playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull(); // choices on an un-ready are ignored
+        assertThat(state.longRest().myChoices()).isNull();
+    }
+
+    @Test
+    void aLaterReady_withoutChoices_replacesTheEarlierOnes() {
+        List<SessionParticipant> party = armLongRest(tiredCleric(), tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.setLongRestReady(1L, 7L, true, null, playerId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void openingAPhase_clearsChoicesLeftFromAnEarlierRest() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        List<SessionParticipant> party = restVoteParty();
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\"]}");
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(party);
+        when(pcRepository.findAllById(any())).thenReturn(List.of(tiredCleric(), tiredPc(8L, "Lyra")));
+
+        sessionService.openLongRest(1L, null, dmId);
+
+        assertThat(party.get(0).getLongRestChoices()).isNull();
+    }
+
+    @Test
+    void finish_appliesAReadyHerosPreparedSpells_withRecovery_andLogsBoth() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells())
+                .contains("{\"name\":\"Command\",\"lvl\":1,\"prepared\":true}")
+                .contains("{\"name\":\"Bless\",\"lvl\":1,\"prepared\":false}")
+                .contains("{\"name\":\"Aid\",\"lvl\":2,\"prepared\":true}");
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30); // recovery landed in the same pass
+        assertThat(party.get(0).getLongRestChoices()).isNull(); // spent
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue())
+                .startsWith("Completed a long rest: HP 12 → 30")
+                .endsWith("prepared Command; unprepared Bless");
+    }
+
+    @Test
+    void finish_whileAHeroIsNotReady_recoversThem_butKeepsTheirSpellsAndRuneWeapon() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        // Choices sitting on a seat that is NOT ready (as if un-ready had not cleared them).
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);
+        assertThat(mine.getHitDiceUsed()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void interrupt_leavesChoicesUnapplied() {
+        PC mine = tiredCleric();
+        armLongRest(mine, tiredPc(8L, "Lyra"));
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        sessionService.interruptLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void finish_doesNotApplyChoices_forAHeroAtZeroHitPoints() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        party.get(0).setLongRestReady(true);
+        party.get(0).setLongRestChoices("{\"preparedSpells\":[\"Command\",\"Aid\"]}");
+        mine.setHpCurrent((short) 0); // dropped after readying
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(CLERIC_SPELLS);
+        verify(pcRepository, never()).save(mine);
+    }
+
+    @Test
+    void finish_dropsChoicesThatNoLongerFitTheSheet_withoutFailingTheRest() {
+        PC mine = tiredCleric();
+        PC theirs = tiredPc(8L, "Lyra");
+        List<SessionParticipant> party = armLongRest(mine, theirs);
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+        // The DM removes Command from the sheet before the rest finishes.
+        mine.setSpells(CLERIC_SPELLS.replace("{\"name\":\"Command\",\"lvl\":1,\"prepared\":false},", ""));
+        String withoutCommand = mine.getSpells();
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(mine.getSpells()).isEqualTo(withoutCommand);
+        assertThat(mine.getHpCurrent()).isEqualTo((short) 30);   // still rested
+        assertThat(theirs.getHpCurrent()).isEqualTo((short) 30); // and so did everyone else
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).endsWith("long rest choices no longer fit the sheet and were not applied");
+    }
+
+    @Test
+    void finish_inscribesTheRune_andABloodRuneGivesTemporaryHitPoints() {
+        PC knight = tiredDeathKnight("Blood"); // 5 temp HP from before, CHA +3, level 5
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, rune("greatsword"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Greatsword");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 8); // old 5 faded, then +3 CHA + level 5
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue())
+                .contains("5 temporary HP faded, 8 temporary HP from the Blood Rune")
+                .endsWith("Blood Rune inscribed on Greatsword");
+    }
+
+    @Test
+    void finish_movesTheRune_whenTheKnightChoosesAnotherWeapon() {
+        PC knight = tiredDeathKnight("Frost");
+        knight.setRuneWeapon("Greatsword");
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        sessionService.setLongRestReady(1L, 7L, true, rune("Handaxe"), playerId);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Handaxe");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 0); // Frost gives no temporary hit points
+        ArgumentCaptor<String> line = ArgumentCaptor.forClass(String.class);
+        verify(activityLogService).log(eq(7L), eq(PcActivityType.LONG_REST), line.capture(), eq(dmId));
+        assertThat(line.getValue()).endsWith("Frost Rune moved from Greatsword to Handaxe");
+    }
+
+    @Test
+    void finish_givesBloodRuneTempHp_toAKnightAlreadyInscribed_evenIfNotReady() {
+        PC knight = tiredDeathKnight("Blood");
+        knight.setRuneWeapon("Greatsword");
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId); // nobody readied
+
+        assertThat(knight.getRuneWeapon()).isEqualTo("Greatsword");
+        assertThat(knight.getHpTemp()).isEqualTo((short) 8);
+    }
+
+    @Test
+    void finish_givesNoBloodRuneTempHp_whenNoWeaponCarriesTheRune() {
+        PC knight = tiredDeathKnight("Blood"); // never inscribed, and not ready
+        armLongRest(knight, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+
+        sessionService.finishLongRest(1L, dmId);
+
+        assertThat(knight.getRuneWeapon()).isNull();
+        assertThat(knight.getHpTemp()).isEqualTo((short) 0);
+    }
+
+    @Test
+    void ready_rejectsARangedRuneWeapon() {
+        armLongRest(tiredDeathKnight("Blood"), tiredPc(8L, "Lyra"));
+
+        assertThatThrownBy(() -> sessionService.setLongRestReady(1L, 7L, true, rune("Longbow"), playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Longbow is not a melee weapon Gorath has");
+    }
+
+    @Test
+    void theLastReady_appliesItsOwnChoices_asItFinishesTheRest() {
+        PC mine = tiredCleric();
+        List<SessionParticipant> party = armLongRest(mine, tiredPc(8L, "Lyra"));
+        session.setLongRestAdvanceClock(false);
+        party.get(1).setLongRestReady(true);
+
+        SessionStateView state = sessionService.setLongRestReady(1L, 7L, true, prepared("Command", "Aid"), playerId);
+
+        assertThat(state.longRest()).isNull();
+        assertThat(mine.getSpells()).contains("{\"name\":\"Command\",\"lvl\":1,\"prepared\":true}");
     }
 
     // --- rest vote: rest type ---

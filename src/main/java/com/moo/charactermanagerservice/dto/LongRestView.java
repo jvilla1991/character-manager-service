@@ -12,13 +12,19 @@ import java.util.List;
  * cannotRest} is true for a hero at 0 hit points, who gains nothing from the
  * rest and is not waited on. {@code readyCount} / {@code ableCount} are the
  * "x of y ready" numbers (heroes who cannot rest are in neither).
+ *
+ * <p>{@code myChoices} is caller-scoped: the choices the requester's own ready
+ * hero is waiting to have applied (prepared spells, rune weapon), so their
+ * screen can show them again after a reload. Null for the DM, for a player who
+ * is not ready, and when they chose nothing. Never another player's.
  */
 public record LongRestView(
         boolean advanceClock,
         boolean undisturbed,
         int readyCount,
         int ableCount,
-        List<ReadinessView> readiness
+        List<ReadinessView> readiness,
+        LongRestChoices myChoices
 ) {
     public record ReadinessView(Long participantId, Long pcId, String displayName,
                                 boolean ready, boolean cannotRest) {}
