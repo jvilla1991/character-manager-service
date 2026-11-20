@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddEnemyRequest;
 import com.moo.charactermanagerservice.dto.AdvanceRequest;
 import com.moo.charactermanagerservice.dto.CastResult;
 import com.moo.charactermanagerservice.dto.CastSpellRequest;
+import com.moo.charactermanagerservice.dto.CombatLogPageView;
 import com.moo.charactermanagerservice.dto.LongRestChoices;
 import com.moo.charactermanagerservice.dto.LongRestOptionsRequest;
 import com.moo.charactermanagerservice.dto.LongRestReadyRequest;
@@ -450,6 +451,21 @@ public class SessionController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.status(HttpStatus.CREATED).body(
                 sessionService.logRoll(id, participantId, request, user.getUuid()));
+    }
+
+    /**
+     * One page of the session's combat log — the health and condition changes
+     * made this session, newest first. DM only (403 otherwise). {@code page} is
+     * zero-based and defaults to 0; {@code size} defaults to 10 and is capped
+     * at 50. The log is emptied when the session ends.
+     */
+    @GetMapping("/session/{id}/combat-log")
+    public ResponseEntity<CombatLogPageView> combatLog(@PathVariable Long id,
+                                                       @RequestParam(required = false) Integer page,
+                                                       @RequestParam(required = false) Integer size,
+                                                       Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionService.combatLog(id, page, size, user.getUuid()));
     }
 
     /** DM ends the session. */
