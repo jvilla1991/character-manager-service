@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.AddLootItemRequest;
+import com.moo.charactermanagerservice.dto.ImportLootRequest;
 import com.moo.charactermanagerservice.dto.LootItemView;
 import com.moo.charactermanagerservice.dto.LootView;
 import com.moo.charactermanagerservice.models.CombatSession;
@@ -133,7 +134,38 @@ public class LootService {
      */
     @Transactional
     public LootView openLoot(Long sessionId, Long lootId, String name, UUID dmUserId) {
+        return openLoot(sessionId, lootId, name, null, dmUserId);
+    }
+
+    /**
+     * {@link #openLoot(Long, Long, String, UUID)}, optionally seeded from pasted
+     * JSON instead of a curated list: {@code contents} carries the lines and
+     * the coin pile in the curated-loot import shape. All-or-nothing — the
+     * paste is validated in full (unknown catalog keys listed) before the pool
+     * it replaces is touched, so a bad paste costs the DM nothing. A pool is
+     * seeded from a list or from a paste, never both.
+     */
+    @Transactional
+    public LootView openLoot(Long sessionId, Long lootId, String name, ImportLootRequest contents,
+                             UUID dmUserId) {
         CombatSession session = activeSessionForDm(sessionId, dmUserId);
+        if (lootId != null && contents != null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Seed the loot from a loot list or from pasted contents, not both");
+        }
+        List<ImportLootRequest.Item> pasted = List.of();
+        if (contents != null) {
+            List<String> keys = LootLines.validateImport(contents);
+            Set<String> known = keys.isEmpty() ? Set.of()
+                    : srdItemRepository.findByItemKeyIn(keys).stream()
+                            .map(SrdItem::getItemKey).collect(Collectors.toSet());
+            List<String> unknown = keys.stream().filter(k -> !known.contains(k)).toList();
+            if (!unknown.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Unknown catalog keys: " + String.join(", ", unknown));
+            }
+            pasted = contents.items() == null ? List.of() : contents.items();
+        }
 
         clearExistingLoot(sessionId);
 
@@ -155,6 +187,11 @@ public class LootService {
             pool.setCoinCpTotal(curated.getCoinCp());
             pool.setCoinCpRemaining(curated.getCoinCp());
         }
+        if (contents != null && contents.coinGp() != null) {
+            long coinCp = Math.round(contents.coinGp() * 100);
+            pool.setCoinCpTotal(coinCp);
+            pool.setCoinCpRemaining(coinCp);
+        }
         SessionLoot saved = lootRepository.save(pool);
 
         if (lootId != null) {
@@ -163,6 +200,11 @@ public class LootService {
                     .map(line -> copyLine(saved.getId(), line))
                     .toList();
             lootItemRepository.saveAll(copies);
+        }
+        if (!pasted.isEmpty()) {
+            lootItemRepository.saveAll(pasted.stream()
+                    .map(line -> pastedLine(saved.getId(), line))
+                    .toList());
         }
 
         bump(session);
@@ -789,6 +831,23 @@ public class LootService {
     }
 
     // --- internals -----------------------------------------------------------
+
+    /** One validated pasted line as a pool line: a catalog reference, or a custom item with its stats. */
+    private SessionLootItem pastedLine(Long poolId, ImportLootRequest.Item line) {
+        boolean hasKey = line.key() != null && !line.key().isBlank();
+        SessionLootItem item = new SessionLootItem();
+        item.setSessionLootId(poolId);
+        item.setCatalogItemKey(hasKey ? line.key().trim() : null);
+        item.setCustomName(hasKey ? null : line.name().trim());
+        item.setCustomNotes(hasKey || line.notes() == null || line.notes().isBlank()
+                ? null : line.notes().trim());
+        int amount = line.qty() == null ? 1 : line.qty();
+        item.setQty(amount);
+        item.setQtyRemaining(amount);
+        LootLines.applyAttributes(item, line.category(), line.valueGp(),
+                line.weight(), line.bulk(), line.damage(), line.armorClass());
+        return item;
+    }
 
     private SessionLootItem copyLine(Long poolId, CuratedLootItem line) {
         SessionLootItem copy = new SessionLootItem();

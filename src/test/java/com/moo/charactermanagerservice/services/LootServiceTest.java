@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.AddLootItemRequest;
+import com.moo.charactermanagerservice.dto.ImportLootRequest;
 import com.moo.charactermanagerservice.dto.LootView;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.CuratedLoot;
@@ -150,6 +151,128 @@ class LootServiceTest {
         assertThat(copies.get(1).getWeight()).isEqualByComparingTo("3");
         assertThat(copies.get(1).getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
         verify(sessionRepository).save(session); // version bumped
+    }
+
+    // --- openLoot from pasted JSON ---
+
+    private static ImportLootRequest.Item pastedKey(String key, Integer qty) {
+        return new ImportLootRequest.Item(key, null, null, qty, null, null, null, null, null, null);
+    }
+
+    private void stubNewPool() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(lootRepository.findBySessionId(1L)).thenReturn(Optional.empty());
+        when(lootRepository.save(any(SessionLoot.class))).thenAnswer(inv -> {
+            SessionLoot p = inv.getArgument(0);
+            p.setId(20L);
+            return p;
+        });
+        when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
+    }
+
+    @Test
+    void openLoot_fromPastedContents_seedsLinesAndCoins_asADraft() {
+        stubNewPool();
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword"))).thenReturn(List.of(longsword()));
+
+        LootView view = lootService.openLoot(1L, null, " Vault spoils ", new ImportLootRequest(125.5, List.of(
+                pastedKey(" longsword ", 2),
+                new ImportLootRequest.Item(null, " Flametongue ", " Requires: attunement. ", null,
+                        "weapon", 5000.0, 3.0, "1d8 slashing + 2d6 fire", null, 4.0),
+                new ImportLootRequest.Item(null, "Ruby", null, 3, "treasure", 50.0, 0.0, null, null, 0.2))),
+                dmId);
+
+        assertThat(view.name()).isEqualTo("Vault spoils");
+        assertThat(view.dropped()).isFalse();                 // an invisible draft, like any new pool
+        assertThat(view.coinCpTotal()).isEqualTo(12550L);
+        assertThat(view.coinCpRemaining()).isEqualTo(12550L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<SessionLootItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(lootItemRepository).saveAll(captor.capture());
+        List<SessionLootItem> lines = captor.getValue();
+        assertThat(lines).hasSize(3);
+        assertThat(lines.get(0).getCatalogItemKey()).isEqualTo("longsword");
+        assertThat(lines.get(0).getCustomName()).isNull();
+        assertThat(lines.get(0).getQty()).isEqualTo(2);
+        assertThat(lines.get(0).getQtyRemaining()).isEqualTo(2);
+        assertThat(lines.get(1).getCatalogItemKey()).isNull();
+        assertThat(lines.get(1).getCustomName()).isEqualTo("Flametongue");
+        assertThat(lines.get(1).getCustomNotes()).isEqualTo("Requires: attunement.");
+        assertThat(lines.get(1).getQty()).isEqualTo(1);
+        assertThat(lines.get(1).getCategory()).isEqualTo("weapon");
+        assertThat(lines.get(1).getUnitCostCp()).isEqualTo(500000L);
+        assertThat(lines.get(1).getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
+        assertThat(lines.get(1).getBulk()).isEqualByComparingTo("4");
+        assertThat(lines.get(2).getCategory()).isEqualTo("treasure");
+        assertThat(lines.get(2).getQtyRemaining()).isEqualTo(3);
+        assertThat(lines.get(2).getBulk()).isEqualByComparingTo("0.2");
+        assertThat(lines).allSatisfy(l -> assertThat(l.getSessionLootId()).isEqualTo(20L));
+        verify(sessionRepository).save(session); // version bumped
+        verifyNoInteractions(curatedLootRepository);
+    }
+
+    @Test
+    void openLoot_fromPastedContents_takesCoinsOnly_andCustomLinesWithoutTheCatalog() {
+        stubNewPool();
+
+        LootView view = lootService.openLoot(1L, null, null,
+                new ImportLootRequest(40.0, List.of()), dmId);
+
+        assertThat(view.coinCpTotal()).isEqualTo(4000L);
+        verify(lootItemRepository, never()).saveAll(any());
+        verifyNoInteractions(srdItemRepository);
+    }
+
+    @Test
+    void openLoot_fromPastedContents_throws400_namingUnknownKeys_beforeTouchingTheOldPool() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword", "vorpal-blade", "bag-of-holding")))
+                .thenReturn(List.of(longsword()));
+
+        assertThatThrownBy(() -> lootService.openLoot(1L, null, null, new ImportLootRequest(null, List.of(
+                pastedKey("longsword", null), pastedKey("vorpal-blade", null),
+                pastedKey("bag-of-holding", null), pastedKey("vorpal-blade", 2))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("vorpal-blade, bag-of-holding");
+
+        // Nothing was replaced or written: a bad paste costs the DM nothing.
+        verify(lootRepository, never()).findBySessionId(anyLong());
+        verify(lootRepository, never()).delete(any());
+        verify(lootRepository, never()).save(any());
+        verify(lootItemRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void openLoot_fromPastedContents_throws400_forAnUnsoundLine() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        // neither key nor name; a bad quantity; a stat on the wrong category; negative coins
+        List<ImportLootRequest> bad = List.of(
+                new ImportLootRequest(null, List.of(pastedKey(" ", null))),
+                new ImportLootRequest(null, List.of(pastedKey("longsword", 0))),
+                new ImportLootRequest(null, List.of(new ImportLootRequest.Item(
+                        null, "Odd Rock", null, 1, "gear", null, null, "1d4", null, null))),
+                new ImportLootRequest(-1.0, List.of()));
+        for (ImportLootRequest contents : bad) {
+            assertThatThrownBy(() -> lootService.openLoot(1L, null, null, contents, dmId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(lootRepository, never()).save(any());
+        verifyNoInteractions(srdItemRepository);
+    }
+
+    @Test
+    void openLoot_throws400_whenSeededFromBothAListAndAPaste() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> lootService.openLoot(1L, 5L, null,
+                new ImportLootRequest(null, List.of()), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootRepository, never()).save(any());
     }
 
     @Test
