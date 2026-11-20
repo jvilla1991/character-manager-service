@@ -15,12 +15,14 @@ public interface LootLineAttributes {
     String getCategory();          // weapon | armor | material-component | gear | transport
     Long getUnitCostCp();          // value in copper (authored in gold)
     BigDecimal getWeight();        // pounds
+    BigDecimal getBulk();          // explicit bulk; null = derive from weight
     String getDamage();            // weapons, e.g. "1d8 slashing"
     String getArmorClass();        // armor, e.g. "14 + Dex modifier (max 2)"
 
     void setCategory(String category);
     void setUnitCostCp(Long unitCostCp);
     void setWeight(BigDecimal weight);
+    void setBulk(BigDecimal bulk);
     void setDamage(String damage);
     void setArmorClass(String armorClass);
 }

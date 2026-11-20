@@ -78,7 +78,7 @@ public class ShopController {
                                                    Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(shopService.purchase(
-                id, request.pcId(), request.itemKey(), request.qty(), user.getUuid()));
+                id, request.pcId(), request.itemKey(), request.shopItemId(), request.qty(), user.getUuid()));
     }
 
     /** A player sells an inventory item back to the shop for one of their characters. */

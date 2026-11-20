@@ -207,6 +207,19 @@ public class ShopService {
      */
     @Transactional
     public PurchaseResult purchase(Long sessionId, Long pcId, String itemKey, Integer qty, UUID userId) {
+        return purchase(sessionId, pcId, itemKey, null, qty, userId);
+    }
+
+    /**
+     * {@link #purchase(Long, Long, String, Integer, UUID)} with the item named
+     * either way: {@code shopItemId} (a curated shop line — the only handle a
+     * custom item has) wins over {@code itemKey} (a catalog item). A custom
+     * item lands in the inventory with the stats the DM wrote, the price paid,
+     * and stacks onto an identical line already held.
+     */
+    @Transactional
+    public PurchaseResult purchase(Long sessionId, Long pcId, String itemKey, Long shopItemId,
+                                   Integer qty, UUID userId) {
         if (qty == null || qty < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "qty must be at least 1");
         }
@@ -221,24 +234,44 @@ public class ShopService {
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.FORBIDDEN, "Character is not at this shop"));
 
-        SrdItem item = srdItemRepository.findByItemKey(itemKey)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "Item not found: " + itemKey));
-
-        // Resolve the price the buyer pays: catalog price for a standard shop, or
-        // the curated line's effective price (override ?? catalog) for a curated one.
+        // Find what is being bought and the price the buyer pays: the catalog
+        // price for a standard shop; for a curated one the line's effective
+        // price (override ?? catalog), or a custom line's own price.
+        SrdItem item = null;        // a catalog item …
+        ShopItem customLine = null; // … or a custom line — exactly one is set
         long unitCostCp;
-        if (shop.getShopId() == null) {
-            if (!item.getCategory().equals(shop.getCategory())) {
+        if (shopItemId != null) {
+            ShopItem line = shop.getShopId() == null ? null
+                    : curatedItemRepository.findById(shopItemId)
+                            .filter(l -> shop.getShopId().equals(l.getShopId()))
+                            .orElse(null);
+            if (line == null) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Item is not sold at this shop");
             }
-            unitCostCp = item.getCostCp();
+            if (line.isCustom()) {
+                customLine = line;
+                unitCostCp = ShopLines.priceCp(line);
+            } else {
+                item = requireCatalogItem(line.getCatalogItemKey());
+                unitCostCp = line.getPriceCp() != null ? line.getPriceCp() : item.getCostCp();
+            }
         } else {
-            ShopItem line = curatedItemRepository
-                    .findByShopIdAndCatalogItemKey(shop.getShopId(), itemKey)
-                    .orElseThrow(() -> new ResponseStatusException(
-                            HttpStatus.BAD_REQUEST, "Item is not sold at this shop"));
-            unitCostCp = line.getPriceCp() != null ? line.getPriceCp() : item.getCostCp();
+            if (itemKey == null || itemKey.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "itemKey or shopItemId is required");
+            }
+            item = requireCatalogItem(itemKey);
+            if (shop.getShopId() == null) {
+                if (!item.getCategory().equals(shop.getCategory())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Item is not sold at this shop");
+                }
+                unitCostCp = item.getCostCp();
+            } else {
+                ShopItem line = curatedItemRepository
+                        .findByShopIdAndCatalogItemKey(shop.getShopId(), itemKey)
+                        .orElseThrow(() -> new ResponseStatusException(
+                                HttpStatus.BAD_REQUEST, "Item is not sold at this shop"));
+                unitCostCp = line.getPriceCp() != null ? line.getPriceCp() : item.getCostCp();
+            }
         }
         long totalCostCp = unitCostCp * qty;
 
@@ -259,10 +292,20 @@ public class ShopService {
         // slots (0.2 bulk each — the frontend's suppliesSlots math charges for
         // it) until another box shelters it. Normalize legacy supply lines so
         // the old model's implied free box still counts toward capacity.
-        if ("rations".equals(itemKey)) {
-            SurvivalSupplies.normalize(inventory);
+        String boughtName;
+        if (item != null) {
+            if ("rations".equals(item.getItemKey())) {
+                SurvivalSupplies.normalize(inventory);
+            }
+            InventoryEntries.addCatalogItem(inventory, item, qty, unitCostCp, json);
+            boughtName = item.getName();
+        } else {
+            InventoryEntries.addCustomItem(inventory, InventoryEntries.newCustomEntry(
+                    customLine.getCustomName(), customLine.getCategory(), qty, unitCostCp,
+                    customLine.getWeight(), customLine.getBulk(), customLine.getDamage(),
+                    customLine.getArmorClass(), customLine.getCustomNotes()));
+            boughtName = customLine.getCustomName();
         }
-        InventoryEntries.addCatalogItem(inventory, item, qty, unitCostCp, json);
 
         pc.setCoins(json.writeObject(newCoins));
         pc.setInventory(json.write(inventory));
@@ -270,7 +313,7 @@ public class ShopService {
 
         String qtySuffix = qty > 1 ? " ×" + qty : "";
         activityLogService.log(pcId, PcActivityType.PURCHASE,
-                "Bought " + item.getName() + qtySuffix + " for " + CoinPurse.format(totalCostCp), userId);
+                "Bought " + boughtName + qtySuffix + " for " + CoinPurse.format(totalCostCp), userId);
 
         return new PurchaseResult(newCoins, inventory, totalCostCp);
     }
@@ -393,7 +436,7 @@ public class ShopService {
                 .map(i -> new ShopItemView(
                         i.getItemKey(), i.getName(), i.getCategory(), i.getCostCp(),
                         i.getWeight(), json.parseObject(i.getDetails()),
-                        null /* unlimited stock in Phase 1 */))
+                        null /* unlimited stock in Phase 1 */, null, false))
                 .toList();
     }
 
@@ -417,21 +460,32 @@ public class ShopService {
                 attendeePcIds, catalogItems(shop.getCategory()), null, null);
     }
 
-    /** Resolve a curated shop's lines against the catalog (effective price = override ?? catalog). */
+    /**
+     * A curated shop's lines as buyers see them: catalog lines resolved against
+     * the catalog (effective price = override ?? catalog), custom lines as the
+     * DM wrote them. Each carries its line id, the handle a purchase sends back.
+     */
     private List<ShopItemView> curatedItems(Long curatedShopId) {
         List<ShopItem> lines = curatedItemRepository.findByShopId(curatedShopId);
         if (lines.isEmpty()) return List.of();
-        Map<String, SrdItem> catalog = srdItemRepository.findByItemKeyIn(
-                        lines.stream().map(ShopItem::getCatalogItemKey).toList()).stream()
-                .collect(Collectors.toMap(SrdItem::getItemKey, Function.identity()));
+        List<String> keys = lines.stream()
+                .map(ShopItem::getCatalogItemKey).filter(Objects::nonNull).distinct().toList();
+        Map<String, SrdItem> catalog = keys.isEmpty() ? Map.of() :
+                srdItemRepository.findByItemKeyIn(keys).stream()
+                        .collect(Collectors.toMap(SrdItem::getItemKey, Function.identity()));
 
         return lines.stream()
                 .map(line -> {
+                    if (line.isCustom()) {
+                        return new ShopItemView(null, line.getCustomName(), ShopLines.categoryCode(line),
+                                ShopLines.priceCp(line), line.getWeight(), ShopLines.details(line),
+                                null, line.getId(), true);
+                    }
                     SrdItem c = catalog.get(line.getCatalogItemKey());
                     if (c == null) return null; // catalog item vanished — skip
                     long cost = line.getPriceCp() != null ? line.getPriceCp() : c.getCostCp();
                     return new ShopItemView(c.getItemKey(), c.getName(), c.getCategory(), cost,
-                            c.getWeight(), json.parseObject(c.getDetails()), null);
+                            c.getWeight(), json.parseObject(c.getDetails()), null, line.getId(), false);
                 })
                 .filter(Objects::nonNull)
                 .sorted(Comparator.comparing(ShopItemView::name))
@@ -478,6 +532,12 @@ public class ShopService {
         return shopRepository.findBySessionId(sessionId)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "No active shop in this session"));
+    }
+
+    private SrdItem requireCatalogItem(String itemKey) {
+        return srdItemRepository.findByItemKey(itemKey)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Item not found: " + itemKey));
     }
 
     private CombatSession findSession(Long sessionId) {

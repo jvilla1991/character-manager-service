@@ -206,7 +206,7 @@ public class LootService {
         LootLines.validate(request.catalogItemKey(), request.customName(), request.qty());
         String key = LootLines.normalizeKey(request.catalogItemKey());
         LootLines.validateAttributes(key != null, request.category(), request.valueGp(),
-                request.weight(), request.damage(), request.armorClass());
+                request.weight(), request.bulk(), request.damage(), request.armorClass());
         if (key != null && srdItemRepository.findByItemKey(key).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + key);
         }
@@ -222,7 +222,7 @@ public class LootService {
         item.setQty(amount);
         item.setQtyRemaining(amount);
         LootLines.applyAttributes(item, request.category(), request.valueGp(),
-                request.weight(), request.damage(), request.armorClass());
+                request.weight(), request.bulk(), request.damage(), request.armorClass());
         lootItemRepository.save(item);
         reopenSplitIfVoting(pool);
 
@@ -660,8 +660,8 @@ public class LootService {
                     name = item.getName();
                 } else {
                     inventory.add(InventoryEntries.newCustomEntry(line.getCustomName(), line.getCategory(),
-                            share.getQty(), line.getUnitCostCp(), line.getWeight(), line.getDamage(),
-                            line.getArmorClass(), line.getCustomNotes()));
+                            share.getQty(), line.getUnitCostCp(), line.getWeight(), line.getBulk(),
+                            line.getDamage(), line.getArmorClass(), line.getCustomNotes()));
                     name = line.getCustomName();
                 }
                 received.add(share.getQty() > 1 ? name + " ×" + share.getQty() : name);
@@ -741,13 +741,13 @@ public class LootService {
                         return new LootItemView(line.getId(), null, line.getCustomName(), true,
                                 line.getCustomNotes(), line.getCategory(), line.getUnitCostCp(),
                                 line.getWeight(), line.getDamage(), line.getArmorClass(),
-                                line.getQty(), inPile, line.getUnitCostCp());
+                                line.getQty(), inPile, line.getUnitCostCp(), line.getBulk());
                     }
                     SrdItem c = catalog.get(line.getCatalogItemKey());
                     if (c == null) return null; // catalog item vanished — skip defensively
                     return new LootItemView(line.getId(), c.getItemKey(), c.getName(), false,
                             null, null, null, null, null, null,
-                            line.getQty(), inPile, c.getCostCp());
+                            line.getQty(), inPile, c.getCostCp(), null);
                 })
                 .filter(Objects::nonNull)
                 .toList();

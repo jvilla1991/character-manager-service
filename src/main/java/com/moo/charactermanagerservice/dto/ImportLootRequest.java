@@ -15,5 +15,5 @@ import java.util.List;
 public record ImportLootRequest(Double coinGp, List<Item> items) {
     public record Item(String key, String name, String notes, Integer qty,
                        String category, Double valueGp, Double weight,
-                       String damage, String armorClass) {}
+                       String damage, String armorClass, Double bulk) {}
 }

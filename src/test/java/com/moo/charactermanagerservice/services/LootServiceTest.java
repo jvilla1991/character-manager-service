@@ -285,7 +285,7 @@ class LootServiceTest {
         when(lootItemRepository.findBySessionLootIdOrderByIdAsc(20L)).thenReturn(List.of());
 
         lootService.addItem(1L, new AddLootItemRequest(null, "Flametongue", "Ignites.", 1,
-                "weapon", 50.0, 3.0, "1d8 slashing + 2d6 fire", null), dmId);
+                "weapon", 50.0, 3.0, "1d8 slashing + 2d6 fire", null, 4.0), dmId);
 
         ArgumentCaptor<SessionLootItem> captor = ArgumentCaptor.forClass(SessionLootItem.class);
         verify(lootItemRepository).save(captor.capture());
@@ -294,6 +294,7 @@ class LootServiceTest {
         assertThat(saved.getUnitCostCp()).isEqualTo(5000L);
         assertThat(saved.getWeight()).isEqualByComparingTo("3.0");
         assertThat(saved.getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
+        assertThat(saved.getBulk()).isEqualByComparingTo("4"); // the DM's own bulk rides along
     }
 
     @Test
@@ -302,7 +303,7 @@ class LootServiceTest {
         when(lootRepository.findBySessionId(1L)).thenReturn(Optional.of(pool));
 
         assertThatThrownBy(() -> lootService.addItem(1L, new AddLootItemRequest(
-                "longsword", null, null, 1, "weapon", null, null, null, null), dmId))
+                "longsword", null, null, 1, "weapon", null, null, null, null, null), dmId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
         verify(lootItemRepository, never()).save(any());
@@ -731,7 +732,7 @@ class LootServiceTest {
     }
 
     private static AddLootItemRequest addRequest(String key, String customName) {
-        return new AddLootItemRequest(key, customName, null, 1, null, null, null, null, null);
+        return new AddLootItemRequest(key, customName, null, 1, null, null, null, null, null, null);
     }
 
     private static SessionLootItem poolLine(Long id, String key, String customName, int qty) {

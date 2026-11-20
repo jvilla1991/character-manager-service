@@ -9,6 +9,11 @@ import java.util.Map;
  * catalog entry's category-specific JSON, parsed to a map (damage, properties,
  * …). {@code stock} is null for standard shops (unlimited in Phase 1); a finite
  * count arrives with curated shops.
+ *
+ * <p>{@code shopItemId} is the curated shop line behind the entry (null in a
+ * standard shop) — the handle a purchase sends back. A custom line
+ * ({@code custom} true) has no {@code itemKey}; its stats sit in {@code details}
+ * (damage, armorClass, notes) like a catalog entry's.
  */
 public record ShopItemView(
         String itemKey,
@@ -17,5 +22,7 @@ public record ShopItemView(
         long costCp,
         BigDecimal weight,
         Map<String, Object> details,
-        Integer stock
+        Integer stock,
+        Long shopItemId,
+        boolean custom
 ) {}

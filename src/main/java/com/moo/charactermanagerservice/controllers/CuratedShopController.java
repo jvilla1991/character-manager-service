@@ -84,7 +84,7 @@ public class CuratedShopController {
                                                    Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(
-                curatedShopService.addItem(shopId, request.catalogItemKey(), request.priceCp(), user.getUuid()));
+                curatedShopService.addItem(shopId, request, user.getUuid()));
     }
 
     /** Bulk-add a standard catalog category to the shop (template starting point). */
