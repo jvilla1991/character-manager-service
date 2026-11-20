@@ -55,12 +55,13 @@ class StatAdjustmentRulesTest {
 
     @Test
     void normalizeJson_holdsEveryNumberWithABreakdownAtOnce() {
-        // Armor Class and its removed lines, six ability scores, nine spell slot levels.
-        assertThat(StatAdjustmentRules.STATS_MAX).isGreaterThanOrEqualTo(2 + 6 + 9);
+        // Armor Class and its removed lines, six ability scores, nine spell slot levels,
+        // eighteen skills, initiative, speed, proficiency bonus and slot capacity.
+        assertThat(StatAdjustmentRules.STATS_MAX).isGreaterThanOrEqualTo(2 + 6 + 9 + 18 + 4);
 
         String json = withKeys(StatAdjustmentRules.STATS_MAX);
         assertThat(StatAdjustmentRules.normalizeJson(json)).isEqualTo(json);
-        assertThat(StatAdjustmentRules.STATS_MAX).isEqualTo(32);
+        assertThat(StatAdjustmentRules.STATS_MAX).isEqualTo(64);
     }
 
     @Test

@@ -25,9 +25,12 @@ import java.util.regex.Pattern;
  * is always something every client can read back.
  *
  * <p>The key is deliberately not a fixed list. Armor Class ({@code ac}), the
- * six ability scores ({@code STR} ... {@code CHA}) and the bonus spell slots
- * described below carry lines today; when the SPA gives another number
- * (speed) the same treatment it just sends a new key, with no migration and
+ * six ability scores ({@code STR} ... {@code CHA}), the bonus spell slots
+ * described below, the eighteen skills ({@code skillPerception}), initiative
+ * ({@code init}), speed, the proficiency bonus ({@code prof}, which
+ * {@link LevelUpService} adds to the table on every level-up) and the slot
+ * capacity ({@code capacity}) carry lines today; when the SPA gives another
+ * number the same treatment it just sends a new key, with no migration and
  * no change here.
  *
  * <p>One family of keys the server does read: {@code slot1} .. {@code slot9}
@@ -60,10 +63,12 @@ public final class StatAdjustmentRules {
     public static final int LINES_MAX = 12;
     /**
      * Most keys one character may carry. Roomy on purpose: Armor Class and its
-     * companion key, six ability scores and nine spell slot levels already come
-     * to seventeen, before any of those gains a companion key of its own.
+     * companion key, six ability scores, nine spell slot levels, eighteen skills
+     * ({@code skillPerception}), initiative, speed, the proficiency bonus and the
+     * inventory's slot capacity already come to thirty-nine, before any of those
+     * gains a companion key of its own.
      */
-    public static final int STATS_MAX = 32;
+    public static final int STATS_MAX = 64;
 
     /** What a number's companion key ends in: {@code acRemoved} holds the removed lines of {@code ac}. */
     public static final String REMOVED_SUFFIX = "Removed";
