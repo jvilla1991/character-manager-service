@@ -13,10 +13,13 @@ import com.moo.charactermanagerservice.dto.RestVoteRequest;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.ConsumeSurvivalRequest;
 import com.moo.charactermanagerservice.dto.DamageRequest;
+import com.moo.charactermanagerservice.dto.FactionView;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
 import com.moo.charactermanagerservice.dto.JoinSessionRequest;
 import com.moo.charactermanagerservice.dto.LoadEncounterRequest;
 import com.moo.charactermanagerservice.dto.LogRollRequest;
+import com.moo.charactermanagerservice.dto.RenownAwardRequest;
+import com.moo.charactermanagerservice.dto.RenownAwardResult;
 import com.moo.charactermanagerservice.dto.RestVoteCastRequest;
 import com.moo.charactermanagerservice.dto.SessionStateView;
 import com.moo.charactermanagerservice.dto.SetInitiativeRequest;
@@ -30,12 +33,15 @@ import com.moo.charactermanagerservice.dto.User;
 import com.moo.charactermanagerservice.dto.XpAwardRequest;
 import com.moo.charactermanagerservice.dto.XpAwardResult;
 import com.moo.charactermanagerservice.models.RestType;
+import com.moo.charactermanagerservice.services.SessionRenownService;
 import com.moo.charactermanagerservice.services.SessionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * Live "Session Mode" endpoints. The session backend lives in the same service
@@ -52,6 +58,9 @@ public class SessionController {
 
     @Autowired
     private SessionService sessionService;
+
+    @Autowired
+    private SessionRenownService sessionRenownService;
 
     /** DM opens a lobby for one of their campaigns (409 if one is already live). */
     @PostMapping("/campaign/{campaignId}/session")
@@ -157,14 +166,34 @@ public class SessionController {
                 sessionService.awardXp(id, participantId, request.amount(), user.getUuid()));
     }
 
-    /** DM awards the same XP amount to every seated PC in the session. */
+    /**
+     * DM awards the same XP amount to the seated PCs ticked in the reward bar,
+     * or to every seated PC when the body carries no {@code participantIds}.
+     */
     @PostMapping("/session/{id}/xp")
     public ResponseEntity<XpAwardResult> awardXpToAll(@PathVariable Long id,
                                                       @RequestBody XpAwardRequest request,
                                                       Authentication authentication) {
         User user = (User) authentication.getPrincipal();
-        return ResponseEntity.ok(
-                sessionService.awardXpToAll(id, request.amount(), user.getUuid()));
+        return ResponseEntity.ok(sessionService.awardXpToMany(
+                id, request.amount(), request.participantIds(), user.getUuid()));
+    }
+
+    /** The session's campaign factions, for the DM's renown reward picker. DM only. */
+    @GetMapping("/session/{id}/factions")
+    public ResponseEntity<List<FactionView>> factions(@PathVariable Long id,
+                                                      Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionRenownService.factions(id, user.getUuid()));
+    }
+
+    /** DM moves the ticked seated PCs' renown with one faction by the same amount. */
+    @PostMapping("/session/{id}/renown")
+    public ResponseEntity<RenownAwardResult> awardRenown(@PathVariable Long id,
+                                                         @RequestBody RenownAwardRequest request,
+                                                         Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(sessionRenownService.award(id, request, user.getUuid()));
     }
 
     /** DM starts the encounter (LOBBY → ACTIVE); turn points at the top of the order. */

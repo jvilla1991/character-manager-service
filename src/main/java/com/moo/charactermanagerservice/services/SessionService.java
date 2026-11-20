@@ -65,6 +65,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -833,6 +834,18 @@ public class SessionService {
      */
     @Transactional
     public XpAwardResult awardXpToAll(Long sessionId, Integer amount, UUID dmUserId) {
+        return awardXpToMany(sessionId, amount, null, dmUserId);
+    }
+
+    /**
+     * Award the same XP amount to the seated PCs the DM ticked. A null
+     * {@code participantIds} means every seated PC (the original "give to all",
+     * which older clients still send); a list means exactly those participants —
+     * see {@link #rewardRecipients}. Otherwise identical to {@link #awardXpToAll}.
+     */
+    @Transactional
+    public XpAwardResult awardXpToMany(Long sessionId, Integer amount, List<Long> participantIds,
+                                       UUID dmUserId) {
         CombatSession session = findSession(sessionId);
         assertDmOwnership(session, dmUserId);
         if (session.getStatus() == SessionStatus.ENDED) {
@@ -842,13 +855,12 @@ public class SessionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "amount is required");
         }
 
-        List<SessionParticipant> participants =
-                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId);
-        Map<Long, PC> pcsById = loadPcs(participants);
+        List<SessionParticipant> recipients = rewardRecipients(
+                participantRepository.findBySessionIdOrderByOrderIndexAsc(sessionId), participantIds);
+        Map<Long, PC> pcsById = loadPcs(recipients);
 
         List<XpAwardResult.Entry> awarded = new ArrayList<>();
-        for (SessionParticipant p : participants) {
-            if (p.getPcId() == null) continue;        // NPCs have no XP
+        for (SessionParticipant p : recipients) {
             PC pc = pcsById.get(p.getPcId());
             if (pc == null) continue;
             awarded.add(applyXpDelta(pc, amount, dmUserId));
@@ -857,6 +869,29 @@ public class SessionService {
         session.bumpVersion();
         sessionRepository.save(session);
         return new XpAwardResult(awarded);
+    }
+
+    /**
+     * The seated PCs a DM reward (XP or renown) goes to. NPC rows never receive
+     * one. A null {@code participantIds} means every seated PC; otherwise the
+     * list must name at least one participant, and each one must be a PC seated
+     * in this session — a stale tick (the player left a moment ago) is refused
+     * with 400 rather than silently rewarding fewer characters than the DM chose.
+     */
+    static List<SessionParticipant> rewardRecipients(List<SessionParticipant> seated,
+                                                     List<Long> participantIds) {
+        List<SessionParticipant> pcs = seated.stream().filter(p -> p.getPcId() != null).toList();
+        if (participantIds == null) return pcs;
+        if (participantIds.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose at least one character");
+        }
+        Set<Long> wanted = new HashSet<>(participantIds);
+        List<SessionParticipant> chosen = pcs.stream().filter(p -> wanted.contains(p.getId())).toList();
+        if (chosen.size() != wanted.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A chosen character is no longer in this session");
+        }
+        return chosen;
     }
 
     /**
