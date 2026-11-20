@@ -61,6 +61,9 @@ class PCServiceTest {
     @Mock
     private SessionParticipantRepository participantRepository;
 
+    @Mock
+    private CombatLogService combatLogService;
+
     @InjectMocks
     private PCService pcService;
 
@@ -3661,5 +3664,66 @@ class PCServiceTest {
         assertThat(saved.getSpeciesSource()).isNull();
         assertThat(saved.getLineage()).isNull();
         assertThat(saved.getSize()).isNull();
+    }
+
+    // --- combat log: a sheet saved while the character sits in a live session ---
+
+    @Test
+    void updatePC_changingVitalsWhileSeatedInALiveSession_logsIt_andBumpsTheSession() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+        when(combatLogService.differ(any(), any())).thenReturn(true);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.updatePC(pc, ownerId);
+
+        verify(combatLogService).logSheetChange(eq(session), eq("Aelindra"), any(), any(), eq(false), eq(ownerId));
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void updatePC_thatLeavesVitalsAlone_looksUpNoSession_andLogsNothing() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+
+        pcService.updatePC(pc, ownerId);
+
+        verify(sessionRepository, never()).findByCampaignIdAndStatusNot(any(), any());
+        verify(combatLogService, never()).logSheetChange(any(), any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    void updatePC_changingVitalsWithNoLiveSession_logsNothing() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(pc)).thenReturn(pc);
+        when(combatLogService.differ(any(), any())).thenReturn(true);
+        when(sessionRepository.findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED))
+                .thenReturn(Optional.empty());
+
+        pcService.updatePC(pc, ownerId);
+
+        verify(combatLogService, never()).logSheetChange(any(), any(), any(), any(), anyBoolean(), any());
+        verify(sessionRepository, never()).save(any());
+    }
+
+    @Test
+    void updatePCAsDm_changingVitalsMidSession_logsItAsTheDm() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(pc)).thenReturn(pc);
+        when(combatLogService.differ(any(), any())).thenReturn(true);
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        pcService.updatePCAsDm(pc, null, dmId);
+
+        verify(combatLogService).logSheetChange(eq(session), eq("Aelindra"), any(), any(), eq(true), eq(dmId));
+        assertThat(session.getVersion()).isEqualTo(4L);
     }
 }
