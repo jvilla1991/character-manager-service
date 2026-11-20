@@ -6,6 +6,7 @@ import com.moo.charactermanagerservice.dto.LevelUpRequest;
 import com.moo.charactermanagerservice.dto.SpellSlotResult;
 import com.moo.charactermanagerservice.exceptions.PCNotFoundException;
 import com.moo.charactermanagerservice.models.Campaign;
+import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityLog;
 import com.moo.charactermanagerservice.models.PcActivityType;
@@ -27,6 +28,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -42,13 +44,15 @@ public class PCService {
     // dependency. See bumpLiveSessionVersion.
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
+    private final CombatLogService combatLogService;
 
     @Autowired
     public PCService(PCRepository pcRepository, LevelUpService levelUpService,
                      CampaignRepository campaignRepository, PcNoteRepository pcNoteRepository,
                      PcActivityLogService activityLogService,
                      CombatSessionRepository sessionRepository,
-                     SessionParticipantRepository participantRepository) {
+                     SessionParticipantRepository participantRepository,
+                     CombatLogService combatLogService) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
         this.campaignRepository = campaignRepository;
@@ -56,6 +60,7 @@ public class PCService {
         this.activityLogService = activityLogService;
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
+        this.combatLogService = combatLogService;
     }
 
     public PC addPC(PC pc) {
@@ -88,9 +93,18 @@ public class PCService {
         return pcRepository.findByUserId(userId);
     }
 
+    /**
+     * The owner saves their sheet. {@code @Transactional} so that a save made
+     * while the character sits in a live session, and that changes hit points
+     * or conditions, commits together with its combat log row and the session
+     * version bump that shows it to the table ({@link #logSheetVitals}).
+     */
+    @Transactional
     public PC updatePC(PC pc, UUID userId) {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
+        // Read BEFORE save(): inside the transaction save() merges the body onto `existing`.
+        CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
         preserveServerOwnedColumns(pc, existing);
         // In a campaign the exhaustion level is the DM's to set (updatePCAsDm):
         // an owner's update keeps the stored level whatever the body says. A
@@ -117,7 +131,9 @@ public class PCService {
         HeroClassRules.validate(pc);
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
-        return pcRepository.save(pc);
+        PC saved = pcRepository.save(pc);
+        logSheetVitals(saved, vitalsBefore, false, userId);
+        return saved;
     }
 
     /**
@@ -248,6 +264,7 @@ public class PCService {
         PC existing = findPCById(incoming.getId());
         assertCampaignDm(existing, dmUserId);
         PC before = snapshot(existing); // taken BEFORE save() clobbers `existing`
+        CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
         incoming.setUserId(existing.getUserId());
         incoming.setCampaignId(existing.getCampaignId());
         preserveServerOwnedColumns(incoming, existing);
@@ -259,7 +276,28 @@ public class PCService {
         incoming.setSpellSlots(SpellSlotState.normalize(incoming, existing, true));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
+        logSheetVitals(saved, vitalsBefore, true, dmUserId);
         return saved;
+    }
+
+    /**
+     * A sheet save changed hit points, conditions or exhaustion: if the
+     * character sits in a live session, add the change to that session's
+     * combat log and bump its version, so the DM's tracker and log show a
+     * change made on the sheet at once instead of at the next unrelated poll
+     * wake-up. A save that changed none of those costs no query, and a
+     * character seated nowhere gets no row.
+     */
+    private void logSheetVitals(PC saved, CombatLogService.Vitals before, boolean byDm, UUID actorUserId) {
+        CombatLogService.Vitals after = combatLogService.vitalsOf(saved);
+        if (!combatLogService.differ(before, after)) {
+            return;
+        }
+        liveSessionFor(saved).ifPresent(session -> {
+            combatLogService.logSheetChange(session, saved.getName(), before, after, byDm, actorUserId);
+            session.bumpVersion();
+            sessionRepository.save(session);
+        });
     }
 
     /**
@@ -424,16 +462,28 @@ public class PCService {
      * changes the same way — a follower rides in its owner's snapshot row.
      */
     void bumpLiveSessionVersion(PC pc) {
+        liveSessionFor(pc).ifPresent(session -> {
+            session.bumpVersion();
+            sessionRepository.save(session);
+        });
+    }
+
+    /**
+     * The live (non-ended) session this PC is seated in, if any — see
+     * {@link #bumpLiveSessionVersion} for why there is at most one. Empty for
+     * a character in no campaign, a campaign with no live session, and a live
+     * session the PC has not joined.
+     *
+     * <p>Package-visible so {@link PcFollowerService} can log a follower's
+     * sheet changes to the same session's combat log.
+     */
+    Optional<CombatSession> liveSessionFor(PC pc) {
         if (pc.getCampaignId() == null) {
-            return;
+            return Optional.empty();
         }
-        sessionRepository.findByCampaignIdAndStatusNot(pc.getCampaignId(), SessionStatus.ENDED)
+        return sessionRepository.findByCampaignIdAndStatusNot(pc.getCampaignId(), SessionStatus.ENDED)
                 .filter(session -> participantRepository
-                        .findBySessionIdAndPcId(session.getId(), pc.getId()).isPresent())
-                .ifPresent(session -> {
-                    session.bumpVersion();
-                    sessionRepository.save(session);
-                });
+                        .findBySessionIdAndPcId(session.getId(), pc.getId()).isPresent());
     }
 
     // --- WoW Hunter pet family (V51) ------------------------------------------

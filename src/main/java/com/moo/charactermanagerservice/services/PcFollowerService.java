@@ -43,14 +43,17 @@ public class PcFollowerService {
     private final PCService pcService;
     private final PcFollowerRepository followerRepository;
     private final PcActivityLogService activityLogService;
+    private final CombatLogService combatLogService;
     private final PcJsonColumns json;
 
     @Autowired
     public PcFollowerService(PCService pcService, PcFollowerRepository followerRepository,
-                             PcActivityLogService activityLogService, ObjectMapper objectMapper) {
+                             PcActivityLogService activityLogService, CombatLogService combatLogService,
+                             ObjectMapper objectMapper) {
         this.pcService = pcService;
         this.followerRepository = followerRepository;
         this.activityLogService = activityLogService;
+        this.combatLogService = combatLogService;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -101,7 +104,10 @@ public class PcFollowerService {
             follower.setName(requireName(request.name()));
         }
         if (request.statBlock() != null) {
+            CombatLogService.Vitals before =
+                    combatLogService.vitalsOfStatBlock(json.parseObject(follower.getStatBlock()));
             follower.setStatBlock(requireStatBlock(request.statBlock()));
+            logSheetVitals(pc, follower, before, userId);
         }
         PcFollower saved = followerRepository.save(follower);
         pcService.bumpLiveSessionVersion(pc);
@@ -120,6 +126,23 @@ public class PcFollowerService {
     }
 
     // --- helpers -----------------------------------------------------------
+
+    /**
+     * A follower's sheet save changed its hit points or conditions: if its
+     * owner sits in a live session, add the change to that session's combat
+     * log. The caller bumps the session version (every follower write does).
+     */
+    private void logSheetVitals(PC owner, PcFollower follower, CombatLogService.Vitals before, UUID userId) {
+        CombatLogService.Vitals after =
+                combatLogService.vitalsOfStatBlock(json.parseObject(follower.getStatBlock()));
+        if (!combatLogService.differ(before, after)) {
+            return;
+        }
+        boolean byDm = !userId.equals(owner.getUserId());
+        pcService.liveSessionFor(owner).ifPresent(session -> combatLogService.logSheetChange(session,
+                CombatLogService.followerSubject(follower.getName(), owner.getName()),
+                before, after, byDm, userId));
+    }
 
     /** Owner passes outright; anyone else must be the DM of the PC's campaign. */
     private PC assertOwnerOrCampaignDm(Long pcId, UUID userId) {

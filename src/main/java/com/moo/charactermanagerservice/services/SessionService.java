@@ -2,6 +2,7 @@ package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.CastResult;
+import com.moo.charactermanagerservice.dto.CombatLogPageView;
 import com.moo.charactermanagerservice.dto.ConsumeResult;
 import com.moo.charactermanagerservice.dto.FollowerCombatantView;
 import com.moo.charactermanagerservice.dto.HitDieSpendResult;
@@ -121,6 +122,7 @@ public class SessionService {
     private final SessionLootResultRepository lootResultRepository;
     private final SessionLongRestResultRepository longRestResultRepository;
     private final PcFollowerRepository followerRepository;
+    private final CombatLogService combatLogService;
     private final PcJsonColumns json;
 
     /**
@@ -151,6 +153,7 @@ public class SessionService {
                           SessionLootResultRepository lootResultRepository,
                           SessionLongRestResultRepository longRestResultRepository,
                           PcFollowerRepository followerRepository,
+                          CombatLogService combatLogService,
                           ObjectMapper objectMapper) {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
@@ -171,6 +174,7 @@ public class SessionService {
         this.lootResultRepository = lootResultRepository;
         this.longRestResultRepository = longRestResultRepository;
         this.followerRepository = followerRepository;
+        this.combatLogService = combatLogService;
         this.json = new PcJsonColumns(objectMapper);
     }
 
@@ -636,6 +640,7 @@ public class SessionService {
             // Write through to the canonical character — this is the source of truth.
             PC pc = pcService.findPCById(participant.getPcId());
             int before = pc.getHpCurrent() == null ? 0 : pc.getHpCurrent();
+            CombatLogService.Hp hpBefore = CombatLogService.Hp.of(pc.getHpCurrent(), pc.getHpTemp());
             int[] hp = applyHpDelta(pc.getHpCurrent(), pc.getHpTemp(), pc.getHpMax(), amount);
             pc.setHpCurrent((short) hp[0]);
             pc.setHpTemp((short) hp[1]);
@@ -646,8 +651,12 @@ public class SessionService {
                         SurvivalRules.bump(json.parseObject(pc.getSurvival()), "fatigue", 1)));
             }
             pcRepository.save(pc);
+            combatLogService.logHpDelta(session, pc.getName(), amount, hpBefore,
+                    new CombatLogService.Hp(hp[0], hp[1]), CombatLogService.DOWN, dmUserId);
         } else {
             int before = participant.getNpcHpCurrent() == null ? 0 : participant.getNpcHpCurrent();
+            CombatLogService.Hp hpBefore =
+                    CombatLogService.Hp.of(participant.getNpcHpCurrent(), participant.getNpcHpTemp());
             int[] hp = applyHpDelta(participant.getNpcHpCurrent(), participant.getNpcHpTemp(),
                     participant.getNpcHpMax(), amount);
             participant.setNpcHpCurrent((short) hp[0]);
@@ -657,11 +666,16 @@ public class SessionService {
             // has no HP tracked (npcHpMax null keeps before == 0 == after only
             // when no damage was applied — amount > 0 with before 0 means the
             // DM is hammering an already-dead row, which removal makes moot).
-            if (participant.getNpcHpMax() != null && before > 0 && hp[0] == 0) {
+            boolean defeated = participant.getNpcHpMax() != null && before > 0 && hp[0] == 0;
+            if (defeated) {
                 removeDefeatedEnemy(session, participant);
             } else {
                 participantRepository.save(participant);
             }
+            // The row is worded now, so it still reads right once the enemy is gone.
+            combatLogService.logHpDelta(session, participant.getDisplayName(), amount, hpBefore,
+                    new CombatLogService.Hp(hp[0], hp[1]), defeated ? CombatLogService.DEFEATED : null,
+                    dmUserId);
         }
 
         session.bumpVersion();
@@ -748,8 +762,10 @@ public class SessionService {
         PcFollower follower = followerRepository.findByIdForUpdate(followerId)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "Follower not found with id " + followerId));
-        if (follower.getPcId() == null
-                || participantRepository.findBySessionIdAndPcId(sessionId, follower.getPcId()).isEmpty()) {
+        Optional<SessionParticipant> ownerSeat = follower.getPcId() == null
+                ? Optional.empty()
+                : participantRepository.findBySessionIdAndPcId(sessionId, follower.getPcId());
+        if (ownerSeat.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
                     "Follower's character is not seated in this session");
         }
@@ -759,6 +775,8 @@ public class SessionService {
         if (statBlock.get("hp") instanceof Map<?, ?> stored) {
             stored.forEach((key, value) -> hp.put(String.valueOf(key), value));
         }
+        CombatLogService.Hp hpBefore = CombatLogService.Hp.of(
+                FollowerCombatantView.whole(hp.get("cur")), FollowerCombatantView.whole(hp.get("temp")));
         int[] next = applyHpDelta(FollowerCombatantView.whole(hp.get("cur")),
                 FollowerCombatantView.whole(hp.get("temp")),
                 FollowerCombatantView.whole(hp.get("max")), amount);
@@ -767,6 +785,9 @@ public class SessionService {
         statBlock.put("hp", hp);
         follower.setStatBlock(json.writeObject(statBlock));
         followerRepository.save(follower);
+        combatLogService.logHpDelta(session,
+                CombatLogService.followerSubject(follower.getName(), ownerSeat.get().getDisplayName()),
+                amount, hpBefore, new CombatLogService.Hp(next[0], next[1]), CombatLogService.DOWN, dmUserId);
 
         session.bumpVersion();
         sessionRepository.save(session);
@@ -1355,6 +1376,7 @@ public class SessionService {
 
         for (PC pc : resting) {
             List<String> changes = new ArrayList<>();
+            CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(pc);
             // The rune weapon is settled first: this rest's temporary hit
             // points depend on where the rune ends up.
             List<String> choiceChanges = applyLongRestChoices(pc, seatByPc.get(pc.getId()));
@@ -1406,6 +1428,8 @@ public class SessionService {
             changes.addAll(choiceChanges);
 
             pcRepository.save(pc);
+            combatLogService.logLongRest(session, pc.getName(), vitalsBefore,
+                    combatLogService.vitalsOf(pc), actorUserId);
             activityLogService.log(pc.getId(), PcActivityType.LONG_REST,
                     changes.isEmpty()
                             ? "Completed a long rest"
@@ -1667,6 +1691,9 @@ public class SessionService {
         pc.setHpCurrent((short) newCur);
         pc.setHitDiceUsed((short) (used + 1));
         pcRepository.save(pc);
+        int tempHp = pc.getHpTemp() == null ? 0 : pc.getHpTemp();
+        combatLogService.logHitDie(session, pc.getName(), new CombatLogService.Hp(cur, tempHp),
+                new CombatLogService.Hp(newCur, tempHp), userId);
 
         activityLogService.log(pc.getId(), PcActivityType.SHORT_REST,
                 "Spent a Hit Die (d" + hitDie + ": " + roll
@@ -2392,7 +2419,7 @@ public class SessionService {
 
     /**
      * Shared end-of-session transition: flip to ENDED, bump the version, and
-     * purge the ephemeral roll log. Used by both the DM's explicit
+     * purge the ephemeral roll log and combat log. Used by both the DM's explicit
      * {@link #endSession} and the lazy TTL-expiry branch inside
      * {@link #activeSession} — the roll log must be purged on BOTH paths to
      * ENDED, or a TTL-auto-ended session's rows silently accumulate forever
@@ -2412,6 +2439,8 @@ public class SessionService {
         session.bumpVersion();
         CombatSession saved = sessionRepository.save(session);
         sessionRollRepository.deleteBySessionId(session.getId());
+        // The combat log is ephemeral like the roll log: it never outlives its session.
+        combatLogService.purge(session.getId());
         // Rest-vote rows are ephemeral like the roll log; ballots cascade in the DB.
         restVoteRepository.deleteBySessionId(session.getId());
         // So is the last loot-split outcome.
@@ -2419,6 +2448,19 @@ public class SessionService {
         // ... and the last long rest outcome.
         longRestResultRepository.deleteBySessionId(session.getId());
         return saved;
+    }
+
+    /**
+     * One page of the session's combat log — every health and condition change
+     * made this session, newest first. DM only: the log names hidden enemies
+     * and their hit points, which players must never see. An ended session
+     * answers with an empty page (its log was purged when it ended).
+     */
+    @Transactional(readOnly = true)
+    public CombatLogPageView combatLog(Long sessionId, Integer page, Integer size, UUID dmUserId) {
+        CombatSession session = findSession(sessionId);
+        assertDmOwnership(session, dmUserId);
+        return combatLogService.page(sessionId, page, size);
     }
 
     /** Dice roll die sizes the client may log — mirrors the modal's palette. */

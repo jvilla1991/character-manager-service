@@ -6,7 +6,10 @@ import com.moo.charactermanagerservice.dto.FollowerView;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcFollower;
+import com.moo.charactermanagerservice.models.CombatSession;
+import com.moo.charactermanagerservice.models.SessionCombatLog;
 import com.moo.charactermanagerservice.repositories.PcFollowerRepository;
+import com.moo.charactermanagerservice.repositories.SessionCombatLogRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,6 +48,9 @@ class PcFollowerServiceTest {
     @Mock
     private PcActivityLogService activityLogService;
 
+    @Mock
+    private SessionCombatLogRepository combatLogRepository;
+
     private PcFollowerService followerService;
 
     private UUID ownerId;
@@ -55,7 +61,7 @@ class PcFollowerServiceTest {
     @BeforeEach
     void setUp() {
         followerService = new PcFollowerService(pcService, followerRepository, activityLogService,
-                new ObjectMapper());
+                new CombatLogService(combatLogRepository, new ObjectMapper()), new ObjectMapper());
 
         ownerId = UUID.randomUUID();
         dmId = UUID.randomUUID();
@@ -189,6 +195,40 @@ class PcFollowerServiceTest {
 
         assertThat(view.name()).isEqualTo("Brannoc");
         assertThat(view.statBlock()).containsEntry("ac", 18).doesNotContainKey("clazz");
+    }
+
+    @Test
+    void update_changingHpMidSession_isLoggedToThatSessionsCombatLog() {
+        pc.setName("Aelindra");
+        PcFollower follower = stored(5L, 1L, "Brannoc");
+        follower.setStatBlock("{\"hp\":{\"cur\":9,\"max\":16,\"temp\":0},\"conditions\":[]}");
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(follower));
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+        CombatSession session = new CombatSession();
+        session.setId(3L);
+        when(pcService.liveSessionFor(pc)).thenReturn(Optional.of(session));
+
+        followerService.update(1L, 5L, new FollowerRequest(null,
+                Map.of("hp", Map.of("cur", 4, "max", 16, "temp", 0), "conditions", List.of("Prone"))), ownerId);
+
+        ArgumentCaptor<SessionCombatLog> row = ArgumentCaptor.forClass(SessionCombatLog.class);
+        verify(combatLogRepository).save(row.capture());
+        assertThat(row.getValue().getSessionId()).isEqualTo(3L);
+        assertThat(row.getValue().getSubjectName()).isEqualTo("Brannoc (Aelindra's follower)");
+        assertThat(row.getValue().getDescription())
+                .isEqualTo("HP 9 → 4. Condition added: Prone. Changed on the sheet by the player.");
+    }
+
+    @Test
+    void update_thatLeavesHpAndConditionsAlone_logsNothing_andLooksUpNoSession() {
+        PcFollower follower = stored(5L, 1L, "Brannoc");
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(follower));
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        followerService.update(1L, 5L, new FollowerRequest(null, Map.of("ac", 18)), ownerId);
+
+        verify(pcService, never()).liveSessionFor(any());
+        verify(combatLogRepository, never()).save(any());
     }
 
     @Test

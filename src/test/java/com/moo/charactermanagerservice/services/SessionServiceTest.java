@@ -40,6 +40,12 @@ import com.moo.charactermanagerservice.repositories.SessionLongRestResultReposit
 import com.moo.charactermanagerservice.repositories.SessionLootResultRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteBallotRepository;
 import com.moo.charactermanagerservice.repositories.SessionRestVoteRepository;
+import com.moo.charactermanagerservice.models.SessionCombatLog;
+import com.moo.charactermanagerservice.models.CombatLogType;
+import com.moo.charactermanagerservice.dto.CombatLogPageView;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+import com.moo.charactermanagerservice.repositories.SessionCombatLogRepository;
 import com.moo.charactermanagerservice.repositories.SessionRollRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopAttendeeRepository;
 import com.moo.charactermanagerservice.repositories.SessionShopRepository;
@@ -92,6 +98,7 @@ class SessionServiceTest {
     @Mock private SessionLootResultRepository lootResultRepository;
     @Mock private SessionLongRestResultRepository longRestResultRepository;
     @Mock private PcFollowerRepository followerRepository;
+    @Mock private SessionCombatLogRepository combatLogRepository;
 
     private SessionService sessionService;
 
@@ -108,7 +115,8 @@ class SessionServiceTest {
                 campaignService, campaignRepository, encounterRepository, encounterCreatureRepository,
                 activityLogService, sessionRollRepository, restVoteRepository,
                 restVoteBallotRepository, lootResultRepository, longRestResultRepository,
-                followerRepository, new ObjectMapper());
+                followerRepository, new CombatLogService(combatLogRepository, new ObjectMapper()),
+                new ObjectMapper());
 
         dmId = UUID.randomUUID();
         playerId = UUID.randomUUID();
@@ -3387,6 +3395,168 @@ class SessionServiceTest {
 
         assertThat(pc.getHpCurrent()).isZero();
         assertThat(pc.getSurvival()).isNull();
+    }
+
+    // --- combat log: health changes made through the session are recorded ---
+
+    /** The single combat log row a call saved. */
+    private SessionCombatLog loggedRow() {
+        ArgumentCaptor<SessionCombatLog> row = ArgumentCaptor.forClass(SessionCombatLog.class);
+        verify(combatLogRepository).save(row.capture());
+        return row.getValue();
+    }
+
+    @Test
+    void damage_toAPc_isLogged_withTheRound_andWhoDidIt() {
+        session.setRound((short) 3);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 12);
+        pc.setHpTemp((short) 3);
+        pc.setHpMax((short) 20);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 7, dmId);
+
+        SessionCombatLog row = loggedRow();
+        assertThat(row.getSessionId()).isEqualTo(1L);
+        assertThat(row.getEventType()).isEqualTo(CombatLogType.DAMAGE);
+        assertThat(row.getSubjectName()).isEqualTo("Gorath");
+        assertThat(row.getDescription()).isEqualTo("Took 7 damage, 3 absorbed by temporary HP. HP 12 → 8.");
+        assertThat(row.getRound()).isEqualTo((short) 3);
+        assertThat(row.getActorUserId()).isEqualTo(dmId);
+    }
+
+    @Test
+    void damage_droppingAPcToZero_isLoggedAsDown() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 5);
+        pc.setHpMax((short) 10);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, 9, dmId);
+
+        assertThat(loggedRow().getDescription()).isEqualTo("Took 9 damage. HP 5 → 0. Down at 0 HP.");
+    }
+
+    @Test
+    void healing_aPc_isLogged_withWhatItActuallyRestored_andNoRoundOutsideAnEncounter() {
+        session.setStatus(SessionStatus.LOBBY);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 17);
+        pc.setHpMax((short) 20);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, -8, dmId); // only 3 fit under the maximum
+
+        SessionCombatLog row = loggedRow();
+        assertThat(row.getEventType()).isEqualTo(CombatLogType.HEALING);
+        assertThat(row.getDescription()).isEqualTo("Healed 3. HP 17 → 20.");
+        assertThat(row.getRound()).isNull();
+    }
+
+    @Test
+    void healing_atFullHp_changesNothing_andLogsNothing() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(5L)).thenReturn(Optional.of(participant(5L, 7L)));
+        PC pc = pc(7L, "Gorath", 0);
+        pc.setHpCurrent((short) 20);
+        pc.setHpMax((short) 20);
+        when(pcService.findPCById(7L)).thenReturn(pc);
+
+        sessionService.applyDamage(1L, 5L, -5, dmId);
+
+        verify(combatLogRepository, never()).save(any());
+    }
+
+    @Test
+    void damage_killingAnEnemy_isLoggedAsDefeated_thoughItsRowIsGone() {
+        SessionParticipant goblin = enemy(6L, 10, 4);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findById(6L)).thenReturn(Optional.of(goblin));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(new ArrayList<>());
+
+        sessionService.applyDamage(1L, 6L, 6, dmId);
+
+        verify(participantRepository).delete(goblin);
+        SessionCombatLog row = loggedRow();
+        assertThat(row.getSubjectName()).isEqualTo("Goblin");
+        assertThat(row.getDescription()).isEqualTo("Took 6 damage. HP 4 → 0. Defeated.");
+    }
+
+    @Test
+    void followerDamage_isLogged_underTheFollowerAndItsOwner() {
+        seatFollower("{\"hp\":{\"cur\":9,\"max\":16,\"temp\":0}}");
+        SessionParticipant ownerSeat = participant(5L, 7L);
+        ownerSeat.setDisplayName("Gorath");
+        when(participantRepository.findBySessionIdAndPcId(1L, 7L)).thenReturn(Optional.of(ownerSeat));
+
+        sessionService.applyFollowerDamage(1L, 40L, 4, dmId);
+
+        SessionCombatLog row = loggedRow();
+        assertThat(row.getSubjectName()).isEqualTo("Brannoc (Gorath's follower)");
+        assertThat(row.getDescription()).isEqualTo("Took 4 damage. HP 9 → 5.");
+    }
+
+    @Test
+    void endSession_purgesTheCombatLog() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(CombatSession.class))).thenReturn(session);
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L)).thenReturn(new ArrayList<>());
+
+        sessionService.endSession(1L, dmId);
+
+        verify(combatLogRepository).deleteBySessionId(1L);
+    }
+
+    @Test
+    void ttlExpiry_purgesTheCombatLog() {
+        session.setUpdatedAt(Instant.now().minus(Duration.ofHours(5)));
+        when(campaignService.findById(1L)).thenReturn(campaign);
+        when(pcRepository.findByCampaignId(1L)).thenReturn(List.of());
+        when(sessionRepository.findByCampaignIdAndStatusNot(1L, SessionStatus.ENDED))
+                .thenReturn(Optional.of(session));
+
+        sessionService.getActiveSessionForCampaign(1L, dmId);
+
+        verify(combatLogRepository).deleteBySessionId(1L);
+    }
+
+    @Test
+    void combatLog_givesTheDmOnePage_newestFirst() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        SessionCombatLog row = new SessionCombatLog();
+        row.setId(9L);
+        row.setEventType(CombatLogType.DAMAGE);
+        row.setSubjectName("Goblin");
+        row.setDescription("Took 4 damage. HP 9 → 5.");
+        row.setRound((short) 2);
+        when(combatLogRepository.findBySessionIdOrderByIdDesc(eq(1L), any(Pageable.class)))
+                .thenAnswer(inv -> new PageImpl<>(List.of(row), inv.getArgument(1), 21));
+
+        CombatLogPageView page = sessionService.combatLog(1L, 2, 10, dmId);
+
+        assertThat(page.page()).isEqualTo(2);
+        assertThat(page.size()).isEqualTo(10);
+        assertThat(page.total()).isEqualTo(21);
+        assertThat(page.entries()).hasSize(1);
+        assertThat(page.entries().get(0).type()).isEqualTo("DAMAGE");
+        assertThat(page.entries().get(0).subject()).isEqualTo("Goblin");
+        assertThat(page.entries().get(0).round()).isEqualTo((short) 2);
+    }
+
+    @Test
+    void combatLog_isDmOnly() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+
+        assertThatThrownBy(() -> sessionService.combatLog(1L, 0, 10, playerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(combatLogRepository, never()).findBySessionIdOrderByIdDesc(any(), any());
     }
 
     // --- applyDamage: a defeated enemy leaves the initiative order ---
