@@ -1,10 +1,12 @@
 package com.moo.charactermanagerservice.services;
 
+import com.moo.charactermanagerservice.dto.ImportLootRequest;
 import com.moo.charactermanagerservice.models.LootLineAttributes;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -102,6 +104,43 @@ final class LootLines {
         to.setBulk(from.getBulk());
         to.setDamage(from.getDamage());
         to.setArmorClass(from.getArmorClass());
+    }
+
+    /**
+     * 400 unless a pasted loot payload is sound: a non-negative coin pile, and
+     * every line a catalog "key" or a custom "name" (exactly one) with a qty of
+     * at least 1 and coherent attributes. Returns the distinct catalog keys the
+     * lines name, for the caller to look up — whether a key exists is the one
+     * thing this class cannot check. Shared by the curated loot list import and
+     * the session pool opened from JSON, so the two accept the same paste.
+     */
+    static List<String> validateImport(ImportLootRequest request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Import payload is required");
+        }
+        if (request.coinGp() != null && request.coinGp() < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "coinGp must be zero or more");
+        }
+        List<ImportLootRequest.Item> lines = request.items() == null ? List.of() : request.items();
+        for (ImportLootRequest.Item line : lines) {
+            boolean hasKey = line != null && line.key() != null && !line.key().isBlank();
+            boolean hasName = line != null && line.name() != null && !line.name().isBlank();
+            if (hasKey == hasName) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each item needs either a \"key\" or a \"name\" (not both)");
+            }
+            if (line.qty() != null && line.qty() < 1) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "qty must be at least 1");
+            }
+            validateAttributes(hasKey, line.category(), line.valueGp(),
+                    line.weight(), line.bulk(), line.damage(), line.armorClass());
+        }
+        return lines.stream()
+                .map(ImportLootRequest.Item::key)
+                .filter(k -> k != null && !k.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     /** The trimmed catalog key, or null for a custom line (blank counts as absent). */
