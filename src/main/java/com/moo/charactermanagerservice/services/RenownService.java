@@ -123,24 +123,84 @@ public class RenownService {
         List<String> lines = new ArrayList<>();
         for (RenownChange change : changes) {
             CampaignFaction faction = faction(change.factionId(), pc.getCampaignId());
-            PcRenown score = scores.findByPcIdAndFactionId(pcId, change.factionId()).orElseGet(() -> {
-                PcRenown initial = new PcRenown();
-                initial.setPcId(pcId);
-                initial.setFactionId(change.factionId());
-                return initial;
-            });
-            int previous = score.getScore();
-            int next = Math.max(-100, Math.min(100, previous + change.delta()));
-            if (next == previous) continue;
-            score.setScore(next);
-            scores.save(score);
-            int moved = next - previous;
-            lines.add(faction.getName() + " " + (moved > 0 ? "+" : "−") + Math.abs(moved) + " (now " + next + ")");
+            int[] moved = moveScore(pcId, faction.getId(), change.delta());
+            if (moved[0] != moved[1]) lines.add(movedLine(faction, moved[0], moved[1]));
         }
         if (!lines.isEmpty()) {
             activityLog.log(pcId, PcActivityType.DM_EDIT, "Renown changed: " + String.join("; ", lines), userId);
         }
         return list(pcId, userId);
+    }
+
+    /**
+     * The campaign's faction tree with no character's score attached, oldest
+     * first. No authorization happens here: the caller has already established
+     * that the user is this campaign's DM (see SessionRenownService).
+     */
+    @Transactional(readOnly = true)
+    public List<FactionView> factionsOf(Long campaignId) {
+        return factions.findByCampaignIdOrderByIdAsc(campaignId).stream()
+                .map(f -> new FactionView(f.getId(), f.getParentId(), f.getName())).toList();
+    }
+
+    /**
+     * Move several characters' scores with ONE faction by the same amount, in a
+     * single transaction: the DM's session-wide renown reward. Each character
+     * that actually moves gets one activity-log entry, worded like a
+     * {@link #saveAll} line. Characters are locked in id order so two rewards
+     * landing together cannot deadlock. No authorization happens here: the
+     * caller has already established that the user is this campaign's DM.
+     *
+     * @throws ResponseStatusException 400 for a zero or out-of-range amount,
+     *         404 when the faction or a character is not part of the campaign
+     */
+    @Transactional
+    public RenownAwardResult awardToCharacters(Long campaignId, Long factionId, Integer delta,
+                                               List<Long> pcIds, UUID dmUserId) {
+        if (factionId == null || delta == null || delta == 0 || Math.abs(delta) > 200) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A renown reward needs a factionId and a non-zero amount between -200 and 200");
+        }
+        CampaignFaction faction = faction(factionId, campaignId);
+        List<RenownAwardResult.Entry> awarded = new ArrayList<>();
+        for (Long pcId : pcIds.stream().distinct().sorted().toList()) {
+            PC pc = pcRepository.findByIdForUpdate(pcId).filter(c -> campaignId.equals(c.getCampaignId()))
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Character not found"));
+            int[] moved = moveScore(pcId, factionId, delta);
+            if (moved[0] != moved[1]) {
+                activityLog.log(pcId, PcActivityType.DM_EDIT,
+                        "Renown changed: " + movedLine(faction, moved[0], moved[1]), dmUserId);
+            }
+            awarded.add(new RenownAwardResult.Entry(pcId, pc.getName(), moved[1], moved[1] - moved[0]));
+        }
+        return new RenownAwardResult(awarded);
+    }
+
+    /**
+     * Move one character's score with one faction by {@code delta}, clamped to
+     * -100..100, and save it only when it actually moved. Returns
+     * {@code {previous, next}}. The caller holds the PC lock.
+     */
+    private int[] moveScore(Long pcId, Long factionId, int delta) {
+        PcRenown score = scores.findByPcIdAndFactionId(pcId, factionId).orElseGet(() -> {
+            PcRenown initial = new PcRenown();
+            initial.setPcId(pcId);
+            initial.setFactionId(factionId);
+            return initial;
+        });
+        int previous = score.getScore();
+        int next = Math.max(-100, Math.min(100, previous + delta));
+        if (next != previous) {
+            score.setScore(next);
+            scores.save(score);
+        }
+        return new int[] { previous, next };
+    }
+
+    /** One activity-log fragment for a moved score, e.g. "Kirin Tor +2 (now 5)". */
+    private static String movedLine(CampaignFaction faction, int previous, int next) {
+        int moved = next - previous;
+        return faction.getName() + " " + (moved > 0 ? "+" : "−") + Math.abs(moved) + " (now " + next + ")";
     }
 
     private CampaignFaction faction(Long id, Long campaignId) {
