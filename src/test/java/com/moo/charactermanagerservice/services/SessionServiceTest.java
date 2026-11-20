@@ -263,6 +263,41 @@ class SessionServiceTest {
         verify(activityLogService).log(8L, PcActivityType.XP_AWARD, "Awarded 300 XP", dmId);
     }
 
+    // --- awardXpToMany (the reward bar's ticked characters) ---
+
+    @Test
+    void awardXpToMany_awardsOnlyTheTickedParticipants() {
+        SessionParticipant pc7 = participant(5L, 7L);
+        SessionParticipant pc8 = participant(9L, 8L);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(List.of(pc7, participant(6L, null), pc8));
+        when(pcRepository.findAllById(List.of(8L))).thenReturn(List.of(pc(8L, "Mira", 0)));
+
+        XpAwardResult result = sessionService.awardXpToMany(1L, 300, List.of(9L), dmId);
+
+        assertThat(result.awarded()).extracting("name").containsExactly("Mira");
+        verify(pcRepository, times(1)).save(any(PC.class));
+        verify(activityLogService).log(8L, PcActivityType.XP_AWARD, "Awarded 300 XP", dmId);
+        verifyNoMoreInteractions(activityLogService);
+    }
+
+    @Test
+    void awardXpToMany_throws400_andAwardsNothing_forAnEmptyStaleOrNpcTick() {
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdOrderByOrderIndexAsc(1L))
+                .thenReturn(List.of(participant(5L, 7L), participant(6L, null)));
+
+        // nobody ticked; a participant who has left; an enemy row
+        for (List<Long> ticked : List.of(List.<Long>of(), List.of(5L, 99L), List.of(5L, 6L))) {
+            assertThatThrownBy(() -> sessionService.awardXpToMany(1L, 300, ticked, dmId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        }
+        verify(pcRepository, never()).save(any(PC.class));
+        verify(sessionRepository, never()).save(any());
+    }
+
     // --- startEncounter ---
 
     @Test

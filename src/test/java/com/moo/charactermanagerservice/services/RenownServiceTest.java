@@ -152,6 +152,68 @@ class RenownServiceTest {
         verifyNoMoreInteractions(log);
     }
 
+    @Test void listsACampaignsFactionsWithoutScores() {
+        when(factions.findByCampaignIdOrderByIdAsc(7L)).thenReturn(List.of(faction(10, null), faction(11, 10L)));
+        assertThat(service.factionsOf(7L)).containsExactly(
+                new FactionView(10L, null, "Guild 10"), new FactionView(11L, 10L, "Guild 11"));
+        verifyNoInteractions(scores);
+    }
+
+    @Test void rewardsSeveralCharactersWithOneLogEntryEach() {
+        PC second = new PC(); second.setId(2L); second.setName("Mira"); second.setCampaignId(7L);
+        pc.setName("Gorath");
+        when(pcRepository.findByIdForUpdate(2L)).thenReturn(Optional.of(second));
+        when(factions.findById(10L)).thenReturn(Optional.of(faction(10, null)));
+        PcRenown nearMax = new PcRenown(); nearMax.setPcId(2L); nearMax.setFactionId(10L); nearMax.setScore(99);
+        when(scores.findByPcIdAndFactionId(1L, 10L)).thenReturn(Optional.empty());
+        when(scores.findByPcIdAndFactionId(2L, 10L)).thenReturn(Optional.of(nearMax));
+
+        RenownAwardResult result = service.awardToCharacters(7L, 10L, 3, List.of(2L, 1L), dm);
+
+        // locked and answered in id order; the second character is clamped at 100
+        assertThat(result.awarded()).containsExactly(
+                new RenownAwardResult.Entry(1L, "Gorath", 3, 3),
+                new RenownAwardResult.Entry(2L, "Mira", 100, 1));
+        var order = inOrder(pcRepository);
+        order.verify(pcRepository).findByIdForUpdate(1L);
+        order.verify(pcRepository).findByIdForUpdate(2L);
+        verify(log).log(1L, PcActivityType.DM_EDIT, "Renown changed: Guild 10 +3 (now 3)", dm);
+        verify(log).log(2L, PcActivityType.DM_EDIT, "Renown changed: Guild 10 +1 (now 100)", dm);
+        verifyNoMoreInteractions(log);
+    }
+
+    @Test void rewardThatCannotMoveAScoreIsReportedButNotSavedOrLogged() {
+        when(factions.findById(10L)).thenReturn(Optional.of(faction(10, null)));
+        PcRenown floor = new PcRenown(); floor.setPcId(1L); floor.setFactionId(10L); floor.setScore(-100);
+        when(scores.findByPcIdAndFactionId(1L, 10L)).thenReturn(Optional.of(floor));
+
+        assertThat(service.awardToCharacters(7L, 10L, -5, List.of(1L), dm).awarded())
+                .containsExactly(new RenownAwardResult.Entry(1L, null, -100, 0));
+        verify(scores, never()).save(any());
+        verifyNoInteractions(log);
+    }
+
+    @Test void rewardRejectsBadAmountsForeignFactionsAndForeignCharacters() {
+        for (Integer amount : Arrays.asList(null, 0, 201, -201)) {
+            assertThatThrownBy(() -> service.awardToCharacters(7L, 10L, amount, List.of(1L), dm))
+                    .isInstanceOf(ResponseStatusException.class);
+        }
+        assertThatThrownBy(() -> service.awardToCharacters(7L, null, 1, List.of(1L), dm))
+                .isInstanceOf(ResponseStatusException.class);
+        verifyNoInteractions(factions);
+
+        CampaignFaction other = faction(10, null); other.setCampaignId(8L);
+        when(factions.findById(10L)).thenReturn(Optional.of(other));
+        assertThatThrownBy(() -> service.awardToCharacters(7L, 10L, 1, List.of(1L), dm))
+                .isInstanceOf(ResponseStatusException.class);
+
+        when(factions.findById(10L)).thenReturn(Optional.of(faction(10, null)));
+        pc.setCampaignId(8L); // a character from another campaign
+        assertThatThrownBy(() -> service.awardToCharacters(7L, 10L, 1, List.of(1L), dm))
+                .isInstanceOf(ResponseStatusException.class);
+        verifyNoInteractions(scores, log);
+    }
+
     @Test void batchRejectsPlayersEmptyAndMalformedInput() {
         assertThatThrownBy(() -> service.saveAll(1L, List.of(new RenownChange(10L, 1)), owner))
                 .isInstanceOf(ResponseStatusException.class);
