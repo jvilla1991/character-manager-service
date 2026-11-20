@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.AddShopItemRequest;
 import com.moo.charactermanagerservice.dto.CuratedShopItemView;
 import com.moo.charactermanagerservice.dto.CuratedShopView;
 import com.moo.charactermanagerservice.dto.ImportShopRequest;
@@ -20,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -27,12 +29,15 @@ import java.util.stream.Collectors;
 
 /**
  * DM-curated shops (Phase 2): persistent, reusable shop definitions a DM builds
- * from the SRD catalog with optional price overrides, later activated into a
- * live session. Ownership mirrors {@link SessionService}: a shop is owned by the
- * campaign's DM and DM-only actions assert it (403 otherwise).
+ * and later activates into a live session. A line is either an SRD catalog item
+ * with an optional price override, or a custom item the DM wrote out with its
+ * own name, price and stats (see {@link ShopItem}) — an adventure's own gear
+ * sells next to the standard catalog. Ownership mirrors {@link SessionService}:
+ * a shop is owned by the campaign's DM and DM-only actions assert it (403
+ * otherwise).
  *
- * <p>Phase 2 MVP is catalog-only with price overrides; quantity is unlimited
- * (no stock column), so there is no decrement here — finite stock is deferred.
+ * <p>Quantity is unlimited (no stock column), so there is no decrement here —
+ * finite stock is deferred.
  */
 @Service
 public class CuratedShopService {
@@ -111,19 +116,46 @@ public class CuratedShopService {
     /** Add a catalog item to the shop, with an optional price override. */
     @Transactional
     public CuratedShopView addItem(Long shopId, String catalogItemKey, Long priceCp, UUID dmUserId) {
+        return addItem(shopId, new AddShopItemRequest(catalogItemKey, priceCp), dmUserId);
+    }
+
+    /**
+     * Add one line: a catalog item with an optional price override, or a custom
+     * item with its own stats and price (absent price = free; the DM can set it
+     * afterwards). A catalog item appears at most once per shop; custom lines
+     * are never deduplicated — two differently-priced "Healing Draught"s are
+     * the DM's call.
+     */
+    @Transactional
+    public CuratedShopView addItem(Long shopId, AddShopItemRequest request, UUID dmUserId) {
         Shop shop = requireOwnedShop(shopId, dmUserId);
-        if (srdItemRepository.findByItemKey(catalogItemKey).isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + catalogItemKey);
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "An item is required");
         }
-        if (shopItemRepository.findByShopIdAndCatalogItemKey(shopId, catalogItemKey).isPresent()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Item is already in this shop");
-        }
-        validatePrice(priceCp);
+        LootLines.validate(request.catalogItemKey(), request.customName(), null);
+        String key = LootLines.normalizeKey(request.catalogItemKey());
+        // The stat fields belong to custom lines only; a price is fine on both.
+        LootLines.validateAttributes(key != null, request.category(), null,
+                request.weight(), request.bulk(), request.damage(), request.armorClass());
 
         ShopItem item = new ShopItem();
         item.setShopId(shopId);
-        item.setCatalogItemKey(catalogItemKey);
-        item.setPriceCp(priceCp);
+        if (key != null) {
+            if (srdItemRepository.findByItemKey(key).isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + key);
+            }
+            if (shopItemRepository.findByShopIdAndCatalogItemKey(shopId, key).isPresent()) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Item is already in this shop");
+            }
+            validatePrice(request.priceCp());
+            item.setCatalogItemKey(key);
+            item.setPriceCp(request.priceCp());
+        } else {
+            validatePrice(request.priceCp());
+            ShopLines.applyCustom(item, request.customName(), request.customNotes(), request.category(),
+                    request.priceCp() == null ? 0L : request.priceCp(),
+                    request.weight(), request.bulk(), request.damage(), request.armorClass());
+        }
         shopItemRepository.save(item);
 
         touch(shop);
@@ -143,7 +175,7 @@ public class CuratedShopService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported category: " + category);
         }
         Set<String> existing = shopItemRepository.findByShopId(shopId).stream()
-                .map(ShopItem::getCatalogItemKey).collect(Collectors.toSet());
+                .map(ShopItem::getCatalogItemKey).filter(Objects::nonNull).collect(Collectors.toSet());
         List<ShopItem> toAdd = srdItemRepository.findByCategoryOrderByNameAsc(normalized).stream()
                 .filter(c -> !existing.contains(c.getItemKey()))
                 .map(c -> {
@@ -160,8 +192,10 @@ public class CuratedShopService {
     }
 
     /**
-     * Create a whole curated shop from pasted JSON — name, settlement, and
-     * catalog lines with optional gold-price overrides. All-or-nothing: any
+     * Create a whole curated shop from pasted JSON — name, settlement, and its
+     * lines: catalog items ("key", optional gold-price override) and custom
+     * items ("name", a required gold price, and their own stats). All-or-
+     * nothing: every line is validated before anything is written, and any
      * unknown catalog key fails the import with a 400 listing every bad key,
      * so a typo never leaves a half-built shop behind. Campaign-DM only.
      */
@@ -173,14 +207,35 @@ public class CuratedShopService {
         }
         List<ImportShopRequest.Item> lines = request.items() == null ? List.of() : request.items();
 
-        // Validate every key (and collect duplicates away) before writing anything.
-        List<String> keys = lines.stream()
+        // Validate every line (and collect duplicate keys away) before writing anything.
+        for (ImportShopRequest.Item line : lines) {
+            boolean hasKey = line != null && line.key() != null && !line.key().isBlank();
+            boolean hasName = line != null && line.name() != null && !line.name().isBlank();
+            if (hasKey == hasName) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Each item needs either a \"key\" or a \"name\" (not both)");
+            }
+            if (line.priceGp() != null && line.priceGp() < 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Price cannot be negative");
+            }
+            if (hasName && line.priceGp() == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "\"" + line.name().trim() + "\" needs a priceGp — a custom item has no catalog price");
+            }
+            if (hasKey && line.notes() != null && !line.notes().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "notes apply to custom items only — catalog items take theirs from the catalog");
+            }
+            LootLines.validateAttributes(hasKey, line.category(), null,
+                    line.weight(), line.bulk(), line.damage(), line.armorClass());
+        }
+        List<String> allKeys = lines.stream()
                 .map(ImportShopRequest.Item::key)
                 .filter(k -> k != null && !k.isBlank())
                 .map(String::trim)
-                .distinct()
                 .toList();
-        if (keys.size() != lines.size()) {
+        List<String> keys = allKeys.stream().distinct().toList();
+        if (keys.size() != allKeys.size()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Every item needs a unique, non-blank catalog key");
         }
@@ -202,11 +257,15 @@ public class CuratedShopService {
 
         List<ShopItem> toAdd = lines.stream().map(line -> {
             Long priceCp = line.priceGp() == null ? null : Math.round(line.priceGp() * 100);
-            validatePrice(priceCp);
             ShopItem item = new ShopItem();
             item.setShopId(saved.getId());
-            item.setCatalogItemKey(line.key().trim());
-            item.setPriceCp(priceCp);
+            if (line.key() != null && !line.key().isBlank()) {
+                item.setCatalogItemKey(line.key().trim());
+                item.setPriceCp(priceCp);
+            } else {
+                ShopLines.applyCustom(item, line.name(), line.notes(), line.category(), priceCp,
+                        line.weight(), line.bulk(), line.damage(), line.armorClass());
+            }
             return item;
         }).toList();
         shopItemRepository.saveAll(toAdd);
@@ -214,12 +273,20 @@ public class CuratedShopService {
         return buildView(saved);
     }
 
-    /** Change a line's price override (null = back to catalog price). */
+    /**
+     * Change a line's price. On a catalog line it is an override (null = back
+     * to the catalog price); a custom line has no catalog price to go back to,
+     * so it must keep one.
+     */
     @Transactional
     public CuratedShopView updateItem(Long shopId, Long itemId, Long priceCp, UUID dmUserId) {
         Shop shop = requireOwnedShop(shopId, dmUserId);
         validatePrice(priceCp);
         ShopItem item = requireItem(shopId, itemId);
+        if (item.isCustom() && priceCp == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A custom item needs a price — it has no catalog price to fall back on");
+        }
         item.setPriceCp(priceCp);
         shopItemRepository.save(item);
 
@@ -242,14 +309,17 @@ public class CuratedShopService {
 
     private CuratedShopView buildView(Shop shop) {
         List<ShopItem> lines = shopItemRepository.findByShopId(shop.getId());
-        Map<String, SrdItem> catalog = lines.isEmpty() ? Map.of() :
-                srdItemRepository.findByItemKeyIn(
-                                lines.stream().map(ShopItem::getCatalogItemKey).toList()).stream()
+        List<String> keys = lines.stream()
+                .map(ShopItem::getCatalogItemKey).filter(Objects::nonNull).distinct().toList();
+        Map<String, SrdItem> catalog = keys.isEmpty() ? Map.of() :
+                srdItemRepository.findByItemKeyIn(keys).stream()
                         .collect(Collectors.toMap(SrdItem::getItemKey, Function.identity()));
 
         List<CuratedShopItemView> items = lines.stream()
-                .map(line -> toItemView(line, catalog.get(line.getCatalogItemKey())))
-                .filter(java.util.Objects::nonNull)
+                .map(line -> line.isCustom()
+                        ? toCustomItemView(line)
+                        : toItemView(line, catalog.get(line.getCatalogItemKey())))
+                .filter(Objects::nonNull)
                 .sorted(Comparator.comparing(CuratedShopItemView::name))
                 .toList();
 
@@ -263,7 +333,15 @@ public class CuratedShopService {
         return new CuratedShopItemView(
                 line.getId(), catalog.getItemKey(), catalog.getName(), catalog.getCategory(),
                 line.getPriceCp(), effective, catalog.getWeight(),
-                json.parseObject(catalog.getDetails()));
+                json.parseObject(catalog.getDetails()), false, null, null);
+    }
+
+    private CuratedShopItemView toCustomItemView(ShopItem line) {
+        long price = ShopLines.priceCp(line);
+        return new CuratedShopItemView(
+                line.getId(), null, line.getCustomName(), ShopLines.categoryCode(line),
+                price, price, line.getWeight(), ShopLines.details(line),
+                true, line.getCustomNotes(), line.getBulk());
     }
 
     private Shop requireOwnedShop(Long shopId, UUID dmUserId) {

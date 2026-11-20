@@ -19,5 +19,6 @@ public record AddLootItemRequest(
         Double valueGp,
         Double weight,
         String damage,
-        String armorClass
+        String armorClass,
+        Double bulk
 ) {}

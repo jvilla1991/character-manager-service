@@ -356,13 +356,45 @@ class CuratedLootServiceTest {
     private static AddLootItemRequest request(String key, String name, String notes, Integer qty,
                                               String category, Double valueGp, Double weight,
                                               String damage, String armorClass) {
-        return new AddLootItemRequest(key, name, notes, qty, category, valueGp, weight, damage, armorClass);
+        return new AddLootItemRequest(key, name, notes, qty, category, valueGp, weight, damage, armorClass, null);
     }
 
     private static ImportLootRequest.Item importItem(String key, String name, String notes, Integer qty,
                                                      String category, Double valueGp, Double weight,
                                                      String damage, String armorClass) {
-        return new ImportLootRequest.Item(key, name, notes, qty, category, valueGp, weight, damage, armorClass);
+        return new ImportLootRequest.Item(key, name, notes, qty, category, valueGp, weight, damage, armorClass, null);
+    }
+
+    // --- bulk and the treasure category on custom lines ---
+
+    @Test
+    void addItem_custom_keepsAnExplicitBulk_andAcceptsTreasure() {
+        when(lootRepository.findById(5L)).thenReturn(Optional.of(loot));
+        when(lootItemRepository.findByLootIdOrderByIdAsc(5L)).thenReturn(List.of());
+
+        service.addItem(5L, new AddLootItemRequest(null, "Ten-foot Pole", null, 1,
+                "treasure", 0.05, 7.0, null, null, 6.0), dmId);
+
+        ArgumentCaptor<CuratedLootItem> captor = ArgumentCaptor.forClass(CuratedLootItem.class);
+        verify(lootItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategory()).isEqualTo("treasure");
+        assertThat(captor.getValue().getBulk()).isEqualByComparingTo("6");
+        assertThat(captor.getValue().getWeight()).isEqualByComparingTo("7");
+    }
+
+    @Test
+    void addItem_throws400_forNegativeBulk_orBulkOnACatalogLine() {
+        when(lootRepository.findById(5L)).thenReturn(Optional.of(loot));
+
+        assertThatThrownBy(() -> service.addItem(5L, new AddLootItemRequest(null, "Odd Rock", null, 1,
+                null, null, null, null, null, -1.0), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.addItem(5L, new AddLootItemRequest("longsword", null, null, 1,
+                null, null, null, null, null, 2.0), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(lootItemRepository, never()).save(any());
     }
 
     private static SrdItem longsword() {

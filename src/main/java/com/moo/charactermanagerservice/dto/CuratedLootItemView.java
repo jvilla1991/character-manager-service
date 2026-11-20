@@ -20,5 +20,6 @@ public record CuratedLootItemView(
         BigDecimal weight,
         String damage,
         String armorClass,
-        int qty
+        int qty,
+        BigDecimal bulk
 ) {}

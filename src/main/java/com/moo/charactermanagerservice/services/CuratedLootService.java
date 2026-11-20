@@ -109,7 +109,7 @@ public class CuratedLootService {
         LootLines.validate(request.catalogItemKey(), request.customName(), request.qty());
         String key = LootLines.normalizeKey(request.catalogItemKey());
         LootLines.validateAttributes(key != null, request.category(), request.valueGp(),
-                request.weight(), request.damage(), request.armorClass());
+                request.weight(), request.bulk(), request.damage(), request.armorClass());
         if (key != null && srdItemRepository.findByItemKey(key).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + key);
         }
@@ -123,7 +123,7 @@ public class CuratedLootService {
                 ? null : request.customNotes().trim());
         item.setQty(request.qty() == null ? 1 : request.qty());
         LootLines.applyAttributes(item, request.category(), request.valueGp(),
-                request.weight(), request.damage(), request.armorClass());
+                request.weight(), request.bulk(), request.damage(), request.armorClass());
         lootItemRepository.save(item);
 
         touch(loot);
@@ -202,7 +202,7 @@ public class CuratedLootService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "qty must be at least 1");
             }
             LootLines.validateAttributes(hasKey, line.category(), line.valueGp(),
-                    line.weight(), line.damage(), line.armorClass());
+                    line.weight(), line.bulk(), line.damage(), line.armorClass());
         }
         List<String> keys = lines.stream()
                 .map(ImportLootRequest.Item::key)
@@ -228,7 +228,7 @@ public class CuratedLootService {
                     ? null : line.notes().trim());
             item.setQty(line.qty() == null ? 1 : line.qty());
             LootLines.applyAttributes(item, line.category(), line.valueGp(),
-                    line.weight(), line.damage(), line.armorClass());
+                    line.weight(), line.bulk(), line.damage(), line.armorClass());
             return item;
         }).toList();
         lootItemRepository.saveAll(toAdd);
@@ -257,12 +257,13 @@ public class CuratedLootService {
                     if (line.getCatalogItemKey() == null) {
                         return new CuratedLootItemView(line.getId(), null, line.getCustomName(),
                                 true, line.getCustomNotes(), line.getCategory(), line.getUnitCostCp(),
-                                line.getWeight(), line.getDamage(), line.getArmorClass(), line.getQty());
+                                line.getWeight(), line.getDamage(), line.getArmorClass(), line.getQty(),
+                                line.getBulk());
                     }
                     SrdItem c = catalog.get(line.getCatalogItemKey());
                     if (c == null) return null; // catalog item vanished — skip defensively
                     return new CuratedLootItemView(line.getId(), c.getItemKey(), c.getName(),
-                            false, null, null, null, null, null, null, line.getQty());
+                            false, null, null, null, null, null, null, line.getQty(), null);
                 })
                 .filter(Objects::nonNull)
                 .toList();

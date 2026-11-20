@@ -39,6 +39,7 @@ public class SessionLootItem implements Serializable, LootLineAttributes {
     private String category;
     private Long unitCostCp;
     private BigDecimal weight;
+    private BigDecimal bulk;
     private String damage;
     private String armorClass;
 
@@ -60,6 +61,7 @@ public class SessionLootItem implements Serializable, LootLineAttributes {
     @Override public void setCategory(String category) { this.category = category; }
     @Override public void setUnitCostCp(Long unitCostCp) { this.unitCostCp = unitCostCp; }
     @Override public void setWeight(BigDecimal weight) { this.weight = weight; }
+    @Override public void setBulk(BigDecimal bulk) { this.bulk = bulk; }
     @Override public void setDamage(String damage) { this.damage = damage; }
     @Override public void setArmorClass(String armorClass) { this.armorClass = armorClass; }
 }
