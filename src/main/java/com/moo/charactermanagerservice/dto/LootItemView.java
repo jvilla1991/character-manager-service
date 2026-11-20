@@ -24,5 +24,6 @@ public record LootItemView(
         String armorClass,
         int qty,
         int qtyRemaining,
-        Long valueCp
+        Long valueCp,
+        BigDecimal bulk
 ) {}

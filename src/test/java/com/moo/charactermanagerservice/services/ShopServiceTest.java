@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.PurchaseResult;
 import com.moo.charactermanagerservice.dto.SellResult;
+import com.moo.charactermanagerservice.dto.ShopItemView;
 import com.moo.charactermanagerservice.dto.ShopView;
 import com.moo.charactermanagerservice.models.CombatSession;
 import com.moo.charactermanagerservice.models.PC;
@@ -668,6 +669,177 @@ class ShopServiceTest {
         assertThatThrownBy(() -> shopService.purchase(1L, 7L, "dagger", 1, playerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    // --- custom (non-catalog) lines in a curated shop ---
+
+    private static ShopItem customLine(Long id, String name, Long priceCp) {
+        ShopItem i = new ShopItem();
+        i.setId(id);
+        i.setShopId(50L);
+        i.setCustomName(name);
+        i.setPriceCp(priceCp);
+        return i;
+    }
+
+    private static ShopItem flametongue() {
+        ShopItem i = customLine(2L, "Flametongue", 500000L);
+        i.setCategory("weapon");
+        i.setDamage("1d8 slashing + 2d6 fire");
+        i.setWeight(new java.math.BigDecimal("3"));
+        i.setBulk(new java.math.BigDecimal("4"));
+        i.setCustomNotes("Requires attunement. Ignites on command.");
+        return i;
+    }
+
+    private void stubCuratedShopWithAttendee() {
+        SessionShop curatedSession = new SessionShop();
+        curatedSession.setId(10L);
+        curatedSession.setSessionId(1L);
+        curatedSession.setShopId(50L);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(curatedSession));
+        when(attendeeRepository.findBySessionShopIdAndPcId(10L, 7L))
+                .thenReturn(Optional.of(attendee(7L, playerId)));
+    }
+
+    @Test
+    void curatedShopView_listsCustomLines_withTheirLineIdAndStats() {
+        SessionShop curatedSession = new SessionShop();
+        curatedSession.setId(10L);
+        curatedSession.setSessionId(1L);
+        curatedSession.setShopId(50L);
+        when(sessionRepository.findById(1L)).thenReturn(Optional.of(session));
+        when(shopRepository.findBySessionId(1L)).thenReturn(Optional.of(curatedSession));
+        when(attendeeRepository.findBySessionShopId(10L)).thenReturn(List.of());
+        when(curatedShopRepository.findById(50L)).thenReturn(Optional.of(curatedShop()));
+        when(curatedItemRepository.findByShopId(50L))
+                .thenReturn(List.of(curatedLine(1L, "longsword", 1200L), flametongue()));
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword"))).thenReturn(List.of(longsword()));
+
+        ShopView view = shopService.getActiveShopForUser(1L, dmId);
+
+        assertThat(view.items()).extracting(ShopItemView::name).containsExactly("Flametongue", "Longsword");
+        ShopItemView custom = view.items().get(0);
+        assertThat(custom.custom()).isTrue();
+        assertThat(custom.itemKey()).isNull();
+        assertThat(custom.shopItemId()).isEqualTo(2L);
+        assertThat(custom.category()).isEqualTo("WEAPON");
+        assertThat(custom.costCp()).isEqualTo(500000L);
+        assertThat(custom.details())
+                .containsEntry("damage", "1d8 slashing + 2d6 fire")
+                .containsEntry("notes", "Requires attunement. Ignites on command.");
+        ShopItemView catalog = view.items().get(1);
+        assertThat(catalog.custom()).isFalse();
+        assertThat(catalog.shopItemId()).isEqualTo(1L);
+        assertThat(catalog.costCp()).isEqualTo(1200L);
+    }
+
+    @Test
+    void purchase_customLine_landsWithTheDmsStats_andThePricePaid() {
+        stubCuratedShopWithAttendee();
+        when(curatedItemRepository.findById(2L)).thenReturn(Optional.of(flametongue()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":6000}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, null, 2L, 1, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(500000L);
+        assertThat(result.coins()).containsEntry("gp", 1000);
+        assertThat(result.inventory()).hasSize(1);
+        assertThat(result.inventory().get(0))
+                .doesNotContainKey("catalogKey")
+                .containsEntry("name", "Flametongue")
+                .containsEntry("category", "weapon")
+                .containsEntry("qty", 1)
+                .containsEntry("unitCostCp", 500000L)
+                .containsEntry("damage", "1d8 slashing + 2d6 fire")
+                .containsEntry("notes", "Requires attunement. Ignites on command.");
+        // the DM's explicit bulk wins over the weight band (3 lb would be 2)
+        assertThat((java.math.BigDecimal) result.inventory().get(0).get("bulk")).isEqualByComparingTo("4");
+        verify(activityLogService).log(7L, PcActivityType.PURCHASE, "Bought Flametongue for 5000 gp", playerId);
+        verifyNoInteractions(srdItemRepository);
+    }
+
+    @Test
+    void purchase_customLine_derivesBulkFromWeight_whenTheLineHasNone() {
+        stubCuratedShopWithAttendee();
+        ShopItem draught = customLine(3L, "Healing Draught", 5000L);
+        draught.setWeight(new java.math.BigDecimal("0.5"));
+        when(curatedItemRepository.findById(3L)).thenReturn(Optional.of(draught));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":200}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, null, 3L, 2, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(10000L);
+        assertThat(result.inventory().get(0)).containsEntry("qty", 2).containsEntry("category", "gear");
+        assertThat((java.math.BigDecimal) result.inventory().get(0).get("bulk")).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void purchase_customLine_stacksOntoAnIdenticalLineAlreadyHeld() {
+        stubCuratedShopWithAttendee();
+        ShopItem draught = customLine(3L, "Healing Draught", 5000L);
+        draught.setWeight(new java.math.BigDecimal("0.5"));
+        when(curatedItemRepository.findById(3L)).thenReturn(Optional.of(draught));
+        // One bought earlier (identical), one that differs in price, one equipped look-alike.
+        PC pc = pcOwnedBy(playerId, "{\"gp\":200}",
+                "[{\"name\":\"Healing Draught\",\"category\":\"gear\",\"qty\":1,\"unitCostCp\":4000,\"weight\":0.5,\"bulk\":1},"
+                        + "{\"name\":\"Healing Draught\",\"category\":\"gear\",\"qty\":1,\"unitCostCp\":5000,\"weight\":0.5,\"bulk\":1,\"equipped\":true},"
+                        + "{\"name\":\"Healing Draught\",\"category\":\"gear\",\"qty\":1,\"unitCostCp\":5000,\"weight\":0.50,\"bulk\":1}]");
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, null, 3L, 2, playerId);
+
+        assertThat(result.inventory()).hasSize(3);
+        assertThat(result.inventory().get(0)).containsEntry("qty", 1); // cheaper one: a different item
+        assertThat(result.inventory().get(1)).containsEntry("qty", 1); // equipped: left alone
+        assertThat(result.inventory().get(2)).containsEntry("qty", 3); // identical: stacked
+    }
+
+    @Test
+    void purchase_catalogLine_canBeNamedByItsShopLine() {
+        stubCuratedShopWithAttendee();
+        when(curatedItemRepository.findById(1L)).thenReturn(Optional.of(curatedLine(1L, "longsword", 1200L)));
+        when(srdItemRepository.findByItemKey("longsword")).thenReturn(Optional.of(longsword()));
+        PC pc = pcOwnedBy(playerId, "{\"gp\":20}", null);
+        when(pcRepository.findByIdForUpdate(7L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PurchaseResult result = shopService.purchase(1L, 7L, null, 1L, 1, playerId);
+
+        assertThat(result.totalCostCp()).isEqualTo(1200L);
+        assertThat(result.inventory().get(0)).containsEntry("catalogKey", "longsword");
+    }
+
+    @Test
+    void purchase_throws400_whenTheLineBelongsToAnotherShop() {
+        stubCuratedShopWithAttendee();
+        ShopItem elsewhere = customLine(9L, "Flametongue", 100L);
+        elsewhere.setShopId(77L);
+        when(curatedItemRepository.findById(9L)).thenReturn(Optional.of(elsewhere));
+
+        assertThatThrownBy(() -> shopService.purchase(1L, 7L, null, 9L, 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void purchase_throws400_forAShopLineAtAStandardShop_orWithNothingNamed() {
+        stubActiveShopWithAttendee();
+
+        assertThatThrownBy(() -> shopService.purchase(1L, 7L, null, 2L, 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> shopService.purchase(1L, 7L, " ", null, 1, playerId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(pcRepository, never()).save(any());
     }
 
     // --- catalog (DM-grant picker) ---

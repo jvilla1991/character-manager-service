@@ -62,23 +62,58 @@ final class InventoryEntries {
      * category (default 'gear' when absent, matching legacy rows), value,
      * weight, and the category stat (weapon damage / armor class) — so a
      * claimed custom item is exactly as stat'd as a granted one. Bulk is
-     * stamped like every other acquisition (weight-band fallback — no weight
+     * stamped like every other acquisition: the DM's explicit {@code bulk}
+     * when the line carries one, else the weight-band fallback (no weight
      * means 1, "a small object").
      */
     static Map<String, Object> newCustomEntry(String name, String category, int qty, Long unitCostCp,
-                                              BigDecimal weight, String damage, String armorClass,
-                                              String notes) {
+                                              BigDecimal weight, BigDecimal bulk, String damage,
+                                              String armorClass, String notes) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("name", name);
         entry.put("category", category == null || category.isBlank() ? "gear" : category);
         entry.put("qty", qty);
         if (unitCostCp != null) entry.put("unitCostCp", unitCostCp);
         if (weight != null) entry.put("weight", weight);
-        entry.put("bulk", BulkRules.bulkFor(null, weight));
+        entry.put("bulk", BulkRules.bulkFor(bulk, weight));
         if (damage != null && !damage.isBlank()) entry.put("damage", damage.trim());
         if (armorClass != null && !armorClass.isBlank()) entry.put("armorClass", armorClass.trim());
         if (notes != null && !notes.isBlank()) entry.put("notes", notes.trim());
         return entry;
+    }
+
+    /** The fields that make two custom lines "the same item" for stacking a purchase. */
+    private static final List<String> CUSTOM_IDENTITY =
+            List.of("name", "category", "unitCostCp", "weight", "bulk", "damage", "armorClass", "notes");
+
+    /**
+     * Add a custom item bought at a shop, stacking onto a line the character
+     * already holds when it is the same item in every respect (name, stats,
+     * price paid, description). A shop sells any number of one line, so three
+     * potions bought one at a time should read "×3", not three lines. Loot
+     * keeps {@link #newCustomEntry} un-stacked: each looted trophy is its own.
+     * A catalog line, an equipped or dropped line, never absorbs the purchase.
+     */
+    static void addCustomItem(List<Map<String, Object>> inventory, Map<String, Object> bought) {
+        int qty = bought.get("qty") instanceof Number n ? n.intValue() : 1;
+        for (Map<String, Object> entry : inventory) {
+            if (entry.get("catalogKey") != null) continue;
+            if (Boolean.TRUE.equals(entry.get("equipped")) || "dropped".equals(entry.get("status"))) continue;
+            if (CUSTOM_IDENTITY.stream().allMatch(f -> sameValue(entry.get(f), bought.get(f)))) {
+                int existing = entry.get("qty") instanceof Number n ? n.intValue() : 0;
+                entry.put("qty", existing + qty);
+                return;
+            }
+        }
+        inventory.add(bought);
+    }
+
+    /** Equal as stored: numbers by value (3, 3.0 and "3.00" parsed are one weight), the rest by equals. */
+    private static boolean sameValue(Object a, Object b) {
+        if (a instanceof Number x && b instanceof Number y) {
+            return new BigDecimal(x.toString()).compareTo(new BigDecimal(y.toString())) == 0;
+        }
+        return java.util.Objects.equals(a, b);
     }
 
     /** Map a catalog category (WEAPON) to the lower-case inventory label ('weapon'). */

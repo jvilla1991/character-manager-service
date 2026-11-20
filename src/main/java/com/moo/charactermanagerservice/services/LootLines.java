@@ -18,7 +18,8 @@ import java.util.Set;
 final class LootLines {
 
     /** The lowercase inventory category labels a custom line may carry. */
-    static final Set<String> CATEGORIES = Set.of("weapon", "armor", "material-component", "gear", "transport");
+    static final Set<String> CATEGORIES =
+            Set.of("weapon", "armor", "material-component", "gear", "transport", "treasure");
 
     private LootLines() {}
 
@@ -38,31 +39,34 @@ final class LootLines {
     /**
      * 400 unless the custom-item attributes are coherent: they are rejected
      * outright on catalog lines (the catalog is authoritative there), the
-     * category must be a known inventory label, value/weight must be ≥ 0, and
+     * category must be a known inventory label, value/weight/bulk must be ≥ 0, and
      * the category-specific stats belong to their category (damage → weapon,
      * armorClass → armor) — mirroring what the item composer can author.
      */
     static void validateAttributes(boolean catalogLine, String category, Double valueGp,
-                                   Double weight, String damage, String armorClass) {
+                                   Double weight, Double bulk, String damage, String armorClass) {
         boolean anyAttribute = present(category) || valueGp != null || weight != null
-                || present(damage) || present(armorClass);
+                || bulk != null || present(damage) || present(armorClass);
         if (catalogLine) {
             if (anyAttribute) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "category/valueGp/weight/damage/armorClass apply to custom items only "
+                        "category/valueGp/weight/bulk/damage/armorClass apply to custom items only "
                                 + "— catalog items take their stats from the catalog");
             }
             return;
         }
         if (present(category) && !CATEGORIES.contains(category.trim())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "category must be one of weapon, armor, material-component, gear, transport");
+                    "category must be one of weapon, armor, material-component, gear, transport, treasure");
         }
         if (valueGp != null && valueGp < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "valueGp must be zero or more");
         }
         if (weight != null && weight < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "weight must be zero or more");
+        }
+        if (bulk != null && bulk < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "bulk must be zero or more");
         }
         String effectiveCategory = present(category) ? category.trim() : "gear";
         if (present(damage) && !"weapon".equals(effectiveCategory)) {
@@ -81,10 +85,11 @@ final class LootLines {
      * catalog lines simply keep all-null attributes.
      */
     static void applyAttributes(LootLineAttributes line, String category, Double valueGp,
-                                Double weight, String damage, String armorClass) {
+                                Double weight, Double bulk, String damage, String armorClass) {
         line.setCategory(present(category) ? category.trim() : null);
         line.setUnitCostCp(valueGp == null ? null : Math.round(valueGp * 100));
         line.setWeight(weight == null ? null : BigDecimal.valueOf(weight));
+        line.setBulk(bulk == null ? null : BigDecimal.valueOf(bulk));
         line.setDamage(present(damage) ? damage.trim() : null);
         line.setArmorClass(present(armorClass) ? armorClass.trim() : null);
     }
@@ -94,6 +99,7 @@ final class LootLines {
         to.setCategory(from.getCategory());
         to.setUnitCostCp(from.getUnitCostCp());
         to.setWeight(from.getWeight());
+        to.setBulk(from.getBulk());
         to.setDamage(from.getDamage());
         to.setArmorClass(from.getArmorClass());
     }

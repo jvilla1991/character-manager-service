@@ -1,6 +1,8 @@
 package com.moo.charactermanagerservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moo.charactermanagerservice.dto.AddShopItemRequest;
+import com.moo.charactermanagerservice.dto.CuratedShopItemView;
 import com.moo.charactermanagerservice.dto.CuratedShopView;
 import com.moo.charactermanagerservice.dto.ImportShopRequest;
 import com.moo.charactermanagerservice.dto.ShopSummaryView;
@@ -90,6 +92,203 @@ class CuratedShopServiceTest {
         assertThatThrownBy(() -> service.createShop(1L, "Smithy", null, strangerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+    }
+
+    // --- custom (non-catalog) lines ---
+
+    private static AddShopItemRequest customItem(String name, Long priceCp, String category,
+                                                 Double weight, Double bulk, String damage,
+                                                 String armorClass, String notes) {
+        return new AddShopItemRequest(null, priceCp, name, notes, category, weight, bulk, damage, armorClass);
+    }
+
+    private static ShopItem customLine(Long id, String name, Long priceCp) {
+        ShopItem i = new ShopItem();
+        i.setId(id);
+        i.setShopId(5L);
+        i.setCustomName(name);
+        i.setPriceCp(priceCp);
+        return i;
+    }
+
+    @Test
+    void addItem_custom_savesTheDmsOwnStats_withoutTouchingTheCatalog() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findByShopId(5L)).thenReturn(List.of());
+
+        service.addItem(5L, customItem("  Flametongue ", 500000L, "weapon", 3.0, 2.0,
+                " 1d8 slashing + 2d6 fire ", null, " Requires attunement. Ignites on command. "), dmId);
+
+        ArgumentCaptor<ShopItem> captor = ArgumentCaptor.forClass(ShopItem.class);
+        verify(shopItemRepository).save(captor.capture());
+        ShopItem saved = captor.getValue();
+        assertThat(saved.isCustom()).isTrue();
+        assertThat(saved.getCatalogItemKey()).isNull();
+        assertThat(saved.getCustomName()).isEqualTo("Flametongue");
+        assertThat(saved.getPriceCp()).isEqualTo(500000L);
+        assertThat(saved.getCategory()).isEqualTo("weapon");
+        assertThat(saved.getWeight()).isEqualByComparingTo("3");
+        assertThat(saved.getBulk()).isEqualByComparingTo("2");
+        assertThat(saved.getDamage()).isEqualTo("1d8 slashing + 2d6 fire");
+        assertThat(saved.getCustomNotes()).isEqualTo("Requires attunement. Ignites on command.");
+        verifyNoInteractions(srdItemRepository);
+    }
+
+    @Test
+    void addItem_custom_isFree_whenNoPriceGiven() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findByShopId(5L)).thenReturn(List.of());
+
+        service.addItem(5L, customItem("Lucky Coin", null, null, null, null, null, null, null), dmId);
+
+        ArgumentCaptor<ShopItem> captor = ArgumentCaptor.forClass(ShopItem.class);
+        verify(shopItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getPriceCp()).isZero();
+    }
+
+    @Test
+    void addItem_throws400_whenNeitherOrBothKeyAndName() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+
+        assertThatThrownBy(() -> service.addItem(5L,
+                new AddShopItemRequest(null, null, " ", null, null, null, null, null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.addItem(5L,
+                new AddShopItemRequest("longsword", null, "Longsword", null, null, null, null, null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(shopItemRepository, never()).save(any());
+    }
+
+    @Test
+    void addItem_throws400_whenStatsAreIncoherent() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+
+        // a catalog line takes its stats from the catalog
+        assertThatThrownBy(() -> service.addItem(5L,
+                new AddShopItemRequest("longsword", null, null, null, "weapon", null, null, "2d6", null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        // damage belongs to weapons, a category must be a known one, a price cannot be negative
+        assertThatThrownBy(() -> service.addItem(5L,
+                customItem("Odd Rock", 100L, "gear", null, null, "1d4", null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.addItem(5L,
+                customItem("Odd Rock", 100L, "artifact", null, null, null, null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        assertThatThrownBy(() -> service.addItem(5L,
+                customItem("Odd Rock", -1L, null, null, null, null, null, null), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(shopItemRepository, never()).save(any());
+    }
+
+    @Test
+    void getShop_describesACustomLineLikeACatalogOne() {
+        ShopItem custom = customLine(11L, "Mithral Shirt", 80000L);
+        custom.setCategory("armor");
+        custom.setArmorClass("13 + Dex modifier (max 2)");
+        custom.setWeight(new java.math.BigDecimal("10"));
+        custom.setBulk(new java.math.BigDecimal("2"));
+        custom.setCustomNotes("No Stealth disadvantage.");
+        ShopItem catalog = new ShopItem();
+        catalog.setId(12L);
+        catalog.setShopId(5L);
+        catalog.setCatalogItemKey("longsword");
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findByShopId(5L)).thenReturn(List.of(custom, catalog));
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword")))
+                .thenReturn(List.of(srd("longsword", "Longsword", 1500)));
+
+        CuratedShopView view = service.getShop(5L, dmId);
+
+        assertThat(view.items()).extracting(CuratedShopItemView::name)
+                .containsExactly("Longsword", "Mithral Shirt");
+        CuratedShopItemView shirt = view.items().get(1);
+        assertThat(shirt.custom()).isTrue();
+        assertThat(shirt.catalogItemKey()).isNull();
+        assertThat(shirt.category()).isEqualTo("ARMOR");
+        assertThat(shirt.priceOverrideCp()).isEqualTo(80000L);
+        assertThat(shirt.effectiveCostCp()).isEqualTo(80000L);
+        assertThat(shirt.bulk()).isEqualByComparingTo("2");
+        assertThat(shirt.notes()).isEqualTo("No Stealth disadvantage.");
+        assertThat(shirt.details())
+                .containsEntry("armorClass", "13 + Dex modifier (max 2)")
+                .containsEntry("notes", "No Stealth disadvantage.");
+        assertThat(view.items().get(0).custom()).isFalse();
+    }
+
+    @Test
+    void updateItem_throws400_whenClearingACustomLinesPrice() {
+        when(shopRepository.findById(5L)).thenReturn(Optional.of(shop));
+        when(shopItemRepository.findById(11L)).thenReturn(Optional.of(customLine(11L, "Lucky Coin", 100L)));
+
+        assertThatThrownBy(() -> service.updateItem(5L, 11L, null, dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(shopItemRepository, never()).save(any());
+    }
+
+    @Test
+    void importShop_mixesCatalogAndCustomLines_andAllowsRepeatedCustomNames() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(new Campaign());
+        when(shopRepository.save(any(Shop.class))).thenAnswer(inv -> {
+            Shop s = inv.getArgument(0);
+            s.setId(9L);
+            return s;
+        });
+        when(srdItemRepository.findByItemKeyIn(List.of("longsword")))
+                .thenReturn(List.of(srd("longsword", "Longsword", 1500)));
+
+        service.importShop(1L, new ImportShopRequest("Curios", null, List.of(
+                new ImportShopRequest.Item("longsword", 12.0),
+                new ImportShopRequest.Item(null, 450.0, "Cloak of Protection", "Requires attunement. +1 AC.",
+                        "gear", 1.0, 1.0, null, null),
+                new ImportShopRequest.Item(null, 0.5, "Healing Draught", null, null, null, null, null, null),
+                new ImportShopRequest.Item(null, 0.75, "Healing Draught", null, null, null, null, null, null))),
+                dmId);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ShopItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(shopItemRepository).saveAll(captor.capture());
+        List<ShopItem> saved = captor.getValue();
+        assertThat(saved).hasSize(4);
+        assertThat(saved.get(0).getCatalogItemKey()).isEqualTo("longsword");
+        assertThat(saved.get(0).getPriceCp()).isEqualTo(1200L);
+        assertThat(saved.get(1).isCustom()).isTrue();
+        assertThat(saved.get(1).getCustomName()).isEqualTo("Cloak of Protection");
+        assertThat(saved.get(1).getPriceCp()).isEqualTo(45000L);
+        assertThat(saved.get(1).getCustomNotes()).isEqualTo("Requires attunement. +1 AC.");
+        assertThat(saved.get(1).getBulk()).isEqualByComparingTo("1");
+        assertThat(saved.get(2).getPriceCp()).isEqualTo(50L);
+        assertThat(saved.get(3).getPriceCp()).isEqualTo(75L);
+    }
+
+    @Test
+    void importShop_throws400_andWritesNothing_whenACustomLineIsWrong() {
+        when(campaignService.findByIdForDm(1L, dmId)).thenReturn(new Campaign());
+
+        // no price: a custom item has no catalog price to fall back on
+        assertThatThrownBy(() -> service.importShop(1L, new ImportShopRequest("Curios", null, List.of(
+                new ImportShopRequest.Item(null, null, "Lucky Coin", null, null, null, null, null, null))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400))
+                .hasMessageContaining("Lucky Coin");
+        // both a key and a name
+        assertThatThrownBy(() -> service.importShop(1L, new ImportShopRequest("Curios", null, List.of(
+                new ImportShopRequest.Item("longsword", 1.0, "Longsword", null, null, null, null, null, null))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        // an armor class on something that is not armor
+        assertThatThrownBy(() -> service.importShop(1L, new ImportShopRequest("Curios", null, List.of(
+                new ImportShopRequest.Item(null, 1.0, "Odd Rock", null, "gear", null, null, null, "14"))), dmId))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+        verify(shopRepository, never()).save(any());
+        verify(shopItemRepository, never()).saveAll(any());
     }
 
     // --- importShop (pasted JSON) ---

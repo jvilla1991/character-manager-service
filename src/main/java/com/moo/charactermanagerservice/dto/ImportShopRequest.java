@@ -9,5 +9,17 @@ import java.util.List;
  * the whole import with a 400 listing them.
  */
 public record ImportShopRequest(String name, String settlement, List<Item> items) {
-    public record Item(String key, Double priceGp) {}
+
+    /**
+     * One pasted line: a catalog item ({@code key}, optional {@code priceGp}
+     * override) or a custom item ({@code name}, a required {@code priceGp}, and
+     * its own stats) — exactly one of the two.
+     */
+    public record Item(String key, Double priceGp, String name, String notes, String category,
+                       Double weight, Double bulk, String damage, String armorClass) {
+        /** A catalog line. */
+        public Item(String key, Double priceGp) {
+            this(key, priceGp, null, null, null, null, null, null, null);
+        }
+    }
 }
