@@ -112,6 +112,55 @@ class LevelUpServiceTest {
         assertThat(pc.getProfBonus()).isEqualTo((short) 3);
     }
 
+    // --- the DM's lines on proficiency and initiative ---
+
+    @Test
+    void applyLevelUp_keepsTheDmsProficiencyLines() {
+        PC pc = pc("Fighter", 4, 16, 30, 22); // ->5: table +3
+        pc.setStatAdjustments("{\"prof\":[{\"value\":1,\"label\":\"Blessing\"}]}");
+        service.applyLevelUp(pc);
+
+        assertThat(pc.getProfBonus()).isEqualTo((short) 4);
+        assertThat(pc.getStatAdjustments()).contains("Blessing");
+    }
+
+    @Test
+    void preview_showsTheProficiencyBonusWithTheDmsLines() {
+        PC pc = pc("Fighter", 4, 16, 30, 22);
+        pc.setStatAdjustments("{\"prof\":[{\"value\":1,\"label\":\"Blessing\"}],"
+                + "\"ac\":[{\"value\":1,\"label\":\"Taunka\"}]}");
+        LevelUpPreview p = service.preview(pc);
+
+        assertThat(p.currentProfBonus()).isEqualTo(3);
+        assertThat(p.newProfBonus()).isEqualTo(4);
+    }
+
+    @Test
+    void applyLevelUp_movesInitiativeWithADexterityIncrease() {
+        PC pc = pc("Fighter", 3, 14, 28, 28); // ->4: ASI
+        pc.setAbilityDex((short) 15);
+        pc.setInitiative((short) 5); // +2 Dex, +3 from the DM's lines
+        service.applyLevelUp(pc, null, Map.of("DEX", 1, "CON", 1));
+
+        assertThat(pc.getAbilityDex()).isEqualTo((short) 16);
+        assertThat(pc.getInitiative()).isEqualTo((short) 6);
+    }
+
+    @Test
+    void applyLevelUp_leavesInitiativeAlone_whenTheDexterityModifierStays() {
+        PC pc = pc("Fighter", 3, 14, 28, 28);
+        pc.setAbilityDex((short) 14);
+        pc.setInitiative((short) 2);
+        service.applyLevelUp(pc, null, Map.of("DEX", 1, "CON", 1)); // 14 -> 15, still +2
+
+        assertThat(pc.getInitiative()).isEqualTo((short) 2);
+
+        PC unset = pc("Fighter", 3, 14, 28, 28);
+        unset.setAbilityDex((short) 15);
+        service.applyLevelUp(unset, null, Map.of("DEX", 1, "CON", 1));
+        assertThat(unset.getInitiative()).isNull();
+    }
+
     @Test
     void preview_doesNotMutate() {
         PC pc = pc("Fighter", 4, 16, 30, 22);
