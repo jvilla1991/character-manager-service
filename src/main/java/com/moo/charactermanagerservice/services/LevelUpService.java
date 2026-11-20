@@ -92,8 +92,8 @@ public class LevelUpService {
                 conMod,
                 hpGained,
                 nz(pc.getHpMax()) + hpGained,
-                ClassProgression.proficiencyBonusForLevel(currentLevel),
-                ClassProgression.proficiencyBonusForLevel(newLevel),
+                proficiencyBonus(pc, currentLevel),
+                proficiencyBonus(pc, newLevel),
                 SpellSlotState.storedMax(pc.getSpellSlots()),
                 SpellSlotState.maxFor(pc.getClazz(), newLevel, pc.getStatAdjustments()),
                 subclassDue,
@@ -216,6 +216,7 @@ public class LevelUpService {
         int newLevel = currentLevel + 1;
 
         int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
+        int oldDexMod = ClassProgression.abilityModifier(nz(pc.getAbilityDex()));
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         // A WoW-only subclass (Oath of the Holy) is unlocked by the specialization, so the subclass
@@ -243,7 +244,13 @@ public class LevelUpService {
         pc.setLevel((short) newLevel);
         pc.setHpMax((short) (nz(pc.getHpMax()) + hpGained + retroactiveHp));
         pc.setHpCurrent((short) (nz(pc.getHpCurrent()) + hpGained + retroactiveHp));
-        pc.setProfBonus((short) ClassProgression.proficiencyBonusForLevel(newLevel));
+        pc.setProfBonus((short) proficiencyBonus(pc, newLevel));
+        // A saved initiative moves with the Dexterity modifier, keeping the DM's lines and any
+        // hand-set rest on top of it (the sheet works initiative out the same way).
+        int dexModDelta = ClassProgression.abilityModifier(nz(pc.getAbilityDex())) - oldDexMod;
+        if (pc.getInitiative() != null && dexModDelta != 0) {
+            pc.setInitiative((short) (pc.getInitiative() + dexModDelta));
+        }
 
         // Every character with slots: the class table (full casters, the warlock and the half
         // casters) plus any slots the DM granted.
@@ -254,6 +261,20 @@ public class LevelUpService {
     private int currentLevel(PC pc) {
         return pc.getLevel() == null ? 1 : pc.getLevel();
     }
+
+    /**
+     * The proficiency bonus at a level: the 2024 table plus the lines the DM added to it
+     * ({@code prof} in the stat adjustments, e.g. {@code +1 | Blessing}). The sheet shows the
+     * bonus as those same parts, so a level-up keeps the DM's lines in the total.
+     */
+    static int proficiencyBonus(PC pc, int level) {
+        int lines = StatAdjustmentRules.parse(pc.getStatAdjustments()).getOrDefault(PROF_KEY, List.of())
+                .stream().mapToInt(StatAdjustmentRules.Line::value).sum();
+        return ClassProgression.proficiencyBonusForLevel(level) + lines;
+    }
+
+    /** The stat-adjustment key holding the DM's lines on the proficiency bonus. */
+    static final String PROF_KEY = "prof";
 
     private void assertCanLevelUp(int currentLevel) {
         if (currentLevel >= ClassProgression.MAX_LEVEL) {
