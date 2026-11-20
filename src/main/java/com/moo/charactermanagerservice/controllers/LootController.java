@@ -32,7 +32,8 @@ public class LootController {
 
     /**
      * DM opens a loot pool as an invisible draft (replacing any existing pool).
-     * A {@code lootId} seeds it from that curated loot list's prepped lines.
+     * A {@code lootId} seeds it from that curated loot list's prepped lines;
+     * {@code contents} seeds it from pasted JSON instead.
      */
     @PostMapping("/session/{id}/loot")
     public ResponseEntity<LootView> openLoot(@PathVariable Long id,
@@ -40,7 +41,7 @@ public class LootController {
                                              Authentication authentication) {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(lootService.openLoot(
-                id, request.lootId(), request.name(), user.getUuid()));
+                id, request.lootId(), request.name(), request.contents(), user.getUuid()));
     }
 
     /** DM drops the loot — the party can now see it and split it. */

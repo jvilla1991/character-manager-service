@@ -182,34 +182,9 @@ public class CuratedLootService {
     @Transactional
     public CuratedLootView importLoot(Long lootId, ImportLootRequest request, UUID dmUserId) {
         CuratedLoot loot = requireOwnedLoot(lootId, dmUserId);
-        if (request == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Import payload is required");
-        }
-        if (request.coinGp() != null && request.coinGp() < 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "coinGp must be zero or more");
-        }
-        List<ImportLootRequest.Item> lines = request.items() == null ? List.of() : request.items();
-
         // Validate every line before writing anything.
-        for (ImportLootRequest.Item line : lines) {
-            boolean hasKey = line.key() != null && !line.key().isBlank();
-            boolean hasName = line.name() != null && !line.name().isBlank();
-            if (hasKey == hasName) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Each item needs either a \"key\" or a \"name\" (not both)");
-            }
-            if (line.qty() != null && line.qty() < 1) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "qty must be at least 1");
-            }
-            LootLines.validateAttributes(hasKey, line.category(), line.valueGp(),
-                    line.weight(), line.bulk(), line.damage(), line.armorClass());
-        }
-        List<String> keys = lines.stream()
-                .map(ImportLootRequest.Item::key)
-                .filter(k -> k != null && !k.isBlank())
-                .map(String::trim)
-                .distinct()
-                .toList();
+        List<String> keys = LootLines.validateImport(request);
+        List<ImportLootRequest.Item> lines = request.items() == null ? List.of() : request.items();
         Set<String> known = srdItemRepository.findByItemKeyIn(keys).stream()
                 .map(SrdItem::getItemKey).collect(Collectors.toSet());
         List<String> unknown = keys.stream().filter(k -> !known.contains(k)).toList();
