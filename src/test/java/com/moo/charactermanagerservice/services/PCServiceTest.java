@@ -910,6 +910,137 @@ class PCServiceTest {
         assertThat(result.getExhaustion()).isEqualTo((short) 5);
     }
 
+    // --- conditions and condition immunities (V63) ---
+
+    @Test
+    void updatePC_inACampaign_keepsTheStoredConditions_butTakesTheImmunities() {
+        pc.setCampaignId(7L);
+        pc.setConditions("[\"prone\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setConditions("[\"stunned\"]"); // the red chips are the DM's in a campaign
+        incoming.setConditionImmunities("[\"charmed\"]");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getConditions()).isEqualTo("[\"prone\"]");
+        assertThat(result.getConditionImmunities()).isEqualTo("[\"charmed\"]");
+    }
+
+    @Test
+    void updatePC_inACampaign_dropsAnImmunityToAConditionTheDmPutOn() {
+        pc.setCampaignId(7L);
+        pc.setConditions("[\"poisoned\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setConditions("[]");
+        incoming.setConditionImmunities("[\"poisoned\",\"charmed\"]");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getConditions()).isEqualTo("[\"poisoned\"]");
+        assertThat(result.getConditionImmunities()).isEqualTo("[\"charmed\"]");
+    }
+
+    @Test
+    void updatePC_outsideACampaign_takesBothLists() {
+        pc.setConditions("[\"prone\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setConditions("[\"stunned\"]"); // no DM: the owner keeps both lists
+        incoming.setConditionImmunities("[\"charmed\"]");
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getConditions()).isEqualTo("[\"stunned\"]");
+        assertThat(result.getConditionImmunities()).isEqualTo("[\"charmed\"]");
+    }
+
+    @Test
+    void updatePC_preservesImmunities_whenTheBodyOmitsThem() {
+        pc.setConditionImmunities("[\"charmed\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setName("Renamed"); // conditionImmunities null — a payload built without the field
+
+        PC result = pcService.updatePC(incoming, ownerId);
+
+        assertThat(result.getConditionImmunities()).isEqualTo("[\"charmed\"]");
+    }
+
+    @Test
+    void updatePCAsDm_takesBothLists_andTheConditionWinsOverAnImmunity() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setConditionImmunities("[\"poisoned\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setConditions("[\"poisoned\"]");
+        incoming.setConditionImmunities("[\"poisoned\",\"frightened\"]");
+
+        PC result = pcService.updatePCAsDm(incoming, null, dmId);
+
+        assertThat(result.getConditions()).isEqualTo("[\"poisoned\"]");
+        assertThat(result.getConditionImmunities()).isEqualTo("[\"frightened\"]");
+    }
+
+    @Test
+    void updatePC_anImmunityChangeAlone_bumpsTheLiveSession_withoutALogRow() {
+        pc.setCampaignId(7L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+        CombatSession session = liveSession();
+        seatInLiveSession(session);
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setConditionImmunities("[\"charmed\"]");
+
+        pcService.updatePC(incoming, ownerId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+        verify(combatLogService, never()).logSheetChange(any(), any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    void updatePC_unchangedImmunities_lookUpNoSession() {
+        pc.setCampaignId(7L);
+        pc.setConditionImmunities("[\"charmed\"]");
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(pc));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setCampaignId(7L);
+        incoming.setConditionImmunities("[\"charmed\"]");
+
+        pcService.updatePC(incoming, ownerId);
+
+        verify(sessionRepository, never()).findByCampaignIdAndStatusNot(any(), any());
+    }
+
     // --- V38 server-owned columns (hit dice + inspiration meter) ---
 
     @Test
