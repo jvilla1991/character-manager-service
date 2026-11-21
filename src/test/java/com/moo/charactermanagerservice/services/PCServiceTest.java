@@ -2008,6 +2008,68 @@ class PCServiceTest {
         verify(levelUpService, never()).preview(any());
     }
 
+    // --- portrait version (V62): server-owned, only the portrait endpoints move it ---
+
+    @Test
+    void addPC_neverTakesAPortraitVersionFromTheBody() {
+        pc.setPortraitVersion(99L);
+        when(pcRepository.saveAndFlush(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(pcService.addPC(pc).getPortraitVersion()).isNull();
+    }
+
+    @Test
+    void updatePC_keepsTheStoredPortraitVersion_whateverTheBodySays() {
+        for (Long sent : new Long[]{null, 1L, 999_999L}) {
+            PC existing = new PC();
+            existing.setId(1L);
+            existing.setUserId(ownerId);
+            existing.setPortraitVersion(1700000000000L);
+            when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+            when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            PC incoming = new PC();
+            incoming.setId(1L);
+            incoming.setName("Stale copy");
+            incoming.setPortraitVersion(sent);
+
+            assertThat(pcService.updatePC(incoming, ownerId).getPortraitVersion()).isEqualTo(1700000000000L);
+        }
+    }
+
+    @Test
+    void updatePC_cannotGiveACharacterWithoutAPortraitAVersion() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setPortraitVersion(5L);
+
+        assertThat(pcService.updatePC(incoming, ownerId).getPortraitVersion()).isNull();
+    }
+
+    @Test
+    void updatePCAsDm_keepsTheStoredPortraitVersion_whateverTheBodySays() {
+        PC existing = new PC();
+        existing.setId(1L);
+        existing.setUserId(ownerId);
+        existing.setCampaignId(7L);
+        existing.setPortraitVersion(42L);
+        when(pcRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(campaignOwnedByDm()));
+        when(pcRepository.save(any(PC.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PC incoming = new PC();
+        incoming.setId(1L);
+        incoming.setPortraitVersion(null); // a stale body without the field
+
+        assertThat(pcService.updatePCAsDm(incoming, null, dmId).getPortraitVersion()).isEqualTo(42L);
+    }
+
     // --- deletePC ---
 
     @Test

@@ -16,6 +16,9 @@ public interface PCRepository extends JpaRepository<PC, Long> {
 
     List<PC> findByCampaignId(Long campaignId);
 
+    /** Whether the user owns any character in the campaign — i.e. is one of its players. */
+    boolean existsByCampaignIdAndUserId(Long campaignId, UUID userId);
+
     /**
      * Load a PC under a pessimistic write lock ({@code SELECT ... FOR UPDATE}),
      * for the purchase transaction. Serializes concurrent purchases against the
