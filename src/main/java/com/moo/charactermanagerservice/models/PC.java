@@ -92,6 +92,10 @@ public class PC implements Serializable {
     private String alignment;
     private String portraitTint;
     private String portraitInitials;
+    // Uploaded portrait's cache key (V62): null = no portrait. Server-owned — only the
+    // portrait endpoints (PcPortraitService) change it; generic update bodies never do
+    // (PCService.preserveServerOwnedColumns). The image itself lives in pc_portrait.
+    private Long portraitVersion;
 
     // --- Ability scores (decomposed from frontend stats object) ---
     @NotNull(groups = OnCreate.class, message = "Strength score is required")
@@ -257,6 +261,7 @@ public class PC implements Serializable {
     public void setAlignment(String alignment) { this.alignment = alignment; }
     public void setPortraitTint(String portraitTint) { this.portraitTint = portraitTint; }
     public void setPortraitInitials(String portraitInitials) { this.portraitInitials = portraitInitials; }
+    public void setPortraitVersion(Long portraitVersion) { this.portraitVersion = portraitVersion; }
 
     public void setAbilityStr(Short abilityStr) { this.abilityStr = abilityStr; }
     public void setAbilityDex(Short abilityDex) { this.abilityDex = abilityDex; }

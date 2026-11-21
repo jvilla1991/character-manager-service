@@ -29,6 +29,7 @@ public record ParticipantView(
         Short level,
         String portraitTint,
         String portraitInitials,
+        Long portraitVersion,
         Short initiative,
         boolean initRolled,
         Short orderIndex,
@@ -61,7 +62,7 @@ public record ParticipantView(
             // same `ac` field a PC row uses, so the tracker renders one thing.
             return new ParticipantView(
                     p.getId(), null, true, ownedByMe, currentTurn,
-                    p.getDisplayName(), null, null, null, null,
+                    p.getDisplayName(), null, null, null, null, null,
                     p.getInitiative(), rolled, p.getOrderIndex(),
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), p.getNpcArmorClass(),
                     p.getNpcConditions(), null, null,
@@ -74,7 +75,7 @@ public record ParticipantView(
         return new ParticipantView(
                 p.getId(), pc.getId(), false, ownedByMe, currentTurn,
                 pc.getName(), pc.getClazz(), pc.getLevel(),
-                pc.getPortraitTint(), pc.getPortraitInitials(),
+                pc.getPortraitTint(), pc.getPortraitInitials(), pc.getPortraitVersion(),
                 p.getInitiative(), rolled, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
                 pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
@@ -93,7 +94,7 @@ public record ParticipantView(
     public ParticipantView withoutHp() {
         return new ParticipantView(
                 participantId, pcId, npc, ownedByMe, currentTurn,
-                name, clazz, level, portraitTint, portraitInitials,
+                name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 null, null, null, ac,
                 conditions, survival, spellSlots,
@@ -112,7 +113,7 @@ public record ParticipantView(
     public ParticipantView withoutAc() {
         return new ParticipantView(
                 participantId, pcId, npc, ownedByMe, currentTurn,
-                name, clazz, level, portraitTint, portraitInitials,
+                name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 hpMax, hpCurrent, hpTemp, null,
                 conditions, survival, spellSlots,
@@ -126,7 +127,7 @@ public record ParticipantView(
     public ParticipantView withFollowers(List<FollowerCombatantView> followers) {
         return new ParticipantView(
                 participantId, pcId, npc, ownedByMe, currentTurn,
-                name, clazz, level, portraitTint, portraitInitials,
+                name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 hpMax, hpCurrent, hpTemp, ac,
                 conditions, survival, spellSlots,
