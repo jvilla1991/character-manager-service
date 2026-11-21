@@ -173,6 +173,13 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String conditions;
 
+    // Conditions the character is immune to (V63), same JSON-array shape as
+    // conditions: ["poisoned"]. NULL = none. A body carrying null keeps the
+    // stored list, and an immunity whose condition is active is dropped
+    // (see PCService, ConditionRules).
+    @Column(columnDefinition = "TEXT")
+    private String conditionImmunities;
+
     @Column(columnDefinition = "TEXT")
     private String coins;
 
@@ -287,6 +294,7 @@ public class PC implements Serializable {
     public void setSaves(String saves) { this.saves = saves; }
     public void setSkills(String skills) { this.skills = skills; }
     public void setConditions(String conditions) { this.conditions = conditions; }
+    public void setConditionImmunities(String conditionImmunities) { this.conditionImmunities = conditionImmunities; }
     public void setCoins(String coins) { this.coins = coins; }
     public void setWeapons(String weapons) { this.weapons = weapons; }
     public void setGear(String gear) { this.gear = gear; }
