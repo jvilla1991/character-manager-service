@@ -7,9 +7,9 @@ import java.util.List;
 
 /**
  * One combatant as seen in the live session snapshot. Field names are flat and
- * mirror the PC JSON (hpCurrent/hpMax/hpTemp, conditions as a JSON string) so the
- * frontend's existing deserialize seam can read them — same convention as
- * {@link CampaignMemberView}.
+ * mirror the PC JSON (hpCurrent/hpMax/hpTemp, conditions and conditionImmunities as
+ * JSON strings) so the frontend's existing deserialize seam can read them — same
+ * convention as {@link CampaignMemberView}. An NPC row carries no immunities (null).
  *
  * <p>For a PC combatant, HP/conditions are read from the canonical {@code pc}
  * row; for an NPC they come from the participant's own {@code npc*} columns.
@@ -38,6 +38,7 @@ public record ParticipantView(
         Short hpTemp,
         Short ac,
         String conditions,
+        String conditionImmunities,
         String survival,
         String spellSlots,
         Short deathSaveSuccesses,
@@ -65,7 +66,7 @@ public record ParticipantView(
                     p.getDisplayName(), null, null, null, null, null,
                     p.getInitiative(), rolled, p.getOrderIndex(),
                     p.getNpcHpMax(), p.getNpcHpCurrent(), p.getNpcHpTemp(), p.getNpcArmorClass(),
-                    p.getNpcConditions(), null, null,
+                    p.getNpcConditions(), null, null, null,
                     p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
                     null, null, null,
                     List.of()
@@ -78,7 +79,7 @@ public record ParticipantView(
                 pc.getPortraitTint(), pc.getPortraitInitials(), pc.getPortraitVersion(),
                 p.getInitiative(), rolled, p.getOrderIndex(),
                 pc.getHpMax(), pc.getHpCurrent(), pc.getHpTemp(), pc.getAc(),
-                pc.getConditions(), pc.getSurvival(), pc.getSpellSlots(),
+                pc.getConditions(), pc.getConditionImmunities(), pc.getSurvival(), pc.getSpellSlots(),
                 p.getDeathSaveSuccesses(), p.getDeathSaveFailures(),
                 pc.getHitDiceUsed(), pc.getInspirationPips(), pc.getHeroicInspiration(),
                 List.of()
@@ -97,7 +98,7 @@ public record ParticipantView(
                 name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 null, null, null, ac,
-                conditions, survival, spellSlots,
+                conditions, conditionImmunities, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures,
                 hitDiceUsed, inspirationPips, heroicInspiration,
                 followers
@@ -116,7 +117,7 @@ public record ParticipantView(
                 name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 hpMax, hpCurrent, hpTemp, null,
-                conditions, survival, spellSlots,
+                conditions, conditionImmunities, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures,
                 hitDiceUsed, inspirationPips, heroicInspiration,
                 followers
@@ -130,7 +131,7 @@ public record ParticipantView(
                 name, clazz, level, portraitTint, portraitInitials, portraitVersion,
                 initiative, initRolled, orderIndex,
                 hpMax, hpCurrent, hpTemp, ac,
-                conditions, survival, spellSlots,
+                conditions, conditionImmunities, survival, spellSlots,
                 deathSaveSuccesses, deathSaveFailures,
                 hitDiceUsed, inspirationPips, heroicInspiration,
                 followers == null ? List.of() : List.copyOf(followers)

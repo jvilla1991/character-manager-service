@@ -76,6 +76,8 @@ public class PCService {
         pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         // After the level and the adjustment lines: both decide how many slots there are.
         pc.setSpellSlots(SpellSlotState.normalize(pc, null, true));
+        pc.setConditionImmunities(
+                ConditionRules.normalizeImmunitiesJson(pc.getConditionImmunities(), pc.getConditions()));
         return pcRepository.saveAndFlush(pc);
     }
 
@@ -106,6 +108,7 @@ public class PCService {
         assertOwnership(existing, userId);
         // Read BEFORE save(): inside the transaction save() merges the body onto `existing`.
         CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
+        String immunitiesBefore = existing.getConditionImmunities();
         preserveServerOwnedColumns(pc, existing);
         // In a campaign the exhaustion level is the DM's to set (updatePCAsDm):
         // an owner's update keeps the stored level whatever the body says. A
@@ -120,9 +123,16 @@ public class PCService {
             // under AC): in a campaign they are the DM's, so the owner's body
             // never changes them.
             pc.setStatAdjustments(existing.getStatAdjustments());
+            // And for the conditions themselves (the red chips): in a campaign the
+            // DM puts them on and takes them off. The player marks only what the
+            // character is immune to (the green chips), which is taken below.
+            pc.setConditions(existing.getConditions());
         } else {
             pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         }
+        // Against the conditions just settled: an immunity to an active condition is dropped.
+        pc.setConditionImmunities(
+                ConditionRules.normalizeImmunitiesJson(pc.getConditionImmunities(), pc.getConditions()));
         // Spell slots, once the adjustment lines above are settled (the slot bonus lines
         // are among them). The maximum is never the body's. In a campaign neither is the
         // used count: a player spends a slot only by casting in a live session, and only a
@@ -133,7 +143,7 @@ public class PCService {
         HeroClassRules.assertOwnerMayChangeSpecialization(existing, pc);
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         PC saved = pcRepository.save(pc);
-        logSheetVitals(saved, vitalsBefore, false, userId);
+        logSheetVitals(saved, vitalsBefore, immunitiesBefore, false, userId);
         return saved;
     }
 
@@ -221,6 +231,12 @@ public class PCService {
         if (incoming.getStatAdjustments() == null) {
             incoming.setStatAdjustments(existing.getStatAdjustments());
         }
+        // Condition immunities (V63) follow the same rule: a body carrying NULL keeps the
+        // stored list; an empty array clears it. The callers then clean it against the
+        // conditions they settle on (ConditionRules).
+        if (incoming.getConditionImmunities() == null) {
+            incoming.setConditionImmunities(existing.getConditionImmunities());
+        }
         incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
         incoming.setPortraitVersion(existing.getPortraitVersion());
         incoming.setHitDiceUsed(existing.getHitDiceUsed());
@@ -271,9 +287,14 @@ public class PCService {
         assertCampaignDm(existing, dmUserId);
         PC before = snapshot(existing); // taken BEFORE save() clobbers `existing`
         CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
+        String immunitiesBefore = existing.getConditionImmunities();
         incoming.setUserId(existing.getUserId());
         incoming.setCampaignId(existing.getCampaignId());
         preserveServerOwnedColumns(incoming, existing);
+        // The DM sets both the conditions and the immunities; a condition the DM
+        // puts on the character wins over an immunity to it.
+        incoming.setConditionImmunities(ConditionRules.normalizeImmunitiesJson(
+                incoming.getConditionImmunities(), incoming.getConditions()));
         HeroClassRules.validate(incoming);
         incoming.setCoins(CoinPurse.normalizeJson(incoming.getCoins()));
         incoming.setStatAdjustments(StatAdjustmentRules.normalizeJson(incoming.getStatAdjustments()));
@@ -282,7 +303,7 @@ public class PCService {
         incoming.setSpellSlots(SpellSlotState.normalize(incoming, existing, true));
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
-        logSheetVitals(saved, vitalsBefore, true, dmUserId);
+        logSheetVitals(saved, vitalsBefore, immunitiesBefore, true, dmUserId);
         return saved;
     }
 
@@ -293,14 +314,23 @@ public class PCService {
      * change made on the sheet at once instead of at the next unrelated poll
      * wake-up. A save that changed none of those costs no query, and a
      * character seated nowhere gets no row.
+     *
+     * <p>A change to the condition immunities alone bumps the version too, so
+     * the green chip reaches the other side of the table, but writes no log
+     * row: being immune is not something that happened in the fight.
      */
-    private void logSheetVitals(PC saved, CombatLogService.Vitals before, boolean byDm, UUID actorUserId) {
+    private void logSheetVitals(PC saved, CombatLogService.Vitals before, String immunitiesBefore,
+                                boolean byDm, UUID actorUserId) {
         CombatLogService.Vitals after = combatLogService.vitalsOf(saved);
-        if (!combatLogService.differ(before, after)) {
+        boolean vitalsChanged = combatLogService.differ(before, after);
+        boolean immunitiesChanged = !ConditionRules.sameNames(immunitiesBefore, saved.getConditionImmunities());
+        if (!vitalsChanged && !immunitiesChanged) {
             return;
         }
         liveSessionFor(saved).ifPresent(session -> {
-            combatLogService.logSheetChange(session, saved.getName(), before, after, byDm, actorUserId);
+            if (vitalsChanged) {
+                combatLogService.logSheetChange(session, saved.getName(), before, after, byDm, actorUserId);
+            }
             session.bumpVersion();
             sessionRepository.save(session);
         });
