@@ -69,6 +69,7 @@ public class PCService {
         // subclass and must be one of that subclass's values.
         HeroClassRules.validate(pc);
         pc.setLevel((short) 1);
+        pc.setPortraitVersion(null); // a new character has no portrait; only the portrait endpoints set it
         pc.setRuneWeapon(LongRestRules.normalizeRuneWeapon(pc, null));
         pc.setClassResources(ClassResourceState.normalize(pc, null));
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
@@ -155,6 +156,10 @@ public class PCService {
      * endpoint sets it and only an applied level-up clears it, so a generic
      * update body (even one echoing a stale value) never changes it.
      *
+     * <p>The portrait version (V62) is fully server-owned as well: only the portrait
+     * endpoints ({@link PcPortraitService}) set or clear it, so a client PUTting a stale copy
+     * of the sheet can neither point at an image that is gone nor drop one that exists.
+     *
      * <p>Hit dice and the inspiration meter (V38) are fully server-owned too:
      * only the session short-rest/long-rest endpoints move {@code hitDiceUsed},
      * and only the inspiration endpoints move {@code inspirationPips} /
@@ -217,6 +222,7 @@ public class PCService {
             incoming.setStatAdjustments(existing.getStatAdjustments());
         }
         incoming.setPendingLevelGrant(existing.getPendingLevelGrant());
+        incoming.setPortraitVersion(existing.getPortraitVersion());
         incoming.setHitDiceUsed(existing.getHitDiceUsed());
         incoming.setInspirationPips(existing.getInspirationPips());
         incoming.setHeroicInspiration(existing.getHeroicInspiration());
