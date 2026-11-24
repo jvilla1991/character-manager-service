@@ -15,6 +15,8 @@ import java.util.List;
 /**
  * A character's followers (V43). The campaign's DM grants and dismisses them;
  * the owning player and that DM read the list and update a follower's sheet.
+ * A summon or a familiar (V64 {@code kind}) is the player's own: the owning
+ * player, or that DM, creates and dismisses it.
  */
 @RestController
 @RequestMapping("/api/v1/pc/{pcId}/followers")
@@ -31,7 +33,11 @@ public class PcFollowerController {
         return ResponseEntity.ok(followerService.followersFor(pcId, user.getUuid()));
     }
 
-    /** The campaign's DM grants this character a follower (name + stat block). */
+    /**
+     * Create a follower (name + stat block + optional kind). The campaign's DM
+     * grants one (kind DM_GRANT, the default); the owning player or that DM adds
+     * a SUMMON or a FAMILIAR.
+     */
     @PostMapping
     public ResponseEntity<FollowerView> grantFollower(@PathVariable Long pcId,
                                                       Authentication authentication,
@@ -51,7 +57,10 @@ public class PcFollowerController {
         return ResponseEntity.ok(followerService.update(pcId, followerId, request, user.getUuid()));
     }
 
-    /** The campaign's DM dismisses (permanently removes) a follower. */
+    /**
+     * Dismiss (permanently remove) a follower: the campaign's DM any of them,
+     * the owning player only their own SUMMON or FAMILIAR.
+     */
     @DeleteMapping("/{followerId}")
     public ResponseEntity<Void> dismissFollower(@PathVariable Long pcId,
                                                 @PathVariable Long followerId,
