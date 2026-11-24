@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FollowerRequest;
 import com.moo.charactermanagerservice.dto.FollowerView;
+import com.moo.charactermanagerservice.models.FollowerKind;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcFollower;
@@ -280,10 +281,294 @@ class PcFollowerServiceTest {
     }
 
     @Test
-    void dismiss_isDmOnly_evenTheOwnerIsRefused() {
+    void dismiss_ofADmGrant_isDmOnly_evenTheOwnerIsRefused() {
+        // The follower's kind decides, so the row is read first: a grant is the DM's.
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(stored(5L, 1L, "Brannoc")));
+
         assertThatThrownBy(() -> followerService.dismiss(1L, 5L, ownerId))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(followerRepository, never()).delete(any());
+    }
+
+    // --- kinds (V64): summons and familiars are the player's own ---
+
+    private PcFollower stored(long id, String name, FollowerKind kind) {
+        PcFollower follower = stored(id, 1L, name);
+        follower.setKind(kind);
+        return follower;
+    }
+
+    private static FollowerRequest request(String name, String kind) {
+        return new FollowerRequest(name, statBlock(), kind);
+    }
+
+    @Test
+    void aRequestBodyWithoutAKind_stillReads_andOneWithAKindCarriesIt() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+
+        FollowerRequest old = mapper.readValue("{\"name\":\"Brannoc\",\"statBlock\":{\"ac\":16}}",
+                FollowerRequest.class);
+        assertThat(old.kind()).isNull();
+        assertThat(old.statBlock()).containsEntry("ac", 16);
+
+        FollowerRequest withKind = mapper.readValue(
+                "{\"name\":\"Thorn\",\"statBlock\":{},\"kind\":\"SUMMON\"}", FollowerRequest.class);
+        assertThat(withKind.kind()).isEqualTo("SUMMON");
+    }
+
+    @Test
+    void summon_byTheOwner_ofACharacterInNoCampaign_isSaved_andLoggedAsThePlayersOwn() {
+        pc.setCampaignId(null);
+        when(followerRepository.countByPcId(1L)).thenReturn(0L);
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        FollowerView view = followerService.grant(1L, request(" Thorn ", "SUMMON"), ownerId);
+
+        ArgumentCaptor<PcFollower> saved = ArgumentCaptor.forClass(PcFollower.class);
+        verify(followerRepository).save(saved.capture());
+        assertThat(saved.getValue().getKind()).isEqualTo(FollowerKind.SUMMON);
+        assertThat(saved.getValue().getName()).isEqualTo("Thorn");
+        assertThat(saved.getValue().getGrantedByUserId()).isEqualTo(ownerId);
+        assertThat(view.kind()).isEqualTo("SUMMON");
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER, "Summoned a follower: Thorn", ownerId);
+        verify(activityLogService, never()).log(any(), eq(PcActivityType.DM_EDIT), any(), any());
+        verify(pcService).bumpLiveSessionVersion(pc);
+    }
+
+    @Test
+    void summonAndFamiliar_byTheOwner_ofACampaignCharacter_areAllowed() {
+        when(followerRepository.countByPcId(1L)).thenReturn(0L);
+        when(followerRepository.findByPcIdAndKind(1L, FollowerKind.FAMILIAR)).thenReturn(List.of());
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(followerService.grant(1L, request("Thorn", "SUMMON"), ownerId).kind()).isEqualTo("SUMMON");
+        assertThat(followerService.grant(1L, request("Pip", "FAMILIAR"), ownerId).kind()).isEqualTo("FAMILIAR");
+
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER, "Summoned a follower: Thorn", ownerId);
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER, "Summoned a familiar: Pip", ownerId);
+        verify(pcService, times(2)).bumpLiveSessionVersion(pc);
+    }
+
+    @Test
+    void summonAndFamiliar_byTheCampaignDm_areAllowed_andLoggedAsDmEdits() {
+        when(followerRepository.countByPcId(1L)).thenReturn(0L);
+        when(followerRepository.findByPcIdAndKind(1L, FollowerKind.FAMILIAR)).thenReturn(List.of());
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(followerService.grant(1L, request("Thorn", "SUMMON"), dmId).kind()).isEqualTo("SUMMON");
+        assertThat(followerService.grant(1L, request("Pip", "FAMILIAR"), dmId).kind()).isEqualTo("FAMILIAR");
+
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM summoned a follower: Thorn", dmId);
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM summoned a familiar: Pip", dmId);
+        verify(activityLogService, never()).log(any(), eq(PcActivityType.FOLLOWER), any(), any());
+    }
+
+    @Test
+    void summonAndFamiliar_areRefusedToStrangers() {
+        for (String kind : List.of("SUMMON", "FAMILIAR")) {
+            assertThatThrownBy(() -> followerService.grant(1L, request("Thorn", kind), strangerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        }
+        verify(followerRepository, never()).save(any());
+        verify(followerRepository, never()).deleteAll(any());
+        verify(pcService, never()).bumpLiveSessionVersion(any());
+    }
+
+    @Test
+    void aNewFamiliar_replacesTheCurrentOne_andTheLogNamesBoth() {
+        PcFollower old = stored(4L, "Old Pip", FollowerKind.FAMILIAR);
+        when(followerRepository.findByPcIdAndKind(1L, FollowerKind.FAMILIAR)).thenReturn(List.of(old));
+        when(followerRepository.countByPcId(1L)).thenReturn(3L);
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        FollowerView view = followerService.grant(1L, request("Pip", "FAMILIAR"), ownerId);
+
+        verify(followerRepository).deleteAll(List.of(old));
+        assertThat(view.kind()).isEqualTo("FAMILIAR");
+        assertThat(view.name()).isEqualTo("Pip");
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER,
+                "Summoned a familiar: Pip (replaces Old Pip)", ownerId);
+    }
+
+    @Test
+    void aSummon_leavesTheFamiliarAlone() {
+        when(followerRepository.countByPcId(1L)).thenReturn(1L);
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        followerService.grant(1L, request("Thorn", "SUMMON"), ownerId);
+
+        verify(followerRepository, never()).findByPcIdAndKind(any(), any());
+        verify(followerRepository, never()).deleteAll(any());
+    }
+
+    @Test
+    void theCap_appliesToEveryKind_butAReplacedFamiliarDoesNotCount() {
+        when(followerRepository.countByPcId(1L)).thenReturn((long) PcFollowerService.MAX_FOLLOWERS_PER_PC);
+
+        // Full, and nothing to replace: a summon and a first familiar are both refused.
+        when(followerRepository.findByPcIdAndKind(1L, FollowerKind.FAMILIAR)).thenReturn(List.of());
+        assertThatThrownBy(() -> followerService.grant(1L, request("Thorn", "SUMMON"), ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        assertThatThrownBy(() -> followerService.grant(1L, request("Pip", "FAMILIAR"), ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(409));
+        verify(followerRepository, never()).save(any());
+        verify(followerRepository, never()).deleteAll(any());
+
+        // Full, but one of the twenty is the familiar being replaced: allowed.
+        PcFollower old = stored(4L, "Old Pip", FollowerKind.FAMILIAR);
+        when(followerRepository.findByPcIdAndKind(1L, FollowerKind.FAMILIAR)).thenReturn(List.of(old));
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(followerService.grant(1L, request("Pip", "FAMILIAR"), ownerId).kind()).isEqualTo("FAMILIAR");
+        verify(followerRepository).deleteAll(List.of(old));
+    }
+
+    @Test
+    void grant_rejectsCompanionAndUnknownKinds_withAReadableMessage() {
+        for (String kind : List.of("COMPANION", "PET", "summon")) {
+            for (UUID caller : List.of(ownerId, dmId)) {
+                assertThatThrownBy(() -> followerService.grant(1L, request("Thorn", kind), caller))
+                        .isInstanceOf(ResponseStatusException.class)
+                        .satisfies(e -> {
+                            assertThat(status(e)).isEqualTo(400);
+                            assertThat(((ResponseStatusException) e).getReason())
+                                    .isEqualTo("Follower kind must be DM_GRANT, SUMMON or FAMILIAR");
+                        });
+            }
+        }
+        verify(followerRepository, never()).save(any());
+        verify(pcService, never()).bumpLiveSessionVersion(any());
+    }
+
+    @Test
+    void dmGrant_namedOrLeftOut_keepsItsRules_dmOnly_andTheViewSaysDmGrant() {
+        when(followerRepository.countByPcId(1L)).thenReturn(0L);
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(followerService.grant(1L, request("Brannoc", "DM_GRANT"), dmId).kind()).isEqualTo("DM_GRANT");
+        assertThat(followerService.grant(1L, request("Brannoc", null), dmId).kind()).isEqualTo("DM_GRANT");
+        assertThat(followerService.grant(1L, request("Brannoc", "  "), dmId).kind()).isEqualTo("DM_GRANT");
+        verify(activityLogService, times(3))
+                .log(1L, PcActivityType.DM_EDIT, "DM granted a follower: Brannoc", dmId);
+        verify(followerRepository, never()).findByPcIdAndKind(any(), any());
+
+        for (UUID caller : List.of(ownerId, strangerId)) {
+            assertThatThrownBy(() -> followerService.grant(1L, request("Brannoc", "DM_GRANT"), caller))
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        }
+        verify(followerRepository, times(3)).save(any());
+    }
+
+    @Test
+    void followersFor_carriesEachFollowersKind() {
+        when(followerRepository.findByPcIdOrderByCreatedAtAscIdAsc(1L)).thenReturn(List.of(
+                stored(5L, 1L, "Brannoc"),
+                stored(6L, "Thorn", FollowerKind.SUMMON),
+                stored(7L, "Pip", FollowerKind.FAMILIAR),
+                stored(8L, "Fang", FollowerKind.COMPANION)));
+
+        assertThat(followerService.followersFor(1L, ownerId)).extracting(FollowerView::kind)
+                .containsExactly("DM_GRANT", "SUMMON", "FAMILIAR", "COMPANION");
+    }
+
+    @Test
+    void update_neverChangesTheKind_whateverTheBodySays() {
+        PcFollower follower = stored(6L, "Thorn", FollowerKind.SUMMON);
+        when(followerRepository.findById(6L)).thenReturn(Optional.of(follower));
+        when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        FollowerView view = followerService.update(1L, 6L,
+                new FollowerRequest("Thorn", Map.of("ac", 18), "FAMILIAR"), ownerId);
+
+        assertThat(view.kind()).isEqualTo("SUMMON");
+        assertThat(follower.getKind()).isEqualTo(FollowerKind.SUMMON);
+    }
+
+    @Test
+    void dismiss_byTheOwner_removesTheirOwnSummonOrFamiliar_andLogsItAsThePlayersOwn() {
+        PcFollower summon = stored(6L, "Thorn", FollowerKind.SUMMON);
+        PcFollower familiar = stored(7L, "Pip", FollowerKind.FAMILIAR);
+        when(followerRepository.findById(6L)).thenReturn(Optional.of(summon));
+        when(followerRepository.findById(7L)).thenReturn(Optional.of(familiar));
+
+        followerService.dismiss(1L, 6L, ownerId);
+        followerService.dismiss(1L, 7L, ownerId);
+
+        verify(followerRepository).delete(summon);
+        verify(followerRepository).delete(familiar);
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER, "Dismissed the follower Thorn", ownerId);
+        verify(activityLogService).log(1L, PcActivityType.FOLLOWER, "Dismissed the familiar Pip", ownerId);
+        verify(activityLogService, never()).log(any(), eq(PcActivityType.DM_EDIT), any(), any());
+        verify(pcService, times(2)).bumpLiveSessionVersion(pc);
+    }
+
+    @Test
+    void dismiss_byTheOwner_worksForACharacterInNoCampaign() {
+        pc.setCampaignId(null);
+        PcFollower familiar = stored(7L, "Pip", FollowerKind.FAMILIAR);
+        when(followerRepository.findById(7L)).thenReturn(Optional.of(familiar));
+
+        followerService.dismiss(1L, 7L, ownerId);
+
+        verify(followerRepository).delete(familiar);
+    }
+
+    @Test
+    void dismiss_byTheOwner_isRefusedForADmGrantAndACompanion() {
+        when(followerRepository.findById(5L)).thenReturn(Optional.of(stored(5L, "Brannoc", FollowerKind.DM_GRANT)));
+        when(followerRepository.findById(8L)).thenReturn(Optional.of(stored(8L, "Fang", FollowerKind.COMPANION)));
+
+        for (long id : List.of(5L, 8L)) {
+            assertThatThrownBy(() -> followerService.dismiss(1L, id, ownerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        }
+        verify(followerRepository, never()).delete(any());
+        verify(pcService, never()).bumpLiveSessionVersion(any());
+    }
+
+    @Test
+    void dismiss_byTheCampaignDm_removesEveryKind_asADmEdit() {
+        List<PcFollower> all = List.of(
+                stored(5L, "Brannoc", FollowerKind.DM_GRANT),
+                stored(6L, "Thorn", FollowerKind.SUMMON),
+                stored(7L, "Pip", FollowerKind.FAMILIAR),
+                stored(8L, "Fang", FollowerKind.COMPANION));
+        for (PcFollower follower : all) {
+            when(followerRepository.findById(follower.getId())).thenReturn(Optional.of(follower));
+            followerService.dismiss(1L, follower.getId(), dmId);
+            verify(followerRepository).delete(follower);
+        }
+
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Brannoc", dmId);
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Thorn", dmId);
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the familiar Pip", dmId);
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Fang", dmId);
+        verify(activityLogService, never()).log(any(), eq(PcActivityType.FOLLOWER), any(), any());
+    }
+
+    @Test
+    void dismiss_isRefusedToStrangers_whateverTheKind() {
+        for (long id : List.of(5L, 6L, 7L, 8L)) {
+            assertThatThrownBy(() -> followerService.dismiss(1L, id, strangerId))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        }
+        // Refused before the follower is even looked up.
+        verify(followerRepository, never()).findById(any());
+        verify(followerRepository, never()).delete(any());
+    }
+
+    @Test
+    void dismiss_404sForASummonOfAnotherCharacter() {
+        PcFollower elsewhere = stored(9L, 2L, "Someone else's");
+        elsewhere.setKind(FollowerKind.SUMMON);
+        when(followerRepository.findById(9L)).thenReturn(Optional.of(elsewhere));
+
+        assertThatThrownBy(() -> followerService.dismiss(1L, 9L, ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(404));
         verify(followerRepository, never()).delete(any());
     }
 

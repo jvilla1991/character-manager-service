@@ -8,10 +8,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A follower the campaign's DM granted to a character (V43): a named companion
- * with its own stat block. {@code statBlock} is an opaque JSON object in the
- * client's sheet shape — stored and returned verbatim, never interpreted here.
- * Only the DM grants or dismisses; the owning player and the DM may update it.
+ * A character's follower (V43): a named companion with its own stat block.
+ * {@code statBlock} is an opaque JSON object in the client's sheet shape —
+ * stored and returned verbatim, never interpreted here. {@code kind} (V64)
+ * says what it is and so who creates and dismisses it (see
+ * {@link FollowerKind}); the owning player and the DM may both update it.
  * Mirrors {@link PcNote}'s conventions.
  */
 @Getter
@@ -34,6 +35,11 @@ public class PcFollower implements Serializable {
 
     private UUID grantedByUserId;
 
+    // Set when the follower is created and never changed afterwards (V64).
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", columnDefinition = "TEXT")
+    private FollowerKind kind = FollowerKind.DM_GRANT;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -49,4 +55,5 @@ public class PcFollower implements Serializable {
     public void setName(String name) { this.name = name; }
     public void setStatBlock(String statBlock) { this.statBlock = statBlock; }
     public void setGrantedByUserId(UUID grantedByUserId) { this.grantedByUserId = grantedByUserId; }
+    public void setKind(FollowerKind kind) { this.kind = kind; }
 }

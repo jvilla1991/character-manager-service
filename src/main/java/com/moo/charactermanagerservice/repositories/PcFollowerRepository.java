@@ -16,6 +16,9 @@ public interface PcFollowerRepository extends JpaRepository<PcFollower, Long> {
 
     long countByPcId(Long pcId);
 
+    /** A character's followers of one kind — its familiar, when asked for FAMILIAR. */
+    List<PcFollower> findByPcIdAndKind(Long pcId, com.moo.charactermanagerservice.models.FollowerKind kind);
+
     /** Every follower of the given characters in one query, oldest (lowest id) first. */
     List<PcFollower> findByPcIdInOrderByIdAsc(java.util.Collection<Long> pcIds);
 }

@@ -11,5 +11,7 @@ public enum PcActivityType {
     SHORT_REST,
     INSPIRATION,
     DM_EDIT,
-    SPELL_SLOT
+    SPELL_SLOT,
+    /** The player summoned or dismissed a follower of their own (a summon or a familiar). */
+    FOLLOWER
 }
