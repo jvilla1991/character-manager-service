@@ -1,6 +1,7 @@
 package com.moo.charactermanagerservice.progression;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -26,6 +27,14 @@ import java.util.function.BiPredicate;
  *   <li><b>Epic Boon feats</b> — offered only at level 19+.</li>
  * </ul>
  *
+ * <p>The Arcana Unleashed book adds fifteen General feats, one Fighting Style feat
+ * ({@value #ARCANE_WARRIOR}) and three Epic Boons, with three more kinds of prerequisite: the
+ * Spellcasting or Pact Magic feature ({@link ClassProgression#hasSpellcastingOrPactMagic}), the
+ * {@value #FAMILIAR_FRIEND} feat, and a {@value #MAGIC_INITIATE} feat. Those need the feats the
+ * character already has, so they are checked through a {@link Candidate}. An Arcana Unleashed
+ * feat is taken once; {@value #SCHOOL_MASTERY} is taken once per school of magic and is listed
+ * (and stored) per school: {@code "Boon of Magic School Mastery (Evocation)"}.
+ *
  * <p>Origin feats (Alert, Tough, Lucky, Magic Initiate, …) are deliberately excluded: those are
  * granted at level 1 by a background, not chosen at an ASI level.
  *
@@ -33,8 +42,9 @@ import java.util.function.BiPredicate;
  * Fighting Style level (Paladin and Ranger at 2; a Fighter's is at level 1, i.e. creation): the
  * Fighting Style feats, plus the cantrip Fighting Styles the character qualifies for
  * ({@value #BLESSED_WARRIOR} for paladins, {@value #DRUIDIC_WARRIOR} for rangers,
- * {@value #VOID_WARRIOR} for a Demon Hunter ranger only). Cantrip Fighting Styles are never
- * selectable as feats at an ASI level.
+ * {@value #VOID_WARRIOR} for a Demon Hunter ranger only). Those three are never selectable as
+ * feats at an ASI level; {@value #ARCANE_WARRIOR} teaches cantrips too but is a Fighting Style
+ * feat, so it is offered in both places.
  */
 public final class FeatCatalog {
 
@@ -142,6 +152,137 @@ public final class FeatCatalog {
             "STR", "Strength", "DEX", "Dexterity", "CON", "Constitution",
             "INT", "Intelligence", "WIS", "Wisdom", "CHA", "Charisma");
 
+    // ── Arcana Unleashed ─────────────────────────────────────────────────────────
+
+    /** The Origin feat the four familiar General feats build on. */
+    public static final String FAMILIAR_FRIEND = "Familiar Friend";
+
+    /** How every Magic Initiate feat name starts ({@code "Magic Initiate (Cleric)"}). */
+    public static final String MAGIC_INITIATE = "Magic Initiate";
+
+    /** The Fighting Style feat that teaches two Wizard cantrips. */
+    public static final String ARCANE_WARRIOR = "Arcane Warrior";
+
+    /** The General feat that adds two spells from the Magic Initiate feat's class list. */
+    public static final String MAGIC_CONNOISSEUR = "Magic Connoisseur";
+
+    /** The repeatable Epic Boon; offered and stored with its school, {@code "… (Evocation)"}. */
+    public static final String SCHOOL_MASTERY = "Boon of Magic School Mastery";
+
+    /** The eight schools of magic, in the book's order. */
+    public static final List<String> SCHOOLS_OF_MAGIC = List.of("Abjuration", "Conjuration", "Divination",
+            "Enchantment", "Evocation", "Illusion", "Necromancy", "Transmutation");
+
+    /** The name {@value #SCHOOL_MASTERY} is offered and stored under for one school. */
+    public static String schoolMasteryFeat(String school) {
+        return SCHOOL_MASTERY + " (" + school + ")";
+    }
+
+    /** The eight School Adept feats: {@code "Abjuration Adept"} … {@code "Transmutation Adept"}. */
+    private static final List<String> SCHOOL_ADEPT_FEATS =
+            SCHOOLS_OF_MAGIC.stream().map(school -> school + " Adept").toList();
+
+    /** The four General feats that improve the familiar of a {@value #FAMILIAR_FRIEND}. */
+    private static final List<String> FAMILIAR_FEATS = List.of(
+            "Elemental Familiar", "Otherworldly Familiar", "Soothing Familiar", "Warlike Familiar");
+
+    /** Arcana Unleashed General feats (prerequisite: level 4+, and for most one more thing). */
+    private static final Set<String> ARCANA_GENERAL_FEATS = buildArcanaGeneralFeats();
+
+    private static Set<String> buildArcanaGeneralFeats() {
+        List<String> feats = new ArrayList<>(SCHOOL_ADEPT_FEATS);
+        feats.addAll(FAMILIAR_FEATS);
+        feats.addAll(List.of(MAGIC_CONNOISSEUR, "Spell Resistant", "Spell Subterfuge"));
+        return Set.copyOf(feats);
+    }
+
+    private static final String BOON_OF_ERUPTING_SPELLPOWER = "Boon of Erupting Spellpower";
+
+    /** Arcana Unleashed Epic Boons (level 19+), {@value #SCHOOL_MASTERY} once per school. */
+    private static final Set<String> ARCANA_EPIC_BOONS = buildArcanaEpicBoons();
+
+    private static Set<String> buildArcanaEpicBoons() {
+        List<String> feats = new ArrayList<>(List.of(BOON_OF_ERUPTING_SPELLPOWER, "Boon of the Iron Mind"));
+        SCHOOLS_OF_MAGIC.forEach(school -> feats.add(schoolMasteryFeat(school)));
+        return Set.copyOf(feats);
+    }
+
+    /** A prerequisite that is not an ability score: a class feature, or a feat already taken. */
+    private enum Requirement {
+        SPELLCASTING("requires the Spellcasting or Pact Magic feature"),
+        FAMILIAR_FRIEND_FEAT("requires the " + FAMILIAR_FRIEND + " feat"),
+        MAGIC_INITIATE_FEAT("requires a " + MAGIC_INITIATE + " feat");
+
+        /** Reads after the quoted feat name: {@code 'Warlike Familiar' requires the Familiar Friend feat}. */
+        private final String unmet;
+
+        Requirement(String unmet) {
+            this.unmet = unmet;
+        }
+
+        boolean metBy(Candidate c) {
+            return switch (this) {
+                case SPELLCASTING ->
+                        ClassProgression.hasSpellcastingOrPactMagic(c.clazz(), c.subclass(), c.newLevel());
+                case FAMILIAR_FRIEND_FEAT -> c.has(FAMILIAR_FRIEND);
+                case MAGIC_INITIATE_FEAT -> c.hasMagicInitiate();
+            };
+        }
+    }
+
+    /** Feat name → what it needs besides its level, class and ability scores. */
+    private static final Map<String, Requirement> REQUIREMENTS = buildRequirements();
+
+    private static Map<String, Requirement> buildRequirements() {
+        Map<String, Requirement> m = new HashMap<>();
+        SCHOOL_ADEPT_FEATS.forEach(feat -> m.put(feat, Requirement.SPELLCASTING));
+        m.put("Spell Subterfuge", Requirement.SPELLCASTING);
+        m.put(BOON_OF_ERUPTING_SPELLPOWER, Requirement.SPELLCASTING);
+        SCHOOLS_OF_MAGIC.forEach(school -> m.put(schoolMasteryFeat(school), Requirement.SPELLCASTING));
+        FAMILIAR_FEATS.forEach(feat -> m.put(feat, Requirement.FAMILIAR_FRIEND_FEAT));
+        m.put(MAGIC_CONNOISSEUR, Requirement.MAGIC_INITIATE_FEAT);
+        return Map.copyOf(m);
+    }
+
+    /** Feats a character can hold once: every selectable Arcana Unleashed feat. */
+    private static final Set<String> ONCE_ONLY = buildOnceOnly();
+
+    private static Set<String> buildOnceOnly() {
+        List<String> feats = new ArrayList<>(ARCANA_GENERAL_FEATS);
+        feats.addAll(ARCANA_EPIC_BOONS);
+        feats.add(ARCANE_WARRIOR);
+        return Set.copyOf(feats);
+    }
+
+    /**
+     * The character a feat is offered to: what the level, class and ability gates need, plus the
+     * feats it already has (its Origin feat and every feat or Fighting Style recorded since, by
+     * name; case and surrounding spaces do not matter).
+     *
+     * @param newLevel      the level being reached
+     * @param abilityScores current scores keyed STR/DEX/CON/INT/WIS/CHA; a missing one counts as 0
+     * @param feats         names of the feats already on the character; other names are ignored
+     */
+    public record Candidate(String clazz, String subclass, int newLevel, Map<String, Integer> abilityScores,
+                            Collection<String> feats) {
+
+        public Candidate {
+            abilityScores = abilityScores == null ? Map.of() : abilityScores;
+            feats = feats == null ? List.of() : feats;
+        }
+
+        /** True when the character already has this feat. */
+        boolean has(String feat) {
+            return feats.stream().anyMatch(f -> f != null && f.trim().equalsIgnoreCase(feat));
+        }
+
+        /** True when the character has any Magic Initiate feat, whichever class list it draws on. */
+        boolean hasMagicInitiate() {
+            String prefix = MAGIC_INITIATE.toLowerCase();
+            return feats.stream().anyMatch(f -> f != null && f.trim().toLowerCase().startsWith(prefix));
+        }
+    }
+
     /** The 10 Fighting Style feats from the 2024 PHB (prerequisite: Fighting Style feature). */
     private static final Set<String> FIGHTING_STYLE_FEATS = Set.of(
             "Archery",
@@ -231,7 +372,15 @@ public final class FeatCatalog {
             new CantripFightingStyle(VOID_WARRIOR, VOID_WARRIOR_DESC,
                     (clazz, subclass) -> ClassProgression.heroSubclassAllowedFor(subclass, clazz)
                             && ClassProgression.isDemonHunter(subclass),
-                    VOID_WARRIOR_CANTRIPS)
+                    VOID_WARRIOR_CANTRIPS),
+            // Arcana Unleashed. Unlike the three above it is a Fighting Style feat, so it is also
+            // offered at an ASI level (see levelAndClassOptions).
+            new CantripFightingStyle(ARCANE_WARRIOR,
+                    "You pick two Wizard cantrips to learn. They use Intelligence, Wisdom or Charisma as "
+                            + "their spellcasting ability (chosen when you take this). Each time you gain a "
+                            + "level, you can swap one of them for another Wizard cantrip.",
+                    (clazz, subclass) -> hasFightingStyleFeature(clazz),
+                    CANTRIP_STYLE_CANTRIPS)
     );
 
     /** The cantrip Fighting Style with exactly this (canonical) name, if it is one. */
@@ -257,7 +406,8 @@ public final class FeatCatalog {
      * The Fighting Style options for a character reaching the given (new) level, sorted: empty
      * unless the choice is due; otherwise the Fighting Style feats, plus each cantrip Fighting
      * Style the character is eligible for ({@value #BLESSED_WARRIOR} for paladins,
-     * {@value #DRUIDIC_WARRIOR} for rangers, {@value #VOID_WARRIOR} for a Demon Hunter ranger).
+     * {@value #DRUIDIC_WARRIOR} for rangers, {@value #VOID_WARRIOR} for a Demon Hunter ranger,
+     * {@value #ARCANE_WARRIOR} for everyone with the choice).
      */
     public static List<String> fightingStyleOptions(String clazz, String subclass, int newLevel) {
         if (!fightingStyleDue(clazz, newLevel)) return List.of();
@@ -299,23 +449,70 @@ public final class FeatCatalog {
      *                      ability counts as 0 (fails any prerequisite on it)
      */
     public static List<String> featOptions(String clazz, int newLevel, Map<String, Integer> abilityScores) {
-        return levelAndClassOptions(clazz, newLevel).stream()
-                .filter(f -> meetsAbilityPrerequisites(f, abilityScores))
+        return featOptions(new Candidate(clazz, null, newLevel, abilityScores, List.of()));
+    }
+
+    /**
+     * Every feat the character may take at the level it is reaching, sorted: the feats its level
+     * and class open ({@link #featOptions(String, int, Map)}), less every one whose prerequisite
+     * it does not meet — ability scores, the Spellcasting or Pact Magic feature, the
+     * {@value #FAMILIAR_FRIEND} feat, a {@value #MAGIC_INITIATE} feat — and less the Arcana
+     * Unleashed feats it already has.
+     */
+    public static List<String> featOptions(Candidate candidate) {
+        return levelAndClassOptions(candidate.clazz(), candidate.newLevel()).stream()
+                .filter(f -> unmet(f, candidate) == null)
                 .toList();
     }
 
-    /** The feats offered by level and class gating alone (ignoring ability prerequisites), sorted. */
+    /**
+     * The feat's exact name when the character may take it (case-insensitive, trimmed), or
+     * {@code null} when it is not one of {@link #featOptions(Candidate)}.
+     */
+    public static String matchFeat(String name, Candidate candidate) {
+        return matchFeat(name, featOptions(candidate));
+    }
+
+    /**
+     * Why a feat the character's level and class open is still refused — for example
+     * {@code "requires Dexterity 13 and Wisdom 13"}, {@code "requires the Spellcasting or Pact
+     * Magic feature"}, {@code "requires the Familiar Friend feat"}, {@code "requires a Magic
+     * Initiate feat"} or {@code "can be taken only once"} — or {@code null} when the feat is
+     * unknown, not offered at this level or class, or may be taken.
+     */
+    public static String unmetPrerequisite(String name, Candidate candidate) {
+        String feat = matchFeat(name, levelAndClassOptions(candidate.clazz(), candidate.newLevel()));
+        return feat == null ? null : unmet(feat, candidate);
+    }
+
+    /** What stops the character taking this (exactly named) feat, or null when nothing does. */
+    private static String unmet(String feat, Candidate c) {
+        if (!meetsAbilityPrerequisites(feat, c.abilityScores())) return unmetAbilities(feat);
+        Requirement requirement = REQUIREMENTS.get(feat);
+        if (requirement != null && !requirement.metBy(c)) return requirement.unmet;
+        if (ONCE_ONLY.contains(feat) && c.has(feat)) {
+            return feat.startsWith(SCHOOL_MASTERY)
+                    ? "can be taken only once for each school of magic"
+                    : "can be taken only once";
+        }
+        return null;
+    }
+
+    /** The feats offered by level and class gating alone (ignoring every other prerequisite), sorted. */
     private static List<String> levelAndClassOptions(String clazz, int newLevel) {
         List<String> options = new ArrayList<>(GENERAL_FEATS);
         if (newLevel >= GENERAL_FEAT_MIN_LEVEL) {
             options.addAll(WOW_GENERAL_FEATS);
             options.addAll(WOW_MONK_FEATS);
+            options.addAll(ARCANA_GENERAL_FEATS);
         }
         if (hasFightingStyleFeature(clazz)) {
             options.addAll(FIGHTING_STYLE_FEATS);
+            options.add(ARCANE_WARRIOR);
         }
         if (newLevel >= 19) {
             options.addAll(EPIC_BOON_FEATS);
+            options.addAll(ARCANA_EPIC_BOONS);
         }
         return options.stream().sorted().toList();
     }
@@ -346,6 +543,11 @@ public final class FeatCatalog {
                                                   Map<String, Integer> abilityScores) {
         String feat = matchFeat(name, levelAndClassOptions(clazz, newLevel));
         if (feat == null || meetsAbilityPrerequisites(feat, abilityScores)) return null;
+        return unmetAbilities(feat);
+    }
+
+    /** {@code "requires Dexterity 13 and Wisdom 13"} for a feat with ability prerequisites. */
+    private static String unmetAbilities(String feat) {
         List<String> parts = ABILITY_PREREQUISITES.get(feat).entrySet().stream()
                 .map(e -> ABILITY_NAMES.getOrDefault(e.getKey(), e.getKey()) + " " + e.getValue())
                 .toList();

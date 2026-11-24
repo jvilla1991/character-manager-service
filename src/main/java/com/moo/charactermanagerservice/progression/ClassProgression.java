@@ -251,6 +251,30 @@ public final class ClassProgression {
         return slots;
     }
 
+    /**
+     * True when the character has the Spellcasting or Pact Magic feature at this level — the
+     * prerequisite of the Arcana Unleashed School Adept feats, Spell Subterfuge and two of its
+     * Epic Boons.
+     *
+     * <p>Class-based today: the full casters, the Warlock, and the half casters Paladin and Ranger
+     * (who have Spellcasting from level 1 in the 2024 rules), i.e. every class with a slot table
+     * here. {@code subclass} is not read yet. It is the seam for a subclass that brings its own
+     * Spellcasting feature and spell slots: extend this method (and {@link #highestSpellSlotLevel})
+     * for it, and every feat prerequisite and feat spell table follows.
+     */
+    public static boolean hasSpellcastingOrPactMagic(String clazz, String subclass, int level) {
+        return !spellSlotsFor(clazz, level).isEmpty();
+    }
+
+    /**
+     * The highest spell slot level the character has at this level (a Warlock's Pact Magic slot
+     * level counts), or 0 with no slots. From the class table alone: slots the DM added by hand do
+     * not count. {@code subclass} is not read yet; see {@link #hasSpellcastingOrPactMagic}.
+     */
+    public static int highestSpellSlotLevel(String clazz, String subclass, int level) {
+        return spellSlotsFor(clazz, level).keySet().stream().max(Integer::compareTo).orElse(0);
+    }
+
     // ── Subclass timing & catalog (Phase 3 — mechanism only) ────────────────────
     // The level at which each class chooses its subclass. Sorcerer/Warlock are level 1
     // to match the app's existing creation flow; every other class is level 3 (2024 PHB).

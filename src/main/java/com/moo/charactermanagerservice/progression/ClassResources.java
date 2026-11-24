@@ -1,8 +1,11 @@
 package com.moo.charactermanagerservice.progression;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Limited-use class features a character tracks between rests (D&D 2024, plus
@@ -21,6 +24,10 @@ import java.util.Locale;
  * Barbarian, an Evoker a Sorcerer) has the base class's resources. The one
  * replacement is the Death Knight (Paladin + Oath of the Ebon Blade): its Death
  * Coil pool takes the place of Lay On Hands.
+ *
+ * <p>Feats add counters of their own ({@link #forFeats}): the free casts and limited uses of the
+ * Arcana Unleashed feats. They are the same kind of resource, stored in the same map, listed
+ * after the class's and named for the feat they belong to.
  */
 public final class ClassResources {
 
@@ -58,6 +65,130 @@ public final class ClassResources {
      */
     public static List<Resource> forCharacter(String clazz, String subclass, Integer level,
                                               Integer charisma, Integer wisdom) {
+        return forCharacter(clazz, subclass, level, charisma, wisdom, null, List.of());
+    }
+
+    /**
+     * The resources a character has, in display order: the class's, then one or two per feat
+     * ({@link #forFeats}). Ability scores may be null (treated as 10).
+     *
+     * @param feats names on the character that may be feats (its Origin feat and its features);
+     *              names that are not a feat with a counter are ignored
+     */
+    public static List<Resource> forCharacter(String clazz, String subclass, Integer level,
+                                              Integer charisma, Integer wisdom, Integer intelligence,
+                                              Collection<String> feats) {
+        List<Resource> out = new ArrayList<>(forClass(clazz, subclass, level, charisma, wisdom));
+        out.addAll(forFeats(feats, level, intelligence, wisdom, charisma));
+        return out;
+    }
+
+    /** One feat counter: every part but the maximum, which depends on the character. */
+    private record FeatUse(String feat, String key, String name, FeatMax max, ShortRest shortRest) {}
+
+    /** How a feat counter's maximum is worked out. */
+    private enum FeatMax {
+        /** One use. */
+        ONE,
+        /** As many as the Proficiency Bonus. */
+        PROFICIENCY_BONUS,
+        /** The highest of the Intelligence, Wisdom and Charisma modifiers, at least one. */
+        BEST_MENTAL_MODIFIER
+    }
+
+    /**
+     * The Arcana Unleashed feats with something to count, in the book's order (Origin, General,
+     * Epic Boon). Everything returns on a Long Rest; Spell Overload on a Short Rest too. Boon of
+     * Magic School Mastery is not listed: it has one counter per school taken, added in
+     * {@link #forFeats}.
+     */
+    private static final List<FeatUse> FEAT_USES = List.of(
+            new FeatUse("Arcane Artist", "inspiringMagic", "Inspiring Magic", FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Arcane Infiltrator", "cunningDiversion", "Cunning Diversion",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Arcane Omens", "helpfulPremonition", "Helpful Premonition",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Arcane Overload", "powerSurge", "Power Surge", FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Arcane Safeguard", "bonusActionResistance", "Bonus Action Resistance",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Arcane Undertaker", "understandingOfDeath", "Understanding of Death",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Familiar Friend", "findFamiliarFreeCast", "Find Familiar (free cast)",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Familiar Friend", "helpfulFriend", "Helpful Friend",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Portal Jumper", "portalStep", "Portal Step", FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Transmuted Anatomy", "resilientAnatomy", "Resilient Anatomy",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Divination Adept", "prescientIntervention", "Prescient Intervention",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Magic Connoisseur", "connoisseurLevel1Spell", "Level 1 spell (free cast)",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Magic Connoisseur", "connoisseurLevel2Spell", "Level 2 spell (free cast)",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Spell Resistant", "magicResistant", "Magic Resistant",
+                    FeatMax.PROFICIENCY_BONUS, ShortRest.NONE),
+            new FeatUse("Spell Subterfuge", "shroudingSpells", "Shrouding Spells",
+                    FeatMax.BEST_MENTAL_MODIFIER, ShortRest.NONE),
+            new FeatUse("Warlike Familiar", "battleFamiliarFreeCast", "Battle Familiar (free cast)",
+                    FeatMax.ONE, ShortRest.NONE),
+            new FeatUse("Boon of Erupting Spellpower", "spellOverload", "Spell Overload",
+                    FeatMax.ONE, ShortRest.ALL)
+    );
+
+    /**
+     * The counters a character's feats give it: for each feat it holds, in the order held, that
+     * feat's free casts and limited uses. The resource's {@code feature} is the feat's name, so
+     * the sheet puts the counter under the feat.
+     *
+     * <p>"Proficiency Bonus" is the bonus for the character's level. Spell Subterfuge counts
+     * "the modifier of the ability this feat increased"; that increase is made by hand and not
+     * recorded, so the highest of the Intelligence, Wisdom and Charisma modifiers is used (at
+     * least 1). Boon of Magic School Mastery has one Signature Arcanum cast per school taken.
+     *
+     * @param feats names on the character that may be feats; case and surrounding spaces do not
+     *              matter, and a name listed twice counts once
+     */
+    public static List<Resource> forFeats(Collection<String> feats, Integer level, Integer intelligence,
+                                          Integer wisdom, Integer charisma) {
+        List<Resource> out = new ArrayList<>();
+        if (feats == null || feats.isEmpty()) return out;
+        int lvl = level == null ? 1 : Math.max(1, level);
+        int proficiencyBonus = ClassProgression.proficiencyBonusForLevel(lvl);
+        int bestMental = Math.max(1, Math.max(modifier(intelligence), Math.max(modifier(wisdom), modifier(charisma))));
+
+        Set<String> held = new LinkedHashSet<>();
+        for (String feat : feats) {
+            if (feat != null && !feat.isBlank()) held.add(feat.trim().toLowerCase(Locale.ROOT));
+        }
+        for (String feat : held) {
+            for (FeatUse use : FEAT_USES) {
+                if (!use.feat().toLowerCase(Locale.ROOT).equals(feat)) continue;
+                int max = switch (use.max()) {
+                    case ONE -> 1;
+                    case PROFICIENCY_BONUS -> proficiencyBonus;
+                    case BEST_MENTAL_MODIFIER -> bestMental;
+                };
+                out.add(uses(use.key(), use.name(), use.feat(), max, use.shortRest()));
+            }
+            for (String school : FeatCatalog.SCHOOLS_OF_MAGIC) {
+                String mastery = FeatCatalog.schoolMasteryFeat(school);
+                if (mastery.toLowerCase(Locale.ROOT).equals(feat)) {
+                    out.add(uses("signatureArcanum" + school, "Signature Arcanum (" + school + ")", mastery,
+                            1, ShortRest.NONE));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static int modifier(Integer score) {
+        return ClassProgression.abilityModifier(score == null ? 10 : score);
+    }
+
+    /** The class's own resources; see {@link #forCharacter(String, String, Integer, Integer, Integer)}. */
+    private static List<Resource> forClass(String clazz, String subclass, Integer level,
+                                           Integer charisma, Integer wisdom) {
         List<Resource> out = new ArrayList<>();
         String c = clazz == null ? "" : clazz.trim().toLowerCase(Locale.ROOT);
         String sub = subclass == null ? "" : subclass.trim();
