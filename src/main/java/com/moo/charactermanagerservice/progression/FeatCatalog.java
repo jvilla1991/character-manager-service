@@ -376,8 +376,8 @@ public final class FeatCatalog {
             // Arcana Unleashed. Unlike the three above it is a Fighting Style feat, so it is also
             // offered at an ASI level (see levelAndClassOptions).
             new CantripFightingStyle(ARCANE_WARRIOR,
-                    "You learn two Wizard cantrips of your choice. Intelligence, Wisdom or Charisma is your "
-                            + "spellcasting ability for them (chosen when you take this). Whenever you gain a "
+                    "You pick two Wizard cantrips to learn. They use Intelligence, Wisdom or Charisma as "
+                            + "their spellcasting ability (chosen when you take this). Each time you gain a "
                             + "level, you can swap one of them for another Wizard cantrip.",
                     (clazz, subclass) -> hasFightingStyleFeature(clazz),
                     CANTRIP_STYLE_CANTRIPS)
