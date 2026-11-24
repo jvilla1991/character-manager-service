@@ -76,6 +76,7 @@ public class LevelUpService {
         int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hpGained = hpCalculator.average(hitDie, conMod);
         boolean asiDue = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
+        List<String> featOptions = asiDue ? FeatCatalog.featOptions(candidate(pc, newLevel)) : List.of();
         boolean subclassDue = subclassDue(pc, newLevel);
         boolean fightingStyleDue = FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel);
         List<String> fightingStyleOptions =
@@ -99,7 +100,7 @@ public class LevelUpService {
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
-                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel, abilityScores(pc)) : List.of(),
+                featOptions,
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
@@ -112,6 +113,12 @@ public class LevelUpService {
                 grantsOwed(pc, pc.getSubclass(), newLevel),
                 subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of()
         );
+    }
+
+    /** The character as the feat catalog sees it when it reaches {@code newLevel}. */
+    private FeatCatalog.Candidate candidate(PC pc, int newLevel) {
+        return new FeatCatalog.Candidate(pc.getClazz(), pc.getSubclass(), newLevel, abilityScores(pc),
+                CharacterFeats.namesOn(pc));
     }
 
     /**
@@ -453,21 +460,26 @@ public class LevelUpService {
     }
 
     /**
-     * Validate the chosen feat against the catalog — including ability-score prerequisites, checked
-     * against the PC's current (pre-level-up) scores — and record it among the PC's features.
+     * Validate the chosen feat against the catalog and record it among the PC's features, under
+     * the catalog's spelling of its name. Every prerequisite is checked against the PC as it is
+     * before this level-up: ability scores, the Spellcasting or Pact Magic feature, and the feats
+     * already on the character ({@link CharacterFeats}). A feat refused for a prerequisite says
+     * which one. Returns the feat's name.
      */
-    private void applyFeatChoice(PC pc, int newLevel, String feat) {
+    private String applyFeatChoice(PC pc, int newLevel, String feat) {
         String name = feat.trim();
-        Map<String, Integer> scores = abilityScores(pc);
-        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel, scores)) {
-            String unmet = FeatCatalog.unmetAbilityPrerequisite(name, pc.getClazz(), newLevel, scores);
+        FeatCatalog.Candidate candidate = candidate(pc, newLevel);
+        String match = FeatCatalog.matchFeat(name, candidate);
+        if (match == null) {
+            String unmet = FeatCatalog.unmetPrerequisite(name, candidate);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, unmet != null
                     ? "'" + name + "' " + unmet
                     : "'" + name + "' is not a selectable feat");
         }
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
-        features.add(jsonColumns.featureEntry(name, "Feat (Level " + newLevel + ")", ""));
+        features.add(jsonColumns.featureEntry(match, "Feat (Level " + newLevel + ")", ""));
         pc.setFeatures(jsonColumns.write(features));
+        return match;
     }
 
     /**
