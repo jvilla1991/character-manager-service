@@ -66,6 +66,92 @@ class ClassResourcesTest {
             Rogue||5|10|10 => -
             """;
 
+    /**
+     * The feat counters, case by case — the second block the frontend's
+     * {@code class-resources.spec.ts} carries word for word.
+     */
+    // level | INT | WIS | CHA | feats ("; " between)  =>  key:max:shortRest, ...   ("-" = none)
+    static final String FEAT_CASES = """
+            1|10|10|10|Arcane Artist => inspiringMagic:1:NONE
+            1|10|10|10|Arcane Eloquence => -
+            1|10|10|10|Arcane Infiltrator => cunningDiversion:2:NONE
+            5|10|10|10|Arcane Infiltrator => cunningDiversion:3:NONE
+            9|10|10|10|Arcane Omens => helpfulPremonition:4:NONE
+            1|10|10|10|Arcane Overload => powerSurge:1:NONE
+            13|10|10|10|Arcane Safeguard => bonusActionResistance:5:NONE
+            1|10|10|10|Arcane Undertaker => understandingOfDeath:1:NONE
+            1|10|10|10|Familiar Friend => findFamiliarFreeCast:1:NONE,helpfulFriend:2:NONE
+            17|10|10|10|Familiar Friend => findFamiliarFreeCast:1:NONE,helpfulFriend:6:NONE
+            4|10|10|10|Portal Jumper => portalStep:2:NONE
+            8|10|10|10|Transmuted Anatomy => resilientAnatomy:3:NONE
+            4|10|10|10|Divination Adept => prescientIntervention:1:NONE
+            4|10|10|10|Abjuration Adept; Conjuration Adept; Enchantment Adept; Evocation Adept => -
+            4|10|10|10|Illusion Adept; Necromancy Adept; Transmutation Adept => -
+            4|10|10|10|Magic Initiate (Wizard); Magic Connoisseur => connoisseurLevel1Spell:1:NONE,connoisseurLevel2Spell:1:NONE
+            4|10|10|10|Spell Resistant => magicResistant:2:NONE
+            20|10|10|10|Spell Resistant => magicResistant:6:NONE
+            4|8|8|8|Spell Subterfuge => shroudingSpells:1:NONE
+            4|16|12|10|Spell Subterfuge => shroudingSpells:3:NONE
+            8|10|20|14|Spell Subterfuge => shroudingSpells:5:NONE
+            8|10|12|18|Spell Subterfuge => shroudingSpells:4:NONE
+            4|10|10|10|Familiar Friend; Warlike Familiar => findFamiliarFreeCast:1:NONE,helpfulFriend:2:NONE,battleFamiliarFreeCast:1:NONE
+            4|10|10|10|Elemental Familiar; Otherworldly Familiar; Soothing Familiar => -
+            19|10|10|10|Arcane Warrior; Boon of the Iron Mind => -
+            19|10|10|10|Boon of Erupting Spellpower => spellOverload:1:ALL
+            19|10|10|10|Boon of Magic School Mastery (Evocation) => signatureArcanumEvocation:1:NONE
+            20|10|10|10|Boon of Magic School Mastery (Illusion); Boon of Magic School Mastery (Abjuration) => signatureArcanumIllusion:1:NONE,signatureArcanumAbjuration:1:NONE
+            19|10|10|10|Boon of Magic School Mastery => -
+            5|10|10|10|arcane artist;  PORTAL JUMPER ; Arcane Artist => inspiringMagic:1:NONE,portalStep:3:NONE
+            5|10|10|10|Alert; Lucky; Second Wind; Magic Initiate (Cleric) => -
+            5|10|10|10| => -
+            """;
+
+    private static List<String> feats(String cell) {
+        return cell.isBlank() ? List.of() : List.of(cell.split(";"));
+    }
+
+    @Test
+    void everyFeatCase_givesExactlyTheCountersTheRulesSay() {
+        int checked = 0;
+        for (String line : FEAT_CASES.strip().split("\\R")) {
+            String[] sides = line.split(" => ");
+            String[] in = sides[0].split("\\|", -1);
+            List<Resource> actual = ClassResources.forFeats(feats(in[4]), Integer.parseInt(in[0]),
+                    Integer.parseInt(in[1]), Integer.parseInt(in[2]), Integer.parseInt(in[3]));
+            assertThat(describe(actual)).as(sides[0]).isEqualTo(sides[1]);
+            checked++;
+        }
+        assertThat(checked).isEqualTo(32);
+    }
+
+    @Test
+    void featCounters_followTheClassResources_andBelongToTheFeat() {
+        List<Resource> wizard = ClassResources.forCharacter("Wizard", null, 4, 10, 10, 16,
+                List.of("Familiar Friend", "Arcane Recovery", "Spell Subterfuge"));
+        assertThat(describe(wizard))
+                .isEqualTo("findFamiliarFreeCast:1:NONE,helpfulFriend:2:NONE,shroudingSpells:3:NONE");
+        assertThat(wizard).extracting(Resource::feature)
+                .containsExactly("Familiar Friend", "Familiar Friend", "Spell Subterfuge");
+        assertThat(wizard).extracting(Resource::name)
+                .containsExactly("Find Familiar (free cast)", "Helpful Friend", "Shrouding Spells");
+        assertThat(wizard).allMatch(r -> !r.pool() && r.unit().equals("uses"));
+
+        List<Resource> fighter = ClassResources.forCharacter("Fighter", null, 5, 10, 10, 10, List.of("Portal Jumper"));
+        assertThat(describe(fighter)).isEqualTo("secondWind:3:ONE,actionSurge:1:ALL,portalStep:3:NONE");
+
+        Resource arcanum = ClassResources.forFeats(List.of("boon of magic school mastery (necromancy)"), 19, 10, 10, 10)
+                .get(0);
+        assertThat(arcanum.name()).isEqualTo("Signature Arcanum (Necromancy)");
+        assertThat(arcanum.feature()).isEqualTo("Boon of Magic School Mastery (Necromancy)");
+
+        // Without feats, or with none recorded, a character has its class's resources and no more.
+        assertThat(describe(ClassResources.forCharacter("Fighter", null, 1, 10, 10, null, null)))
+                .isEqualTo("secondWind:2:ONE");
+        assertThat(ClassResources.forFeats(null, 5, 10, 10, 10)).isEmpty();
+        assertThat(describe(ClassResources.forFeats(List.of("Spell Subterfuge", "Spell Resistant"), null, null, null, null)))
+                .isEqualTo("shroudingSpells:1:NONE,magicResistant:2:NONE");
+    }
+
     private static String describe(List<Resource> resources) {
         return resources.isEmpty() ? "-" : resources.stream()
                 .map(r -> r.key() + ":" + r.max() + ":" + r.shortRest())
