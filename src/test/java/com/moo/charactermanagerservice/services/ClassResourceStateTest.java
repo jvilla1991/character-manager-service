@@ -132,4 +132,81 @@ class ClassResourceStateTest {
         assertThat(ClassResourceState.shortRest(fighter)).isEmpty();
         assertThat(fighter.getClassResources()).isNull();
     }
+
+    // --- feat counters (Arcana Unleashed): same map, same rests ---
+
+    private static String feature(String name, String source) {
+        return "{\"name\":\"" + name + "\",\"source\":\"" + source + "\",\"desc\":\"\"}";
+    }
+
+    @Test
+    void featCounters_areReadFromTheOriginFeatAndTheFeaturesList() {
+        PC fighter = pc("Fighter", 5, null);
+        assertThat(ClassResourceState.resourcesOf(fighter)).extracting(r -> r.key())
+                .containsExactly("secondWind", "actionSurge");
+
+        fighter.setFeat("Familiar Friend"); // the background's Origin feat
+        fighter.setFeatures("[" + feature("Familiar Friend", "Familiar Trainer · Origin Feat") + ","
+                + feature("Portal Jumper", "Human (World of Warcraft) · Origin Feat") + ","
+                + feature("Spell Resistant", "Feat (Level 4)") + "]");
+        assertThat(ClassResourceState.resourcesOf(fighter)).extracting(r -> r.key() + ":" + r.max())
+                .containsExactly("secondWind:3", "actionSurge:1", "findFamiliarFreeCast:1", "helpfulFriend:3",
+                        "portalStep:3", "magicResistant:3");
+    }
+
+    @Test
+    void featCounters_useTheHighestMentalModifier_fromTheStoredScores() {
+        PC bard = pc("Bard", 4, null);
+        bard.setFeatures("[" + feature("Spell Subterfuge", "Feat (Level 4)") + "]");
+        bard.setAbilityInt((short) 12);
+        bard.setAbilityWis((short) 9);
+        bard.setAbilityCha((short) 18);
+        assertThat(ClassResourceState.resourcesOf(bard)).extracting(r -> r.key() + ":" + r.max())
+                .containsExactly("bardicInspiration:4", "shroudingSpells:4");
+        bard.setAbilityInt((short) 20);
+        assertThat(ClassResourceState.resourcesOf(bard)).extracting(r -> r.key() + ":" + r.max())
+                .containsExactly("bardicInspiration:4", "shroudingSpells:5");
+    }
+
+    @Test
+    void normalize_keepsFeatCounters_clampsThem_andDropsTheOnesOfAFeatTheCharacterLacks() {
+        PC incoming = pc("Rogue", 5, "{\"portalStep\":9,\"inspiringMagic\":1,\"helpfulFriend\":1}");
+        incoming.setFeat("Portal Jumper");
+        assertThat(ClassResourceState.normalize(incoming, null)).isEqualTo("{\"portalStep\":3}");
+
+        // A body without the field keeps the stored amounts, read against the body's own feats.
+        PC existing = pc("Rogue", 5, "{\"portalStep\":2}");
+        existing.setFeat("Portal Jumper");
+        PC update = pc("Rogue", 5, null);
+        update.setFeat("Portal Jumper");
+        assertThat(ClassResourceState.normalize(update, existing)).isEqualTo("{\"portalStep\":2}");
+    }
+
+    @Test
+    void aLongRest_givesEveryFeatCounterBack() {
+        PC wizard = pc("Wizard", 19, "{\"findFamiliarFreeCast\":1,\"helpfulFriend\":4,\"spellOverload\":1,"
+                + "\"signatureArcanumEvocation\":1,\"connoisseurLevel2Spell\":1}");
+        wizard.setFeat("Familiar Friend");
+        wizard.setFeatures("[" + feature("Magic Initiate (Wizard)", "Human (World of Warcraft) · Origin Feat") + ","
+                + feature("Magic Connoisseur", "Feat (Level 4)") + ","
+                + feature("Boon of Erupting Spellpower", "Feat (Level 19)") + ","
+                + feature("Boon of Magic School Mastery (Evocation)", "Feat") + "]");
+
+        assertThat(ClassResourceState.restoreAll(wizard)).containsExactly(
+                "Find Familiar (free cast) 0 → 1", "Helpful Friend 2 → 6", "Level 2 spell (free cast) 0 → 1",
+                "Spell Overload 0 → 1", "Signature Arcanum (Evocation) 0 → 1");
+        assertThat(wizard.getClassResources()).isNull();
+    }
+
+    @Test
+    void aShortRest_givesBackSpellOverloadOnly() {
+        PC wizard = pc("Wizard", 19, "{\"helpfulFriend\":2,\"spellOverload\":1,\"signatureArcanumEvocation\":1}");
+        wizard.setFeat("Familiar Friend");
+        wizard.setFeatures("[" + feature("Boon of Erupting Spellpower", "Feat (Level 19)") + ","
+                + feature("Boon of Magic School Mastery (Evocation)", "Feat") + "]");
+
+        assertThat(ClassResourceState.shortRest(wizard)).containsExactly("Spell Overload 0 → 1");
+        assertThat(wizard.getClassResources())
+                .isEqualTo("{\"helpfulFriend\":2,\"signatureArcanumEvocation\":1}");
+    }
 }

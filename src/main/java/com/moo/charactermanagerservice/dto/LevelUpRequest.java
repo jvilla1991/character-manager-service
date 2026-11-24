@@ -37,7 +37,13 @@ import java.util.Map;
  * <p>Fighting Style: {@code fightingStyle} — optional choice at the class's Fighting Style level
  * (Paladin/Ranger 2), one of the preview's {@code fightingStyleOptions}. Choosing
  * {@code "Void Warrior"} (Demon Hunter only) requires exactly two cantrips (level 0) in
- * {@code newSpells}.
+ * {@code newSpells}; so do the other cantrip Fighting Styles, {@code "Arcane Warrior"} included.
+ *
+ * <p>Feat spell picks: a feat that lets the player choose spells ({@code "Arcane Warrior"} taken
+ * as a feat, {@code "Magic Connoisseur"}, {@code "Boon of Magic School Mastery (…)"}) needs those
+ * spells in {@code newSpells}, each with the feat's name as its {@code grantedBy}. That marker is
+ * how they are told from the class's own picks: they sit outside the class counts and the slot
+ * cap, and are checked against the feat's own rule (number, spell level, school).
  */
 public record LevelUpRequest(
         String subclass,

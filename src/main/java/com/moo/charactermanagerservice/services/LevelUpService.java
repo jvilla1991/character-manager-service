@@ -10,15 +10,19 @@ import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.ClassSpellGrants;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
+import com.moo.charactermanagerservice.progression.FeatSpellGrants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.random.RandomGenerator;
 
 /**
@@ -76,6 +80,7 @@ public class LevelUpService {
         int conMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int hpGained = hpCalculator.average(hitDie, conMod);
         boolean asiDue = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
+        List<String> featOptions = asiDue ? FeatCatalog.featOptions(candidate(pc, newLevel)) : List.of();
         boolean subclassDue = subclassDue(pc, newLevel);
         boolean fightingStyleDue = FeatCatalog.fightingStyleDue(pc.getClazz(), newLevel);
         List<String> fightingStyleOptions =
@@ -99,7 +104,7 @@ public class LevelUpService {
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
-                asiDue ? FeatCatalog.featOptions(pc.getClazz(), newLevel, abilityScores(pc)) : List.of(),
+                featOptions,
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
                 ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
@@ -110,22 +115,84 @@ public class LevelUpService {
                 subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null,
                 recommendedFightingStyles,
                 grantsOwed(pc, pc.getSubclass(), newLevel),
-                subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of()
+                subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of(),
+                grantsOwedByFeat(pc, featOptions, newLevel)
         );
+    }
+
+    /** The character as the feat catalog sees it when it reaches {@code newLevel}. */
+    private FeatCatalog.Candidate candidate(PC pc, int newLevel) {
+        return new FeatCatalog.Candidate(pc.getClazz(), pc.getSubclass(), newLevel, abilityScores(pc),
+                CharacterFeats.namesOn(pc));
+    }
+
+    /**
+     * The spells a character already has, as the grant tables ask about them: a spell a class
+     * feature grants is held once it is marked always prepared; a spell a feat grants also
+     * counts as held when it is a cantrip the character knows (a known cantrip needs no marker).
+     */
+    private record HeldSpells(Set<String> alwaysPrepared, Set<String> cantrips) {
+        boolean hasClassSpell(SpellGrant grant) {
+            return alwaysPrepared.contains(grant.name().toLowerCase());
+        }
+
+        boolean hasFeatSpell(SpellGrant grant) {
+            return hasClassSpell(grant) || cantrips.contains(grant.name().toLowerCase());
+        }
+    }
+
+    private HeldSpells heldSpells(PC pc) {
+        Set<String> alwaysPrepared = new HashSet<>();
+        Set<String> cantrips = new HashSet<>();
+        for (Map<String, Object> spell : jsonColumns.parse(pc.getSpells())) {
+            String name = spellName(spell).toLowerCase();
+            if (Boolean.TRUE.equals(spell.get("alwaysPrepared"))) alwaysPrepared.add(name);
+            if (spellLevelOf(spell) == 0) cantrips.add(name);
+        }
+        return new HeldSpells(alwaysPrepared, cantrips);
     }
 
     /**
      * The always-prepared spells the character should have at {@code level} with the given
-     * subclass and does not have marked yet — what this level-up hands over.
+     * subclass and does not have marked yet — what this level-up hands over: the class and
+     * subclass grants, then the spells of the feats it already has (a School Adept's row for a
+     * spell slot level it has just reached, or a spell it was owed and never got).
      */
     private List<SpellGrant> grantsOwed(PC pc, String subclass, int level) {
-        java.util.Set<String> held = new java.util.HashSet<>();
-        for (Map<String, Object> spell : jsonColumns.parse(pc.getSpells())) {
-            if (Boolean.TRUE.equals(spell.get("alwaysPrepared"))) held.add(spellName(spell).toLowerCase());
+        HeldSpells held = heldSpells(pc);
+        List<SpellGrant> owed = new ArrayList<>(
+                ClassSpellGrants.grantsThrough(pc.getClazz(), subclass, pc.getSpecialization(), level).stream()
+                        .filter(g -> !held.hasClassSpell(g))
+                        .toList());
+        for (SpellGrant grant : FeatSpellGrants.grantsThrough(
+                CharacterFeats.namesOn(pc), pc.getClazz(), subclass, level)) {
+            if (!held.hasFeatSpell(grant) && !names(owed, grant)) owed.add(grant);
         }
-        return ClassSpellGrants.grantsThrough(pc.getClazz(), subclass, pc.getSpecialization(), level).stream()
-                .filter(g -> !held.contains(g.name().toLowerCase()))
-                .toList();
+        return owed;
+    }
+
+    /** True when the list already names this grant's spell. */
+    private static boolean names(List<SpellGrant> grants, SpellGrant grant) {
+        return grants.stream().anyMatch(g -> g.name().equalsIgnoreCase(grant.name()));
+    }
+
+    /**
+     * For each feat on offer that gives spells of its own: the ones the character would be owed
+     * at {@code level} on top of {@link #grantsOwed}. Feats that add nothing are left out.
+     */
+    private Map<String, List<SpellGrant>> grantsOwedByFeat(PC pc, List<String> featOptions, int level) {
+        Map<String, List<SpellGrant>> byFeat = new LinkedHashMap<>();
+        if (featOptions.isEmpty()) return byFeat;
+        HeldSpells held = heldSpells(pc);
+        List<SpellGrant> base = grantsOwed(pc, pc.getSubclass(), level);
+        for (String option : featOptions) {
+            List<SpellGrant> owed = FeatSpellGrants.grantsFor(option, pc.getClazz(), pc.getSubclass(), level)
+                    .stream()
+                    .filter(g -> !held.hasFeatSpell(g) && !names(base, g))
+                    .toList();
+            if (!owed.isEmpty()) byFeat.put(option, owed);
+        }
+        return byFeat;
     }
 
     /** {@link #grantsOwed} for each subclass on offer; options that add nothing are left out. */
@@ -190,6 +257,10 @@ public class LevelUpService {
      * uses the post-ASI CON modifier, and a CON-modifier increase additionally grants HP to every
      * prior level (the 5e retroactive rule).
      *
+     * <p>A feat that lets the player pick spells ({@link FeatSpellGrants#pickRule}: Arcane Warrior,
+     * Magic Connoisseur, Boon of Magic School Mastery) needs those picks in {@code newSpells},
+     * each with the feat's name as its {@code grantedBy}.
+     *
      * @param chosenSubclass   the player's subclass selection, or {@code null} when none applies
      * @param abilityIncreases the ASI allocation ({@code ABILITY -> points}), or {@code null}
      * @param chosenFeat       the chosen General feat (the ASI alternative), or {@code null}
@@ -229,9 +300,9 @@ public class LevelUpService {
         applySubclassChoice(pc, newLevel, chosenSubclass, effectiveSpecialization);
         String style = validateFightingStyleChoice(pc, newLevel, fightingStyle);
         applySpecializationChoice(pc, specialization);
-        applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
+        String feat = applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
-        applySpellChoices(pc, currentLevel, newLevel, newSpells, style);
+        applySpellChoices(pc, currentLevel, newLevel, newSpells, style, feat);
         recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
@@ -378,9 +449,9 @@ public class LevelUpService {
     /**
      * At an ASI level the player takes exactly one of an Ability Score Improvement or a General
      * feat; at any other level neither is allowed. Server-authoritative gating; the chosen branch
-     * then validates and applies itself.
+     * then validates and applies itself. Returns the feat taken (its exact name), or {@code null}.
      */
-    private void applyMilestoneChoice(PC pc, int newLevel, Map<String, Integer> increases, String feat) {
+    private String applyMilestoneChoice(PC pc, int newLevel, Map<String, Integer> increases, String feat) {
         boolean asiLevel = ClassProgression.isAsiLevel(pc.getClazz(), newLevel);
         boolean hasAsi = increases != null && !increases.isEmpty();
         boolean hasFeat = feat != null && !feat.isBlank();
@@ -390,7 +461,7 @@ public class LevelUpService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "No ability score improvement or feat is available at level " + newLevel);
             }
-            return;
+            return null;
         }
         if (hasAsi && hasFeat) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -402,9 +473,9 @@ public class LevelUpService {
         }
         if (hasAsi) {
             applyAsiAllocation(pc, newLevel, increases);
-        } else {
-            applyFeatChoice(pc, newLevel, feat);
+            return null;
         }
+        return applyFeatChoice(pc, newLevel, feat);
     }
 
     /**
@@ -453,21 +524,26 @@ public class LevelUpService {
     }
 
     /**
-     * Validate the chosen feat against the catalog — including ability-score prerequisites, checked
-     * against the PC's current (pre-level-up) scores — and record it among the PC's features.
+     * Validate the chosen feat against the catalog and record it among the PC's features, under
+     * the catalog's spelling of its name. Every prerequisite is checked against the PC as it is
+     * before this level-up: ability scores, the Spellcasting or Pact Magic feature, and the feats
+     * already on the character ({@link CharacterFeats}). A feat refused for a prerequisite says
+     * which one. Returns the feat's name.
      */
-    private void applyFeatChoice(PC pc, int newLevel, String feat) {
+    private String applyFeatChoice(PC pc, int newLevel, String feat) {
         String name = feat.trim();
-        Map<String, Integer> scores = abilityScores(pc);
-        if (!FeatCatalog.isValidFeat(name, pc.getClazz(), newLevel, scores)) {
-            String unmet = FeatCatalog.unmetAbilityPrerequisite(name, pc.getClazz(), newLevel, scores);
+        FeatCatalog.Candidate candidate = candidate(pc, newLevel);
+        String match = FeatCatalog.matchFeat(name, candidate);
+        if (match == null) {
+            String unmet = FeatCatalog.unmetPrerequisite(name, candidate);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, unmet != null
                     ? "'" + name + "' " + unmet
                     : "'" + name + "' is not a selectable feat");
         }
         List<Map<String, Object>> features = jsonColumns.parse(pc.getFeatures());
-        features.add(jsonColumns.featureEntry(name, "Feat (Level " + newLevel + ")", ""));
+        features.add(jsonColumns.featureEntry(match, "Feat (Level " + newLevel + ")", ""));
         pc.setFeatures(jsonColumns.write(features));
+        return match;
     }
 
     /**
@@ -515,12 +591,24 @@ public class LevelUpService {
      * is marked instead. Grants from earlier levels are accepted too, so a character that passed
      * a level before its grant existed catches up. The app sends these with the picks (the
      * preview lists their names); a request without them simply adds none.
+     *
+     * <p>The spells of the character's feats ({@link FeatSpellGrants#grantsThrough}, the feat taken
+     * in this request included) are handled the same way: outside the counts and the cap, saved
+     * always prepared with the feat as {@code grantedBy}.
+     *
+     * <p>{@code feat} is the feat taken in this request. When it lets the player pick spells
+     * ({@link FeatSpellGrants#pickRule}) the request must carry exactly those picks, each with the
+     * feat's name as its {@code grantedBy}: the right number at the right spell levels, and of the
+     * feat's school when it has one (read from the spell sent; whether a spell is on a class's
+     * list cannot be checked here). They too sit outside the class counts and the slot cap, and
+     * are saved with the feat as {@code grantedBy}, a leveled one always prepared.
      */
     private void applySpellChoices(PC pc, int currentLevel, int newLevel,
-                                   List<Map<String, Object>> chosen, String fightingStyle) {
+                                   List<Map<String, Object>> chosen, String fightingStyle, String feat) {
         FeatCatalog.CantripFightingStyle cantripStyle = FeatCatalog.cantripFightingStyle(fightingStyle).orElse(null);
         int bonusCantrips = cantripStyle == null ? 0 : cantripStyle.extraCantrips();
-        if ((chosen == null || chosen.isEmpty()) && bonusCantrips == 0) return;
+        FeatSpellGrants.PickRule pickRule = FeatSpellGrants.pickRule(feat).orElse(null);
+        if ((chosen == null || chosen.isEmpty()) && bonusCantrips == 0 && pickRule == null) return;
         if (chosen == null) chosen = List.of();
 
         // The highest spell level the character has slots for at the new level (0 = none).
@@ -532,17 +620,26 @@ public class LevelUpService {
         int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
                 - ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel);
 
-        // The subclass chosen in this request is already on the PC, so its spells are recognized.
-        List<SpellGrant> grants = ClassSpellGrants.grantsThrough(pc.getClazz(), pc.getSubclass(),
-                pc.getSpecialization(), newLevel);
+        // The subclass and the feat chosen in this request are already on the PC, so their spells
+        // are recognized.
+        List<SpellGrant> grants = new ArrayList<>(ClassSpellGrants.grantsThrough(pc.getClazz(),
+                pc.getSubclass(), pc.getSpecialization(), newLevel));
+        grants.addAll(FeatSpellGrants.grantsThrough(CharacterFeats.namesOn(pc), pc.getClazz(),
+                pc.getSubclass(), newLevel));
 
         int newCantrips = 0;
         int newLeveled = 0;
+        List<Map<String, Object>> featPicks = new ArrayList<>();
         for (Map<String, Object> spell : chosen) {
+            if (isFeatPick(pickRule, spell)) {
+                featPicks.add(spell);
+                continue;
+            }
             if (grantFor(grants, spellName(spell)) != null) continue;
             if (spellLevelOf(spell) == 0) newCantrips++;
             else newLeveled++;
         }
+        if (pickRule != null) validateFeatPicks(pickRule, featPicks);
         if (bonusCantrips > 0) {
             int required = Math.max(0, cantripDelta) + bonusCantrips;
             if (newCantrips != required) {
@@ -568,6 +665,26 @@ public class LevelUpService {
             String name = spellName(spell);
             if (name.isBlank()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
+            }
+            if (isFeatPick(pickRule, spell)) {
+                // A spell picked for the feat taken this level. A leveled one the character
+                // already has becomes the feat's; a cantrip it already knows would be a wasted pick.
+                boolean cantrip = spellLevelOf(spell) == 0;
+                Map<String, Object> entry = spells.stream()
+                        .filter(existing -> spellName(existing).equalsIgnoreCase(name))
+                        .findFirst().orElse(null);
+                if (entry != null && cantrip) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + name + "' is already known");
+                }
+                if (entry == null) {
+                    entry = new LinkedHashMap<>(spell);
+                    spells.add(entry);
+                    known.add(name.toLowerCase());
+                }
+                entry.put("prepared", true);
+                if (!cantrip) entry.put("alwaysPrepared", true);
+                entry.put("grantedBy", pickRule.feat());
+                continue;
             }
             SpellGrant grant = grantFor(grants, name);
             if (grant != null) {
@@ -605,6 +722,34 @@ public class LevelUpService {
             spells.add(spell);
         }
         pc.setSpells(jsonColumns.write(spells));
+    }
+
+    /** True when the spell is marked as a pick for the feat taken in this request. */
+    private static boolean isFeatPick(FeatSpellGrants.PickRule pickRule, Map<String, Object> spell) {
+        Object grantedBy = spell.get("grantedBy");
+        return pickRule != null && grantedBy != null
+                && pickRule.feat().equalsIgnoreCase(grantedBy.toString().trim());
+    }
+
+    /**
+     * The picks sent for a feat must be exactly what the feat asks for: the right number of
+     * spells at the right spell levels, no spell twice, and all of the feat's school if it has one.
+     */
+    private void validateFeatPicks(FeatSpellGrants.PickRule rule, List<Map<String, Object>> picks) {
+        List<Integer> levels = picks.stream().map(this::spellLevelOf).toList();
+        Set<String> distinct = new HashSet<>();
+        picks.forEach(spell -> distinct.add(spellName(spell).trim().toLowerCase()));
+        if (!rule.satisfiedBy(levels) || distinct.size() != picks.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.feat() + " requires " + rule.needs());
+        }
+        if (rule.school() == null) return;
+        for (Map<String, Object> spell : picks) {
+            Object school = spell.get("school");
+            if (school == null || !rule.school().equalsIgnoreCase(school.toString().trim())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "'" + spellName(spell) + "' is not a spell of the " + rule.school() + " school");
+            }
+        }
     }
 
     /** The grant naming this spell (case-insensitive, trimmed), or null when it is an ordinary pick. */

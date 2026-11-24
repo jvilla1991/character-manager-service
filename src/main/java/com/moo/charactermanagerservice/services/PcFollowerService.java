@@ -3,6 +3,7 @@ package com.moo.charactermanagerservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moo.charactermanagerservice.dto.FollowerRequest;
 import com.moo.charactermanagerservice.dto.FollowerView;
+import com.moo.charactermanagerservice.models.FollowerKind;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcFollower;
@@ -16,13 +17,19 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
- * Followers (V43): companions the campaign's DM grants to a character, each
- * with its own stat block that the client renders as a cut-down sheet.
+ * Followers (V43): a character's companions, each with its own stat block
+ * that the client renders as a cut-down sheet.
  *
- * <p>Authority: only the DM of the PC's campaign grants and dismisses a
- * follower; the owning player and that DM may both read the list and update a
+ * <p>Authority depends on the follower's kind (V64, {@link FollowerKind}). A
+ * {@code DM_GRANT} is the DM's: only the DM of the PC's campaign grants and
+ * dismisses it. A {@code SUMMON} or a {@code FAMILIAR} is the player's own —
+ * a spell of theirs made it — so the owning player (in a campaign or not) or
+ * that DM creates and dismisses it. A character has one familiar: creating a
+ * new one replaces the old. {@code COMPANION} is reserved; nothing creates one
+ * here. The owning player and the DM may both read the list and update any
  * follower (HP, spell slots, gear change as it adventures). The stat block is
  * an opaque JSON object — validated only for being an object of sane size.
  *
@@ -65,25 +72,43 @@ public class PcFollowerService {
                 .toList();
     }
 
-    /** The DM of the PC's campaign grants it a follower. */
+    /**
+     * Create a follower. The request's kind decides who may: a {@code DM_GRANT}
+     * (also what a missing kind means) is granted by the DM of the PC's campaign
+     * alone; a {@code SUMMON} or a {@code FAMILIAR} by the owning player or that
+     * DM. Any other kind is a 400.
+     *
+     * <p>A new familiar replaces the character's current one in the same
+     * transaction, and the replaced one does not count toward the cap.
+     */
     @Transactional
-    public FollowerView grant(Long pcId, FollowerRequest request, UUID dmUserId) {
-        PC pc = pcService.findPCByIdForDm(pcId, dmUserId); // 403 unless the caller runs the PC's campaign
+    public FollowerView grant(Long pcId, FollowerRequest request, UUID userId) {
+        FollowerKind kind = requireCreatableKind(request == null ? null : request.kind());
+        PC pc = kind.playerManaged()
+                ? assertOwnerOrCampaignDm(pcId, userId)
+                : pcService.findPCByIdForDm(pcId, userId); // 403 unless the caller runs the PC's campaign
         String name = requireName(request == null ? null : request.name());
         String statBlock = requireStatBlock(request == null ? null : request.statBlock());
-        if (followerRepository.countByPcId(pcId) >= MAX_FOLLOWERS_PER_PC) {
+        List<PcFollower> replaced = kind == FollowerKind.FAMILIAR
+                ? followerRepository.findByPcIdAndKind(pcId, FollowerKind.FAMILIAR)
+                : List.of();
+        if (followerRepository.countByPcId(pcId) - replaced.size() >= MAX_FOLLOWERS_PER_PC) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "A character can have at most " + MAX_FOLLOWERS_PER_PC + " followers");
+        }
+        if (!replaced.isEmpty()) {
+            followerRepository.deleteAll(replaced);
         }
 
         PcFollower follower = new PcFollower();
         follower.setPcId(pcId);
         follower.setName(name);
         follower.setStatBlock(statBlock);
-        follower.setGrantedByUserId(dmUserId);
+        follower.setGrantedByUserId(userId);
+        follower.setKind(kind);
         PcFollower saved = followerRepository.save(follower);
 
-        activityLogService.log(pcId, PcActivityType.DM_EDIT, "DM granted a follower: " + name, dmUserId);
+        logCreated(pc, saved, replaced, userId);
         pcService.bumpLiveSessionVersion(pc);
         return toView(saved);
     }
@@ -91,7 +116,8 @@ public class PcFollowerService {
     /**
      * Update a follower's name and/or stat block — the owning player or the
      * campaign's DM. A null field keeps the stored value, so a body carrying
-     * only the stat block (the common sheet-edit case) never renames it.
+     * only the stat block (the common sheet-edit case) never renames it. The
+     * kind is not part of an update: whatever the body says, it stays.
      */
     @Transactional
     public FollowerView update(Long pcId, Long followerId, FollowerRequest request, UUID userId) {
@@ -114,18 +140,84 @@ public class PcFollowerService {
         return toView(saved);
     }
 
-    /** The DM of the PC's campaign dismisses (permanently removes) a follower. */
+    /**
+     * Dismiss (permanently remove) a follower. The DM of the PC's campaign may
+     * dismiss any of them; the owning player only one of their own — a
+     * {@code SUMMON} or a {@code FAMILIAR}.
+     */
     @Transactional
-    public void dismiss(Long pcId, Long followerId, UUID dmUserId) {
-        PC pc = pcService.findPCByIdForDm(pcId, dmUserId);
+    public void dismiss(Long pcId, Long followerId, UUID userId) {
+        PC pc = assertOwnerOrCampaignDm(pcId, userId); // a stranger is refused before any lookup
         PcFollower follower = findFollower(pcId, followerId);
+        if (!kindOf(follower).playerManaged()) {
+            pcService.findPCByIdForDm(pcId, userId); // the DM's to dismiss: 403 for the owning player
+        }
         followerRepository.delete(follower);
         pcService.bumpLiveSessionVersion(pc);
-        activityLogService.log(pcId, PcActivityType.DM_EDIT,
-                "DM dismissed the follower " + follower.getName(), dmUserId);
+        logDismissed(pc, follower, userId);
     }
 
     // --- helpers -----------------------------------------------------------
+
+    /**
+     * The kind a create asks for: none means a DM grant. {@code COMPANION} and
+     * anything unknown are refused — a companion is never created by a request.
+     */
+    private FollowerKind requireCreatableKind(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return FollowerKind.DM_GRANT;
+        }
+        String wanted = raw.trim();
+        for (FollowerKind kind : List.of(FollowerKind.DM_GRANT, FollowerKind.SUMMON, FollowerKind.FAMILIAR)) {
+            if (kind.name().equals(wanted)) {
+                return kind;
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "Follower kind must be DM_GRANT, SUMMON or FAMILIAR");
+    }
+
+    /** A follower's kind; a row that somehow carries none is a DM grant, as before V64. */
+    private static FollowerKind kindOf(PcFollower follower) {
+        return follower.getKind() == null ? FollowerKind.DM_GRANT : follower.getKind();
+    }
+
+    /** "familiar" or "follower" — what the activity log calls a follower of this kind. */
+    private static String noun(FollowerKind kind) {
+        return kind == FollowerKind.FAMILIAR ? "familiar" : "follower";
+    }
+
+    /**
+     * Activity line for a new follower. A grant stays the DM edit it always
+     * was. A summon or a familiar says who made it: the player's own is a
+     * FOLLOWER line with no "DM" in it, one the DM added on their behalf a DM
+     * edit. A replaced familiar is named in the same line.
+     */
+    private void logCreated(PC pc, PcFollower created, List<PcFollower> replaced, UUID userId) {
+        FollowerKind kind = kindOf(created);
+        if (kind == FollowerKind.DM_GRANT) {
+            activityLogService.log(pc.getId(), PcActivityType.DM_EDIT,
+                    "DM granted a follower: " + created.getName(), userId);
+            return;
+        }
+        boolean byOwner = userId.equals(pc.getUserId());
+        String line = (byOwner ? "Summoned a " : "DM summoned a ") + noun(kind) + ": " + created.getName();
+        if (!replaced.isEmpty()) {
+            line += " (replaces " + replaced.stream().map(PcFollower::getName)
+                    .collect(Collectors.joining(", ")) + ")";
+        }
+        activityLogService.log(pc.getId(), byOwner ? PcActivityType.FOLLOWER : PcActivityType.DM_EDIT,
+                line, userId);
+    }
+
+    /** Activity line for a dismissal: the player's own is a FOLLOWER line, the DM's a DM edit. */
+    private void logDismissed(PC pc, PcFollower dismissed, UUID userId) {
+        FollowerKind kind = kindOf(dismissed);
+        boolean byOwner = kind.playerManaged() && userId.equals(pc.getUserId());
+        activityLogService.log(pc.getId(), byOwner ? PcActivityType.FOLLOWER : PcActivityType.DM_EDIT,
+                (byOwner ? "Dismissed the " : "DM dismissed the ") + noun(kind) + " " + dismissed.getName(),
+                userId);
+    }
 
     /**
      * A follower's sheet save changed its hit points or conditions: if its
@@ -185,6 +277,6 @@ public class PcFollowerService {
 
     private FollowerView toView(PcFollower follower) {
         return new FollowerView(follower.getId(), follower.getPcId(), follower.getName(),
-                json.parseObject(follower.getStatBlock()), follower.getCreatedAt());
+                json.parseObject(follower.getStatBlock()), follower.getCreatedAt(), kindOf(follower).name());
     }
 }

@@ -28,12 +28,14 @@ final class ClassResourceState {
 
     private static final PcJsonColumns JSON = new PcJsonColumns(new ObjectMapper());
 
-    /** The resources this character has, from the rules table. */
+    /** The resources this character has, from the rules table: its class's, then its feats'. */
     static List<Resource> resourcesOf(PC pc) {
         return ClassResources.forCharacter(pc.getClazz(), pc.getSubclass(),
                 pc.getLevel() == null ? null : pc.getLevel().intValue(),
                 pc.getAbilityCha() == null ? null : pc.getAbilityCha().intValue(),
-                pc.getAbilityWis() == null ? null : pc.getAbilityWis().intValue());
+                pc.getAbilityWis() == null ? null : pc.getAbilityWis().intValue(),
+                pc.getAbilityInt() == null ? null : pc.getAbilityInt().intValue(),
+                CharacterFeats.namesOn(pc));
     }
 
     /** How much of a resource is used, clamped to 0..max. */
