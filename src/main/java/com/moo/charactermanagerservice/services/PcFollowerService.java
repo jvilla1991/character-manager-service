@@ -28,10 +28,17 @@ import java.util.stream.Collectors;
  * dismisses it. A {@code SUMMON} or a {@code FAMILIAR} is the player's own —
  * a spell of theirs made it — so the owning player (in a campaign or not) or
  * that DM creates and dismisses it. A character has one familiar: creating a
- * new one replaces the old. {@code COMPANION} is reserved; nothing creates one
- * here. The owning player and the DM may both read the list and update any
- * follower (HP, spell slots, gear change as it adventures). The stat block is
- * an opaque JSON object — validated only for being an object of sane size.
+ * new one replaces the old. The owning player and the DM may both read the
+ * list and update any follower (HP, spell slots, gear change as it adventures).
+ * The stat block is an opaque JSON object — validated only for being an object
+ * of sane size.
+ *
+ * <p>A {@code COMPANION} is the server's own: it comes and goes with the
+ * feature that gives it and its stat block is worked out from its character
+ * (a Vestige Patron's vestige). So nothing here creates one, nobody
+ * dismisses one — not the DM either — and an update takes
+ * only its name, its current and temporary Hit Points and its conditions
+ * ({@link CompanionVitals}); whatever else the request carries is left unread.
  *
  * <p>A follower rides in the live session snapshot under its owner (see
  * {@code FollowerCombatantView}), so every write here also wakes the PC's live
@@ -46,6 +53,9 @@ public class PcFollowerService {
     static final int MAX_NAME_LENGTH = 100;
     /** Serialized stat-block cap (characters). A full caster sheet is ~10–20k. */
     static final int MAX_STAT_BLOCK_CHARS = 100_000;
+    /** What a request to dismiss a companion is answered with. */
+    static final String COMPANION_NOT_DISMISSED =
+            "A companion cannot be dismissed. It stays for as long as its character has the feature that gives it";
 
     private final PCService pcService;
     private final PcFollowerRepository followerRepository;
@@ -118,6 +128,10 @@ public class PcFollowerService {
      * campaign's DM. A null field keeps the stored value, so a body carrying
      * only the stat block (the common sheet-edit case) never renames it. The
      * kind is not part of an update: whatever the body says, it stays.
+     *
+     * <p>Of a {@code COMPANION}'s stat block only the current Hit Points, the
+     * temporary Hit Points and the conditions are taken; the rest of the body's
+     * block is ignored, not refused, so the sheet can send what it holds.
      */
     @Transactional
     public FollowerView update(Long pcId, Long followerId, FollowerRequest request, UUID userId) {
@@ -132,7 +146,10 @@ public class PcFollowerService {
         if (request.statBlock() != null) {
             CombatLogService.Vitals before =
                     combatLogService.vitalsOfStatBlock(json.parseObject(follower.getStatBlock()));
-            follower.setStatBlock(requireStatBlock(request.statBlock()));
+            follower.setStatBlock(kindOf(follower) == FollowerKind.COMPANION
+                    ? json.writeObject(CompanionVitals.edited(
+                            json.parseObject(follower.getStatBlock()), request.statBlock()))
+                    : requireStatBlock(request.statBlock()));
             logSheetVitals(pc, follower, before, userId);
         }
         PcFollower saved = followerRepository.save(follower);
@@ -143,12 +160,16 @@ public class PcFollowerService {
     /**
      * Dismiss (permanently remove) a follower. The DM of the PC's campaign may
      * dismiss any of them; the owning player only one of their own — a
-     * {@code SUMMON} or a {@code FAMILIAR}.
+     * {@code SUMMON} or a {@code FAMILIAR}. A {@code COMPANION} is nobody's to
+     * dismiss: 403 for the owner and the DM alike.
      */
     @Transactional
     public void dismiss(Long pcId, Long followerId, UUID userId) {
         PC pc = assertOwnerOrCampaignDm(pcId, userId); // a stranger is refused before any lookup
         PcFollower follower = findFollower(pcId, followerId);
+        if (kindOf(follower) == FollowerKind.COMPANION) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, COMPANION_NOT_DISMISSED);
+        }
         if (!kindOf(follower).playerManaged()) {
             pcService.findPCByIdForDm(pcId, userId); // the DM's to dismiss: 403 for the owning player
         }
