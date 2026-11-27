@@ -8,9 +8,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Subclass features for the Fighter's 2024 Player's Handbook subclasses, keyed by the exact
- * subclass name in ClassProgression's subclass catalog, then by the Fighter level at which
- * each feature is gained. Descriptions are concise summaries, not rules text.
+ * Subclass features for the Fighter's 2024 Player's Handbook subclasses (plus the Arcane Archer
+ * from Arcana Unleashed), keyed by the exact subclass name in ClassProgression's subclass
+ * catalog, then by the Fighter level at which each feature is gained. Descriptions are concise
+ * summaries, not rules text.
  */
 final class FighterSubclasses {
 
@@ -23,11 +24,72 @@ final class FighterSubclasses {
     /** subclass name (exact catalog spelling) -> level -> features gained at that level. */
     static Map<String, Map<Integer, List<FeatureGain>>> all() {
         Map<String, Map<Integer, List<FeatureGain>>> m = new LinkedHashMap<>();
+        m.put(SubclassChoices.ARCANE_ARCHER, arcaneArcher());
         m.put("Battle Master", battleMaster());
         m.put("Champion", champion());
         m.put("Eldritch Knight", eldritchKnight());
         m.put("Psi Warrior", psiWarrior());
         return m;
+    }
+
+    /**
+     * Arcane Archer (Arcana Unleashed). The cantrip, the replacement skills and the Arcane Shot
+     * options known are choices the player makes: see {@link SubclassChoices}. The options are
+     * described in one feature of their own so the sheet can show them.
+     */
+    private static Map<Integer, List<FeatureGain>> arcaneArcher() {
+        Map<Integer, List<FeatureGain>> f = new HashMap<>();
+        f.put(3, List.of(
+                f(SubclassChoices.ARCANE_ARCHER_LORE, "You know Druidcraft or Prestidigitation (your choice) and "
+                        + "cast it with Intelligence. You gain proficiency in Arcana and Nature; for each of the two "
+                        + "you already have, you choose another skill from the Fighter's level 1 skill list "
+                        + "instead."),
+                f("Arcane Shot", "You know two Arcane Shot options and learn one more at Fighter levels 7, 10, 15 "
+                        + "and 18; each time you learn one, you can also swap one you know. Once per turn, when a "
+                        + "ranged attack with an Ammunition weapon hits a creature and deals damage, you can apply "
+                        + "one option (an option without an attack roll is chosen as you attack). Uses equal your "
+                        + "Intelligence modifier (minimum 1), regained on a Short or Long Rest. Your Arcane Shot Die "
+                        + "is a d6 (d8 at level 10, d10 at 15, d12 at 18), and saves use DC 8 + your Intelligence "
+                        + "modifier + your Proficiency Bonus."),
+                f("Arcane Shot Options", "Banishing Shot: one die of extra Psychic damage, and a Charisma save or "
+                        + "the target is banished (Incapacitated, Speed 0) until the end of its next turn. "
+                        + "Beguiling Shot: two dice of extra Psychic damage, and a Wisdom save or the target is "
+                        + "Charmed by you or by an ally within 30 feet of it until the start of your next turn. "
+                        + "Bursting Shot: the target and every creature within 10 feet of it take Force damage "
+                        + "equal to two dice. Enfeebling Shot: two dice of extra Necrotic damage, and a "
+                        + "Constitution save or the target is Poisoned until the end of its next turn and deals "
+                        + "one die less damage on each hit. Grasping Shot: one die of extra Slashing damage, and a "
+                        + "Strength save or the target is Restrained for 1 minute or until you use this option "
+                        + "again; an action and a Strength (Athletics) check against your save DC frees it. "
+                        + "Piercing Shot: no attack roll; the shot is a 30-foot Line that ignores cover, and each "
+                        + "creature in it makes a Dexterity save, taking the weapon's damage plus two dice of "
+                        + "Piercing damage, or half on a success. Seeking Shot: no attack roll; choose a creature "
+                        + "you saw in the last minute, and the shot goes around corners to it. Within long range "
+                        + "it makes a Dexterity save, taking the weapon's damage plus two dice of Force damage and "
+                        + "revealing its location to you, or half damage only on a success. Shadow Shot: one die "
+                        + "of extra Psychic damage, and a Wisdom save or the target is Blinded until the end of "
+                        + "its next turn.")));
+        f.put(7, List.of(
+                f("Curving Shot", "When you miss with a ranged attack from an Ammunition weapon, you can use a Bonus "
+                        + "Action to send the shot at another creature you can see, within the weapon's range and "
+                        + "within 60 feet of the first target, with a new attack roll."),
+                f("Magical Ammunition", "As a Magic action, you enchant a piece of nonmagical ammunition and fire "
+                        + "it at a solid surface in range, where it sticks and takes effect. Darkening: a 15-foot "
+                        + "Emanation of shadow for 1 minute that puts out nonmagical flames and gives -5 to Wisdom "
+                        + "(Perception) checks and Passive Perception. Unlocking: with a loud knock, each object in "
+                        + "a 15-foot Emanation that is locked without magic, stuck or barred opens (one lock per "
+                        + "object). Vine: a 120-foot vine to climb, gone after 10 minutes. Once per Short or Long "
+                        + "Rest, or spend a Second Wind use to regain the use.")));
+        f.put(10, List.of(
+                f("Ever-Ready Shot", "When you roll Initiative, you regain one expended use of Arcane Shot.")));
+        f.put(15, List.of(
+                f("Indomitable Teleport", "When you use Indomitable and succeed on the saving throw, you can "
+                        + "teleport up to 60 feet to an unoccupied space you can see.")));
+        f.put(18, List.of(
+                f("Masterful Shots", "When a creature you can see misses you with an attack roll, you can use your "
+                        + "Reaction to move up to half your Speed away from it without provoking Opportunity "
+                        + "Attacks, then make a ranged attack against it if it is within your weapon's range.")));
+        return f;
     }
 
     private static Map<Integer, List<FeatureGain>> battleMaster() {

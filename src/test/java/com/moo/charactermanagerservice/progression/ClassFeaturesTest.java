@@ -75,6 +75,90 @@ class ClassFeaturesTest {
                 .doesNotContain(ClassProgression.DISCIPLINE_DOMAIN, ClassProgression.SHADOW_DOMAIN);
     }
 
+    // --- Arcana Unleashed subclasses ---
+
+    private static List<String> namesAt(String clazz, String subclass, int level) {
+        return subclassEntries(clazz, subclass).stream()
+                .filter(e -> e.level() == level).map(FeatureProgressionEntry::name).toList();
+    }
+
+    @Test
+    void arcanaDomain_featuresByLevel() {
+        assertThat(namesAt("Cleric", "Arcana Domain", 3))
+                .containsExactly("Arcana Domain Spells", "Modify Magic", "Student of Arcana");
+        assertThat(namesAt("Cleric", "Arcana Domain", 6)).containsExactly("Dispelling Recovery");
+        assertThat(namesAt("Cleric", "Arcana Domain", 17)).containsExactly("Magical Mastery");
+        assertThat(subclassEntries("Cleric", "Arcana Domain")).hasSize(5);
+    }
+
+    @Test
+    void arcaneArcher_featuresByLevel_withItsOptionsAsReadableText() {
+        assertThat(namesAt("Fighter", "Arcane Archer", 3))
+                .containsExactly("Arcane Archer Lore", "Arcane Shot", "Arcane Shot Options");
+        assertThat(namesAt("Fighter", "Arcane Archer", 7)).containsExactly("Curving Shot", "Magical Ammunition");
+        assertThat(namesAt("Fighter", "Arcane Archer", 10)).containsExactly("Ever-Ready Shot");
+        assertThat(namesAt("Fighter", "Arcane Archer", 15)).containsExactly("Indomitable Teleport");
+        assertThat(namesAt("Fighter", "Arcane Archer", 18)).containsExactly("Masterful Shots");
+
+        String options = subclassEntries("Fighter", "Arcane Archer").stream()
+                .filter(e -> e.name().equals("Arcane Shot Options")).findFirst().orElseThrow().desc();
+        // Every option the player can choose is described, under the name it is chosen by.
+        for (String option : SubclassChoices.ARCANE_SHOT_OPTIONS) {
+            assertThat(options).as(option).contains(option + ":");
+        }
+    }
+
+    @Test
+    void warriorOfTheMysticArts_featuresByLevel() {
+        assertThat(namesAt("Monk", "Warrior of the Mystic Arts", 3)).containsExactly("Spellcasting");
+        assertThat(namesAt("Monk", "Warrior of the Mystic Arts", 6))
+                .containsExactly("Mystic Fighting Style", "Mystic Focus");
+        assertThat(namesAt("Monk", "Warrior of the Mystic Arts", 11)).containsExactly("Focused Strike");
+        assertThat(namesAt("Monk", "Warrior of the Mystic Arts", 17))
+                .containsExactly("Improved Mystic Fighting Style");
+    }
+
+    @Test
+    void vestigePatron_featuresArriveFromWarlockThree_withTheCompanionAsReadableText() {
+        // The patron is picked at Warlock 1 in the create wizard; nothing arrives before level 3.
+        assertThat(namesAt("Warlock", "Vestige Patron", 2)).isEmpty();
+        assertThat(namesAt("Warlock", "Vestige Patron", 3))
+                .containsExactly("Vestige Companion", "Vestige Companion Stat Block", "Vestige Spells");
+        assertThat(namesAt("Warlock", "Vestige Patron", 6)).containsExactly("Vestige Power");
+        assertThat(namesAt("Warlock", "Vestige Patron", 10)).containsExactly("Vestige Recovery");
+        assertThat(namesAt("Warlock", "Vestige Patron", 14)).containsExactly("Semblance of Life");
+
+        String statBlock = subclassEntries("Warlock", "Vestige Patron").stream()
+                .filter(e -> e.name().equals("Vestige Companion Stat Block")).findFirst().orElseThrow().desc();
+        assertThat(statBlock).contains("AC 13", "Fly 30 ft.", "Vestige's Strike", "Divine Power",
+                "Healing Touch", "Fiendish Swap", "Cursed Invocation");
+    }
+
+    @Test
+    void theFourWizardSchools_featuresByLevel() {
+        assertThat(namesAt("Wizard", "Conjurer", 3)).containsExactly("Benign Transposition", "Conjuration Savant");
+        assertThat(namesAt("Wizard", "Conjurer", 6)).containsExactly("Distant Transposition", "Durable Summons");
+        assertThat(namesAt("Wizard", "Conjurer", 10)).containsExactly("Focused Conjuration");
+        assertThat(namesAt("Wizard", "Conjurer", 14)).containsExactly("Splintered Summons");
+
+        assertThat(namesAt("Wizard", "Enchanter", 3))
+                .containsExactly("Enchanting Conversationalist", "Enchantment Savant", "Hypnotic Presence");
+        assertThat(namesAt("Wizard", "Enchanter", 6)).containsExactly("Split Enchantment");
+        assertThat(namesAt("Wizard", "Enchanter", 10)).containsExactly("Instinctive Charm");
+        assertThat(namesAt("Wizard", "Enchanter", 14)).containsExactly("Alter Memories");
+
+        assertThat(namesAt("Wizard", "Necromancer", 3)).containsExactly("Necromancy Savant", "Necromancy Spellbook");
+        assertThat(namesAt("Wizard", "Necromancer", 6)).containsExactly("Grave Power", "Undead Thralls");
+        assertThat(namesAt("Wizard", "Necromancer", 10)).containsExactly("Harvest Undead");
+        assertThat(namesAt("Wizard", "Necromancer", 14)).containsExactly("Death's Master");
+
+        assertThat(namesAt("Wizard", "Transmuter", 3))
+                .containsExactly("Transmutation Savant", "Transmuter's Stone", "Wondrous Alteration");
+        assertThat(namesAt("Wizard", "Transmuter", 6)).containsExactly("Empowered Transmutation");
+        assertThat(namesAt("Wizard", "Transmuter", 10)).containsExactly("Potent Stone", "Shape-Shifter");
+        assertThat(namesAt("Wizard", "Transmuter", 14)).containsExactly("Master Transmuter");
+    }
+
     @Test
     void everyFeature_hasANameAndADescription() {
         SUBCLASS_LEVELS.keySet().forEach(clazz -> {
