@@ -11,6 +11,7 @@ import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.ClassSpellGrants;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
 import com.moo.charactermanagerservice.progression.FeatSpellGrants;
+import com.moo.charactermanagerservice.progression.SubclassChoices;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -247,6 +248,14 @@ public class LevelUpService {
                 specialization, null);
     }
 
+    /** Convenience overload with no subclass choices and no subclass spell to give up. */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                           String specialization, String fightingStyle) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, hpMode,
+                specialization, fightingStyle, null, null);
+    }
+
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
@@ -278,10 +287,21 @@ public class LevelUpService {
      *                         {@value FeatCatalog#DRUIDIC_WARRIOR}, {@value FeatCatalog#VOID_WARRIOR})
      *                         requires exactly {@value FeatCatalog#CANTRIP_STYLE_CANTRIPS} extra
      *                         cantrips in {@code newSpells}
+     * @param subclassChoices  the choices a subclass lets the player make that are not spells (an
+     *                         Arcana Domain cleric's skill, an Arcane Archer's skills and Arcane
+     *                         Shot options, a Vestige Patron's type and domain), as a partial object
+     *                         whose keys replace the stored ones, or {@code null}; applied after the
+     *                         subclass choice, for the character at its new level
+     *                         ({@link SubclassChoiceRules#applyAtLevelUp})
+     * @param forgetSpells     names of spells picked for Student of Arcana or Magical Mastery to
+     *                         give up in this level-up, at most one per feature, or {@code null};
+     *                         {@code newSpells} must carry each one's replacement (see
+     *                         {@link #applySubclassSpellPicks})
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
                            String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
-                           String specialization, String fightingStyle) {
+                           String specialization, String fightingStyle,
+                           Map<String, Object> subclassChoices, List<String> forgetSpells) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
@@ -302,7 +322,10 @@ public class LevelUpService {
         applySpecializationChoice(pc, specialization);
         String feat = applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
-        applySpellChoices(pc, currentLevel, newLevel, newSpells, style, feat);
+        SubclassChoiceRules.applyAtLevelUp(pc, newLevel, subclassChoices);
+        // A subclass's own spell picks are taken out first: what is left are the class's.
+        List<Map<String, Object>> classSpells = applySubclassSpellPicks(pc, newLevel, newSpells, forgetSpells);
+        applySpellChoices(pc, currentLevel, newLevel, classSpells, style, feat);
         recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
@@ -722,6 +745,144 @@ public class LevelUpService {
             spells.add(spell);
         }
         pc.setSpells(jsonColumns.write(spells));
+    }
+
+    // ── Spells a subclass lets the player pick ───────────────────────────────────
+
+    /**
+     * Take a subclass's spell picks out of the request, check them and save them: an Arcana
+     * Domain cleric's two Wizard cantrips (Student of Arcana) and, from Cleric 17, four Wizard
+     * spells of level 6 to 9 (Magical Mastery), and an Arcane Archer's cantrip (Arcane Archer
+     * Lore) — see {@link SubclassChoices#spellPicksFor}. A pick is a spell in {@code newSpells}
+     * whose {@code grantedBy} is the feature's name, on a character that has the feature at the
+     * new level. Like a feat's picks they sit outside the class's cantrip and prepared-spell
+     * counts and the slot cap, and are saved prepared, a leveled one always prepared, with the
+     * feature as {@code grantedBy}. Returns the spells that are NOT subclass picks, for
+     * {@link #applySpellChoices}.
+     *
+     * <p>What is checked is the character's picks as they stand after this level-up: the spells
+     * it already holds for the feature, less the one given up, plus the ones sent. They must be
+     * exactly what the feature asks for — the right number at the right spell levels, and only
+     * the feature's named spells when it names any. So the first level-up with the feature needs
+     * all its picks, a later one needs none, and a character that is short catches up. A feature
+     * that is not {@link SubclassChoices#isRequired required} yet may be left without picks; when
+     * picks are sent for it they must be complete. Whether a spell is on the Wizard list cannot
+     * be checked here: the spell lists live in the app.
+     *
+     * <p>{@code forgetSpells} gives up picks, by name: each must be a spell the character holds
+     * for a feature that allows replacing (Student of Arcana, Magical Mastery), and at most one
+     * per feature. The check above then demands its replacement, which for Magical Mastery can
+     * only be a spell of the same level.
+     *
+     * <p>A character with none of these features is not touched: a spell of its own marked with
+     * one of the names is an ordinary pick, as before, and a non-empty {@code forgetSpells} is
+     * refused.
+     */
+    private List<Map<String, Object>> applySubclassSpellPicks(PC pc, int newLevel,
+                                                              List<Map<String, Object>> chosen,
+                                                              List<String> forgetSpells) {
+        List<String> forget = new ArrayList<>();
+        if (forgetSpells != null) {
+            for (String name : forgetSpells) {
+                if (!isBlank(name)) forget.add(name.trim());
+            }
+        }
+        List<SubclassChoices.SpellPicks> rules =
+                SubclassChoices.spellPicksFor(pc.getClazz(), pc.getSubclass(), newLevel);
+        if (rules.isEmpty()) {
+            if (!forget.isEmpty()) throw notReplaceable(forget.get(0));
+            return chosen;
+        }
+
+        List<Map<String, Object>> classSpells = new ArrayList<>();
+        Map<String, List<Map<String, Object>>> picksByFeature = new LinkedHashMap<>();
+        for (Map<String, Object> spell : chosen == null ? List.<Map<String, Object>>of() : chosen) {
+            SubclassChoices.SpellPicks rule = pickRuleOf(rules, spell);
+            if (rule == null) classSpells.add(spell);
+            else picksByFeature.computeIfAbsent(rule.feature(), k -> new ArrayList<>()).add(spell);
+        }
+
+        List<Map<String, Object>> spells = jsonColumns.parse(pc.getSpells());
+        Set<String> replaced = new HashSet<>();
+        for (String name : forget) {
+            Map<String, Object> held = spells.stream()
+                    .filter(s -> spellName(s).trim().equalsIgnoreCase(name))
+                    .findFirst().orElse(null);
+            SubclassChoices.SpellPicks rule = held == null ? null : pickRuleOf(rules, held);
+            if (rule == null || !rule.replaceable()) throw notReplaceable(name);
+            if (!replaced.add(rule.feature())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Only one " + rule.feature() + " spell can be replaced per level");
+            }
+            spells.remove(held);
+        }
+
+        boolean changed = !forget.isEmpty();
+        for (SubclassChoices.SpellPicks rule : rules) {
+            List<Map<String, Object>> picks = picksByFeature.getOrDefault(rule.feature(), List.of());
+            List<Map<String, Object>> held = spells.stream()
+                    .filter(s -> pickRuleOf(List.of(rule), s) != null).toList();
+            if (picks.isEmpty() && !replaced.contains(rule.feature())) {
+                // Nothing sent for this feature: fine once its picks are made, or while it may wait.
+                if (held.size() < rule.count() && SubclassChoices.isRequired(rule.feature())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+                }
+                continue;
+            }
+            List<Integer> levels = new ArrayList<>(held.stream().map(this::spellLevelOf).toList());
+            Set<String> names = new HashSet<>();
+            held.forEach(s -> names.add(spellName(s).trim().toLowerCase()));
+            for (Map<String, Object> pick : picks) {
+                String name = spellName(pick).trim();
+                if (name.isBlank()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
+                }
+                // A spell picked twice, or one the feature does not offer, is not a valid set of picks.
+                if (!rule.allows(name) || !names.add(name.toLowerCase())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+                }
+                levels.add(spellLevelOf(pick));
+            }
+            if (!rule.satisfiedBy(levels)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+            }
+            for (Map<String, Object> pick : picks) {
+                String name = spellName(pick).trim();
+                boolean cantrip = spellLevelOf(pick) == 0;
+                // As for a feat's pick: a leveled spell the character already has becomes the
+                // feature's; a cantrip it already knows would be a wasted pick.
+                Map<String, Object> entry = spells.stream()
+                        .filter(s -> spellName(s).trim().equalsIgnoreCase(name))
+                        .findFirst().orElse(null);
+                if (entry != null && cantrip) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + name + "' is already known");
+                }
+                if (entry == null) {
+                    entry = new LinkedHashMap<>(pick);
+                    spells.add(entry);
+                }
+                entry.put("prepared", true);
+                if (!cantrip) entry.put("alwaysPrepared", true);
+                entry.put("grantedBy", rule.feature());
+                changed = true;
+            }
+        }
+        if (changed) pc.setSpells(jsonColumns.write(spells));
+        return classSpells;
+    }
+
+    /** The spell-pick feature a spell is marked with (its {@code grantedBy}), or null. */
+    private static SubclassChoices.SpellPicks pickRuleOf(List<SubclassChoices.SpellPicks> rules,
+                                                        Map<String, Object> spell) {
+        Object grantedBy = spell.get("grantedBy");
+        if (grantedBy == null) return null;
+        String feature = grantedBy.toString().trim();
+        return rules.stream().filter(r -> r.feature().equalsIgnoreCase(feature)).findFirst().orElse(null);
+    }
+
+    private static ResponseStatusException notReplaceable(String spellName) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "'" + spellName + "' is not a spell that can be replaced");
     }
 
     /** True when the spell is marked as a pick for the feat taken in this request. */
