@@ -44,6 +44,26 @@ final class ClassResourceState {
         return Math.max(0, Math.min(used, resource.max()));
     }
 
+    /** How much of one of this character's resources is used right now, clamped to 0..max. */
+    static int usedOf(PC pc, Resource resource) {
+        return used(JSON.parseObject(pc.getClassResources()), resource);
+    }
+
+    /**
+     * Set how much of one resource is used (clamped to 0..max), leaving the others as stored
+     * and cleaned against the rules table. Mutates the character.
+     */
+    static void setUsed(PC pc, Resource resource, int used) {
+        Map<String, Object> next = clean(pc, pc.getClassResources());
+        int amount = Math.max(0, Math.min(used, resource.max()));
+        if (amount > 0) {
+            next.put(resource.key(), amount);
+        } else {
+            next.remove(resource.key());
+        }
+        pc.setClassResources(write(next));
+    }
+
     /** The stored map for this character, cleaned against the rules table. */
     private static Map<String, Object> clean(PC pc, String stored) {
         Map<String, Object> raw = JSON.parseObject(stored);
