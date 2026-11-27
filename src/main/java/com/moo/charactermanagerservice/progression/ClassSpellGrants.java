@@ -36,7 +36,8 @@ import java.util.regex.Pattern;
  * specialization and level. Circle of the Land is left out too — its spells are a choice made
  * again after each Long Rest. Also left out: the spells a subclass has the player pick (an Arcana
  * Domain cleric's Magical Mastery: see {@link SubclassChoices#spellPicksFor}) and a Vestige
- * Patron's Vestige Spells, which depend on the domain the player chose.
+ * Patron's Vestige Spells, which depend on the domain the player chose: {@link VestigeSpells}
+ * grants those, from the chosen domain's list here.
  */
 public final class ClassSpellGrants {
 

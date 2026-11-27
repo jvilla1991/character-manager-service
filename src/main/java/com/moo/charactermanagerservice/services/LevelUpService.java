@@ -13,6 +13,7 @@ import com.moo.charactermanagerservice.progression.ClassSpellGrants;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
 import com.moo.charactermanagerservice.progression.FeatSpellGrants;
 import com.moo.charactermanagerservice.progression.SubclassChoices;
+import com.moo.charactermanagerservice.progression.VestigeSpells;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -119,7 +120,8 @@ public class LevelUpService {
                 grantsOwed(pc, pc.getSubclass(), newLevel),
                 subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of(),
                 grantsOwedByFeat(pc, featOptions, newLevel),
-                subclassDue ? spellcastingBySubclass(pc, newLevel) : Map.of()
+                subclassDue ? spellcastingBySubclass(pc, newLevel) : Map.of(),
+                grantsOwedByVestigeDomain(pc, newLevel)
         );
     }
 
@@ -189,6 +191,9 @@ public class LevelUpService {
                 ClassSpellGrants.grantsThrough(pc.getClazz(), subclass, pc.getSpecialization(), level).stream()
                         .filter(g -> !held.hasClassSpell(g))
                         .toList());
+        for (SpellGrant grant : vestigeSpells(pc, subclass, level)) {
+            if (!held.hasClassSpell(grant) && !names(owed, grant)) owed.add(grant);
+        }
         for (SpellGrant grant : FeatSpellGrants.grantsThrough(
                 CharacterFeats.namesOn(pc), pc.getClazz(), subclass, level)) {
             if (!held.hasFeatSpell(grant) && !names(owed, grant)) owed.add(grant);
@@ -218,6 +223,43 @@ public class LevelUpService {
             if (!owed.isEmpty()) byFeat.put(option, owed);
         }
         return byFeat;
+    }
+
+    /**
+     * A Vestige Patron's Vestige Spells through {@code level}, for the domain stored on the
+     * character ({@link VestigeSpells}); empty for everyone else and while no domain is chosen.
+     * A level-up applies the request's subclass choices first, so the domain chosen in the same
+     * request already counts.
+     */
+    private static List<SpellGrant> vestigeSpells(PC pc, String subclass, int level) {
+        String domain = SubclassChoices.cleaned(SubclassChoices.parse(pc.getSubclassChoices()),
+                pc.getClazz(), subclass, level).vestigeDomain();
+        return VestigeSpells.grantsThrough(pc.getClazz(), subclass, domain, level);
+    }
+
+    /**
+     * For a Vestige Patron that has not chosen its domain yet: the Vestige Spells each domain
+     * would hand over at {@code level} on top of {@link #grantsOwed}, keyed by domain. Empty once
+     * the domain is stored (its spells are then part of {@link #grantsOwed} itself), below
+     * Warlock 3, and for every other character.
+     */
+    private Map<String, List<SpellGrant>> grantsOwedByVestigeDomain(PC pc, int level) {
+        Map<String, List<SpellGrant>> byDomain = new LinkedHashMap<>();
+        Map<String, List<SpellGrant>> all =
+                VestigeSpells.grantsThroughByDomain(pc.getClazz(), pc.getSubclass(), level);
+        if (all.isEmpty() || SubclassChoices.isComplete(SubclassChoices.VESTIGE_DOMAIN,
+                SubclassChoices.parse(pc.getSubclassChoices()), pc.getClazz(), pc.getSubclass(), level)) {
+            return byDomain;
+        }
+        HeldSpells held = heldSpells(pc);
+        List<SpellGrant> base = grantsOwed(pc, pc.getSubclass(), level);
+        all.forEach((domain, grants) -> {
+            List<SpellGrant> owed = grants.stream()
+                    .filter(g -> !held.hasClassSpell(g) && !names(base, g))
+                    .toList();
+            if (!owed.isEmpty()) byDomain.put(domain, owed);
+        });
+        return byDomain;
     }
 
     /** {@link #grantsOwed} for each subclass on offer; options that add nothing are left out. */
@@ -647,7 +689,9 @@ public class LevelUpService {
      *
      * <p>The spells of the character's feats ({@link FeatSpellGrants#grantsThrough}, the feat taken
      * in this request included) are handled the same way: outside the counts and the cap, saved
-     * always prepared with the feat as {@code grantedBy}.
+     * always prepared with the feat as {@code grantedBy}. So are a Vestige Patron's Vestige Spells
+     * ({@link VestigeSpells}): the rows of the Cleric domain it chose, the one chosen in this
+     * request included, saved with {@value VestigeSpells#FEATURE} as {@code grantedBy}.
      *
      * <p>{@code feat} is the feat taken in this request. When it lets the player pick spells
      * ({@link FeatSpellGrants#pickRule}) the request must carry exactly those picks, each with the
@@ -681,6 +725,8 @@ public class LevelUpService {
                 pc.getSubclass(), pc.getSpecialization(), newLevel));
         grants.addAll(FeatSpellGrants.grantsThrough(CharacterFeats.namesOn(pc), pc.getClazz(),
                 pc.getSubclass(), newLevel));
+        // A Vestige Patron's domain, as it stands after this request's subclass choices.
+        grants.addAll(vestigeSpells(pc, pc.getSubclass(), newLevel));
 
         int newCantrips = 0;
         int newLeveled = 0;
