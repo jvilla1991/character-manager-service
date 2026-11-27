@@ -160,6 +160,28 @@ class ClassFeaturesTest {
     }
 
     @Test
+    void everyCounterOfAnArcanaUnleashedSubclass_belongsToAFeatureTheSubclassHas() {
+        String[][] subclasses = {
+                {"Cleric", "Arcana Domain"}, {"Fighter", "Arcane Archer"}, {"Monk", "Warrior of the Mystic Arts"},
+                {"Warlock", "Vestige Patron"}, {"Wizard", "Conjurer"}, {"Wizard", "Enchanter"},
+                {"Wizard", "Necromancer"}, {"Wizard", "Transmuter"}};
+        int counters = 0;
+        for (String[] c : subclasses) {
+            Set<String> ownFeatures = subclassEntries(c[0], c[1]).stream()
+                    .map(FeatureProgressionEntry::name).collect(Collectors.toSet());
+            Set<String> classKeys = ClassResources.forCharacter(c[0], null, 20, 20, 20, 20, List.of()).stream()
+                    .map(ClassResources.Resource::key).collect(Collectors.toSet());
+            for (ClassResources.Resource r : ClassResources.forCharacter(c[0], c[1], 20, 20, 20, 20, List.of())) {
+                if (classKeys.contains(r.key())) continue; // the class's own counter
+                assertThat(ownFeatures).as("%s / %s counter %s", c[0], c[1], r.key()).contains(r.feature());
+                counters++;
+            }
+        }
+        // 1 cleric, 2 fighter, 0 monk, 3 warlock, 2 + 3 + 2 + 5 wizard.
+        assertThat(counters).isEqualTo(18);
+    }
+
+    @Test
     void everyFeature_hasANameAndADescription() {
         SUBCLASS_LEVELS.keySet().forEach(clazz -> {
             List<String> subclasses = new ArrayList<>(ClassProgression.subclassesFor(clazz));

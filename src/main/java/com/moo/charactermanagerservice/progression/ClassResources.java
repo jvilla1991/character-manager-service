@@ -25,6 +25,10 @@ import java.util.Set;
  * replacement is the Death Knight (Paladin + Oath of the Ebon Blade): its Death
  * Coil pool takes the place of Lay On Hands.
  *
+ * <p>A subclass adds counters after its class's: the limited uses of the eight Arcana Unleashed
+ * subclasses (an Arcane Archer's Arcane Shot, a Conjurer's Benign Transposition, ...). Several
+ * of them count the Intelligence modifier.
+ *
  * <p>Feats add counters of their own ({@link #forFeats}): the free casts and limited uses of the
  * Arcana Unleashed feats. They are the same kind of resource, stored in the same map, listed
  * after the class's and named for the feat they belong to.
@@ -61,7 +65,8 @@ public final class ClassResources {
 
     /**
      * The resources a character has, in display order. Empty for a class with
-     * none. Ability scores may be null (treated as 10).
+     * none. Ability scores may be null (treated as 10); Intelligence is not
+     * given here and counts as 10.
      */
     public static List<Resource> forCharacter(String clazz, String subclass, Integer level,
                                               Integer charisma, Integer wisdom) {
@@ -78,7 +83,7 @@ public final class ClassResources {
     public static List<Resource> forCharacter(String clazz, String subclass, Integer level,
                                               Integer charisma, Integer wisdom, Integer intelligence,
                                               Collection<String> feats) {
-        List<Resource> out = new ArrayList<>(forClass(clazz, subclass, level, charisma, wisdom));
+        List<Resource> out = new ArrayList<>(forClass(clazz, subclass, level, charisma, wisdom, intelligence));
         out.addAll(forFeats(feats, level, intelligence, wisdom, charisma));
         return out;
     }
@@ -188,13 +193,14 @@ public final class ClassResources {
 
     /** The class's own resources; see {@link #forCharacter(String, String, Integer, Integer, Integer)}. */
     private static List<Resource> forClass(String clazz, String subclass, Integer level,
-                                           Integer charisma, Integer wisdom) {
+                                           Integer charisma, Integer wisdom, Integer intelligence) {
         List<Resource> out = new ArrayList<>();
         String c = clazz == null ? "" : clazz.trim().toLowerCase(Locale.ROOT);
         String sub = subclass == null ? "" : subclass.trim();
         int lvl = level == null ? 1 : Math.max(1, level);
         int cha = ClassProgression.abilityModifier(charisma == null ? 10 : charisma);
         int wis = ClassProgression.abilityModifier(wisdom == null ? 10 : wisdom);
+        int intel = ClassProgression.abilityModifier(intelligence == null ? 10 : intelligence);
 
         switch (c) {
             case "fighter" -> {
@@ -202,6 +208,15 @@ public final class ClassResources {
                         lvl >= 10 ? 4 : lvl >= 4 ? 3 : 2, ShortRest.ONE));
                 if (lvl >= 2) {
                     out.add(uses("actionSurge", "Action Surge", "Action Surge", lvl >= 17 ? 2 : 1, ShortRest.ALL));
+                }
+                if (SubclassChoices.ARCANE_ARCHER.equalsIgnoreCase(sub)) {
+                    if (lvl >= 3) {
+                        out.add(uses("arcaneShot", "Arcane Shot", "Arcane Shot", Math.max(1, intel), ShortRest.ALL));
+                    }
+                    if (lvl >= 7) {
+                        out.add(uses("magicalAmmunition", "Magical Ammunition", "Magical Ammunition", 1,
+                                ShortRest.ALL));
+                    }
                 }
             }
             case "barbarian" -> out.add(uses("rage", "Rage", "Rage",
@@ -212,6 +227,10 @@ public final class ClassResources {
                 if (lvl >= 2) {
                     out.add(uses("channelDivinity", "Channel Divinity", "Channel Divinity",
                             lvl >= 18 ? 4 : lvl >= 6 ? 3 : 2, ShortRest.ONE));
+                }
+                if (SubclassChoices.ARCANA_DOMAIN.equalsIgnoreCase(sub) && lvl >= 6) {
+                    out.add(uses("dispellingRecovery", "Dispelling Recovery", "Dispelling Recovery", 1,
+                            ShortRest.ALL));
                 }
             }
             case "druid" -> {
@@ -248,6 +267,89 @@ public final class ClassResources {
             case "sorcerer" -> {
                 if (lvl >= 2) {
                     out.add(pool("sorceryPoints", "Sorcery Points", "Font of Magic", lvl, ShortRest.NONE, "points"));
+                }
+            }
+            case "warlock" -> {
+                if (SubclassChoices.VESTIGE_PATRON.equalsIgnoreCase(sub)) {
+                    if (lvl >= 3) {
+                        // The companion's Divine Power: a Long Rest only, until Vestige Power at 6.
+                        out.add(uses("divinePower", "Divine Power", "Vestige Companion", 1,
+                                lvl >= 6 ? ShortRest.ALL : ShortRest.NONE));
+                    }
+                    if (lvl >= 10) {
+                        out.add(uses("vestigeRecovery", "Vestige Recovery", "Vestige Recovery", 1, ShortRest.NONE));
+                    }
+                    if (lvl >= 14) {
+                        out.add(uses("semblanceOfLife", "Semblance of Life", "Semblance of Life", 1,
+                                ShortRest.NONE));
+                    }
+                }
+            }
+            case "wizard" -> out.addAll(forWizardSubclass(sub, lvl, intel));
+            default -> { }
+        }
+        return out;
+    }
+
+    /**
+     * The counters of the four Arcana Unleashed Wizard subclasses. Every one returns on a Long
+     * Rest only. "Intelligence modifier (minimum 1)" is at least one use; Split Enchantment has
+     * no such minimum, so an Enchanter with a modifier below 1 has no counter for it.
+     */
+    private static List<Resource> forWizardSubclass(String sub, int lvl, int intel) {
+        List<Resource> out = new ArrayList<>();
+        switch (sub.toLowerCase(Locale.ROOT)) {
+            case "conjurer" -> {
+                if (lvl >= 3) {
+                    out.add(uses("benignTransposition", "Benign Transposition", "Benign Transposition",
+                            Math.max(1, intel), ShortRest.NONE));
+                }
+                if (lvl >= 14) {
+                    out.add(uses("splinteredSummons", "Splintered Summons", "Splintered Summons", 1,
+                            ShortRest.NONE));
+                }
+            }
+            case "enchanter" -> {
+                if (lvl >= 3) {
+                    out.add(uses("hypnoticPresence", "Hypnotic Presence", "Hypnotic Presence",
+                            Math.max(1, intel), ShortRest.NONE));
+                }
+                if (lvl >= 6 && intel >= 1) {
+                    out.add(uses("splitEnchantment", "Split Enchantment", "Split Enchantment", intel,
+                            ShortRest.NONE));
+                }
+                if (lvl >= 10) {
+                    out.add(uses("instinctiveCharm", "Instinctive Charm", "Instinctive Charm", 1,
+                            ShortRest.NONE));
+                }
+            }
+            case "necromancer" -> {
+                if (lvl >= 6) {
+                    out.add(uses("undeadThralls", "Animate Dead (free cast)", "Undead Thralls", 1,
+                            ShortRest.NONE));
+                }
+                if (lvl >= 14) {
+                    out.add(uses("bolsterUndead", "Bolster Undead", "Death's Master", 1, ShortRest.NONE));
+                }
+            }
+            case "transmuter" -> {
+                if (lvl >= 3) {
+                    out.add(uses("wondrousAlteration", "Alter Self (free cast)", "Wondrous Alteration", 1,
+                            ShortRest.NONE));
+                }
+                if (lvl >= 6) {
+                    out.add(uses("empoweredTransmutation", "Empowered Transmutation", "Empowered Transmutation",
+                            Math.max(1, intel), ShortRest.NONE));
+                }
+                if (lvl >= 10) {
+                    out.add(uses("shapeShifterCast", "Polymorph (free cast)", "Shape-Shifter", 1,
+                            ShortRest.NONE));
+                    out.add(uses("shapeShifterSelf", "Shape-Shifter (self)", "Shape-Shifter", 1,
+                            ShortRest.NONE));
+                }
+                if (lvl >= 14) {
+                    out.add(uses("masterTransmuter", "Master Transmuter", "Master Transmuter", 1,
+                            ShortRest.NONE));
                 }
             }
             default -> { }
