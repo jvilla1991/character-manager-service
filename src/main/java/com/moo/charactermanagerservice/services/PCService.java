@@ -563,6 +563,49 @@ public class PCService {
         }
     }
 
+    // --- Subclass choices (V65) ------------------------------------------------
+
+    /**
+     * Set choices a subclass lets the player make, outside a level-up: an Arcana Domain cleric's
+     * skill, an Arcane Archer's skills and Arcane Shot options, a Vestige Patron's companion type
+     * and domain. The body is a partial choices object; a key present replaces the stored one,
+     * checked against the character's current level without a level-up's swap limits
+     * ({@link com.moo.charactermanagerservice.progression.SubclassChoices#direct}). A skill
+     * choice also marks the proficiency on the sheet.
+     *
+     * <p>Who may:
+     * <ul>
+     *   <li>the DM of the PC's campaign: any key;</li>
+     *   <li>the owner of a character in no campaign (there is no DM): any key;</li>
+     *   <li>the owner of a character in a campaign: the Vestige type always (it may change after
+     *       every Long Rest), and any other key only to catch up, while its stored value is
+     *       missing or short of what the level asks for. Changing a choice that is already made
+     *       is the DM's call: 403;</li>
+     *   <li>anyone else: 403, as on the other PC endpoints.</li>
+     * </ul>
+     *
+     * <p>400 for a body without a key, a key that is not a subclass choice, a key this character
+     * does not have at its level, and a value that breaks the choice's rule. Writes one activity
+     * log line and wakes the PC's live session ({@link #bumpLiveSessionVersion}), like the other
+     * sheet writes a table needs to see.
+     */
+    @Transactional
+    public PC setSubclassChoices(Long id, Map<String, Object> choices, UUID userId) {
+        PC pc = findPCById(id);
+        boolean owner = userId.equals(pc.getUserId());
+        if (!owner) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        boolean unrestricted = !owner || pc.getCampaignId() == null || runsCampaignOf(pc, userId);
+        List<String> set = SubclassChoiceRules.applyDirect(pc, choices, unrestricted);
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(),
+                owner ? PcActivityType.SUBCLASS_CHOICE : PcActivityType.DM_EDIT,
+                (owner ? "Set " : "DM set ") + String.join("; ", set), userId);
+        bumpLiveSessionVersion(saved);
+        return saved;
+    }
+
     // --- Heroic Inspiration meter (V38) --------------------------------------
 
     /** Pips needed to fill the meter and convert into Heroic Inspiration. */

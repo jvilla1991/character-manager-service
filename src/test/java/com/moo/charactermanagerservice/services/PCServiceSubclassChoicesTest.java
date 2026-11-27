@@ -108,6 +108,248 @@ class PCServiceSubclassChoicesTest {
                 });
     }
 
+    // ── PUT /{id}/subclass-choices: who may set what ─────────────────────────────
+
+    @Test
+    void theCampaignDm_maySetAnyKey_evenOneThatIsAlreadyChosen() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, 7L,
+                "{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+
+        PC saved = pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "War", "vestigeType", "Fiend"), dmId);
+
+        assertThat(saved).isSameAs(warlock);
+        assertThat(saved.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Fiend\",\"vestigeDomain\":\"War\"}");
+        verify(pcRepository).save(warlock);
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT,
+                "DM set Vestige type: Fiend; Vestige domain: War", dmId);
+    }
+
+    @Test
+    void theCampaignDm_mayReplaceASkillChoice_andTheProficiencyMovesWithIt() {
+        PC cleric = stored("Cleric", "Arcana Domain", 6, 7L, "{\"skills\":[\"Insight\"]}");
+        cleric.setSkills("{\"Insight\":\"prof\",\"Medicine\":\"prof\"}");
+
+        pcService.setSubclassChoices(1L, Map.of("skills", List.of("Religion")), dmId);
+
+        assertThat(cleric.getSubclassChoices()).isEqualTo("{\"skills\":[\"Religion\"]}");
+        assertThat(cleric.getSkills()).isEqualTo("{\"Medicine\":\"prof\",\"Religion\":\"prof\"}");
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM set subclass skills: Religion", dmId);
+    }
+
+    @Test
+    void aReplacedSkillPick_keepsExpertise_whichDidNotComeFromThePick() {
+        PC cleric = stored("Cleric", "Arcana Domain", 6, 7L, "{\"skills\":[\"Insight\"]}");
+        cleric.setSkills("{\"Insight\":\"expert\"}");
+
+        pcService.setSubclassChoices(1L, Map.of("skills", List.of("Arcana")), dmId);
+
+        assertThat(cleric.getSkills()).isEqualTo("{\"Insight\":\"expert\",\"Arcana\":\"prof\"}");
+    }
+
+    @Test
+    void theCampaignDm_maySwapAnyNumberOfArcaneShotOptions() {
+        PC fighter = stored("Fighter", "Arcane Archer", 5, 7L, TWO_SHOTS);
+
+        pcService.setSubclassChoices(1L, Map.of("arcaneShots", List.of("Shadow Shot", "Piercing Shot")), dmId);
+
+        assertThat(fighter.getSubclassChoices())
+                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Shadow Shot\",\"Piercing Shot\"]}");
+        verify(activityLogService).log(1L, PcActivityType.DM_EDIT,
+                "DM set Arcane Shot options: Shadow Shot, Piercing Shot", dmId);
+    }
+
+    @Test
+    void theOwnerOfACharacterInNoCampaign_maySetAnyKey() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, null,
+                "{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+
+        pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "Trickery"), ownerId);
+
+        assertThat(warlock.getSubclassChoices())
+                .isEqualTo("{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Trickery\"}");
+        verify(activityLogService).log(1L, PcActivityType.SUBCLASS_CHOICE, "Set Vestige domain: Trickery", ownerId);
+        // No campaign: no session to wake.
+        verifyNoInteractions(sessionRepository, participantRepository);
+    }
+
+    @Test
+    void theOwnerInACampaign_mayAlwaysChangeTheVestigeType() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, 7L,
+                "{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+
+        pcService.setSubclassChoices(1L, Map.of("vestigeType", "Undead"), ownerId);
+
+        assertThat(warlock.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Undead\",\"vestigeDomain\":\"Life\"}");
+        verify(activityLogService).log(1L, PcActivityType.SUBCLASS_CHOICE, "Set Vestige type: Undead", ownerId);
+    }
+
+    @Test
+    void theOwnerInACampaign_mayCatchUpAKeyThatIsMissing() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, 7L, "{\"vestigeType\":\"Celestial\"}");
+        pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "Light"), ownerId);
+        assertThat(warlock.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Light\"}");
+
+        PC cleric = stored("Cleric", "Arcana Domain", 6, 7L, null);
+        pcService.setSubclassChoices(1L, Map.of("skills", List.of("Arcana")), ownerId);
+        assertThat(cleric.getSubclassChoices()).isEqualTo("{\"skills\":[\"Arcana\"]}");
+        assertThat(cleric.getSkills()).isEqualTo("{\"Arcana\":\"prof\"}");
+
+        // An Arcane Archer whose skills were never settled: Arcana and Nature arrive with the choice.
+        PC fighter = stored("Fighter", "Arcane Archer", 5, 7L, null);
+        fighter.setSkills("{\"Athletics\":\"prof\"}");
+        pcService.setSubclassChoices(1L, Map.of("skills", List.of()), ownerId);
+        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[]}");
+        assertThat(fighter.getSkills()).isEqualTo("{\"Athletics\":\"prof\",\"Arcana\":\"prof\",\"Nature\":\"prof\"}");
+        verify(activityLogService).log(1L, PcActivityType.SUBCLASS_CHOICE, "Set subclass skills: none", ownerId);
+    }
+
+    @Test
+    void theOwnerInACampaign_mayFillAShortArcaneShotList_withoutSwapLimits() {
+        // Nothing stored at level 5.
+        PC fresh = stored("Fighter", "Arcane Archer", 5, 7L, "{\"skills\":[]}");
+        pcService.setSubclassChoices(1L, Map.of("arcaneShots", List.of("Shadow Shot", "Seeking Shot")), ownerId);
+        assertThat(fresh.getSubclassChoices())
+                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Shadow Shot\",\"Seeking Shot\"]}");
+
+        // Two stored at level 7, where three are known: short, so the owner may set the list.
+        PC short7 = stored("Fighter", "Arcane Archer", 7, 7L, TWO_SHOTS);
+        pcService.setSubclassChoices(1L,
+                Map.of("arcaneShots", List.of("Shadow Shot", "Piercing Shot", "Bursting Shot")), ownerId);
+        assertThat(short7.getSubclassChoices()).isEqualTo(
+                "{\"skills\":[],\"arcaneShots\":[\"Shadow Shot\",\"Piercing Shot\",\"Bursting Shot\"]}");
+    }
+
+    @Test
+    void theOwnerInACampaign_cannotChangeAChoiceThatIsAlreadyMade() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, 7L,
+                "{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "War"), ownerId), 403,
+                "In a campaign, only your Dungeon Master can change the Vestige domain once chosen");
+        // One locked key refuses the whole request, the allowed key with it.
+        assertStatus(() -> pcService.setSubclassChoices(1L,
+                Map.of("vestigeType", "Fiend", "vestigeDomain", "War"), ownerId), 403,
+                "In a campaign, only your Dungeon Master can change the Vestige domain once chosen");
+        assertThat(warlock.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+
+        stored("Fighter", "Arcane Archer", 5, 7L, TWO_SHOTS);
+        assertStatus(() -> pcService.setSubclassChoices(1L,
+                Map.of("arcaneShots", List.of("Shadow Shot", "Piercing Shot")), ownerId), 403,
+                "In a campaign, only your Dungeon Master can change the Arcane Shot options once chosen");
+        // Settled skills too, an empty settled list included.
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("skills", List.of()), ownerId), 403,
+                "In a campaign, only your Dungeon Master can change the subclass skills once chosen");
+
+        stored("Cleric", "Arcana Domain", 6, 7L, "{\"skills\":[\"Insight\"]}");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("skills", List.of("Religion")), ownerId), 403,
+                "In a campaign, only your Dungeon Master can change the subclass skills once chosen");
+
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+    }
+
+    @Test
+    void anOwnerWhoRunsTheCampaign_hasTheDmsReach() {
+        PC warlock = stored("Warlock", "Vestige Patron", 5, 7L,
+                "{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"Life\"}");
+        Campaign own = new Campaign();
+        own.setId(7L);
+        own.setDmUserId(ownerId);
+        when(campaignRepository.findById(7L)).thenReturn(Optional.of(own));
+
+        pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "War"), ownerId);
+
+        assertThat(warlock.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Celestial\",\"vestigeDomain\":\"War\"}");
+    }
+
+    @Test
+    void anyoneElse_isRefused_asOnTheOtherPcEndpoints() {
+        // In a campaign the caller does not run.
+        stored("Warlock", "Vestige Patron", 5, 7L, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), strangerId), 403,
+                "Access denied");
+        // In no campaign: there is no DM to be.
+        stored("Warlock", "Vestige Patron", 5, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), strangerId), 403,
+                "Character is not part of a campaign");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), dmId), 403,
+                "Character is not part of a campaign");
+        verify(pcRepository, never()).save(any());
+
+        when(pcRepository.findById(99L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> pcService.setSubclassChoices(99L, Map.of("vestigeType", "Fiend"), ownerId))
+                .isInstanceOf(PCNotFoundException.class);
+    }
+
+    // ── PUT /{id}/subclass-choices: what is refused as a bad request ─────────────
+
+    @Test
+    void aBodyWithoutAKey_isABadRequest() {
+        stored("Warlock", "Vestige Patron", 5, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, null, ownerId), 400, "No subclass choice was sent");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of(), ownerId), 400, "No subclass choice was sent");
+        Map<String, Object> onlyNull = new java.util.HashMap<>();
+        onlyNull.put("vestigeType", null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, onlyNull, ownerId), 400, "No subclass choice was sent");
+        verify(pcRepository, never()).save(any());
+    }
+
+    @Test
+    void aKeyTheCharacterDoesNotHave_orABadValue_isABadRequest() {
+        stored("Wizard", "Evoker", 5, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), ownerId), 400,
+                "'vestigeType' is not a choice this character makes at level 5");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("maneuvers", List.of()), ownerId), 400,
+                "'maneuvers' is not a subclass choice");
+
+        stored("Warlock", "Vestige Patron", 2, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), ownerId), 400,
+                "'vestigeType' is not a choice this character makes at level 2");
+
+        stored("Warlock", "Vestige Patron", 5, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeType", "Dragon"), ownerId), 400,
+                "'Dragon' is not a Vestige type (Celestial, Fiend or Undead)");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeDomain", List.of("War")), ownerId), 400,
+                "'vestigeDomain' must be a single name");
+
+        stored("Fighter", "Arcane Archer", 5, null, null);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("arcaneShots", List.of("Seeking Shot")), ownerId),
+                400, "An Arcane Archer knows exactly 2 Arcane Shot options at level 5");
+
+        PC cleric = stored("Cleric", "Arcana Domain", 5, null, null);
+        cleric.setSkills("{\"Insight\":\"prof\"}");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("skills", List.of("Insight")), ownerId), 400,
+                "'Insight' is already a skill proficiency");
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("skills", List.of()), ownerId), 400,
+                "Arcana Domain requires exactly 1 skill choice");
+        // An unknown or foreign key is a bad request before it is a question of who is asking.
+        stored("Fighter", "Arcane Archer", 5, 7L, TWO_SHOTS);
+        assertStatus(() -> pcService.setSubclassChoices(1L, Map.of("vestigeDomain", "War"), ownerId), 400,
+                "'vestigeDomain' is not a choice this character makes at level 5");
+
+        verify(pcRepository, never()).save(any());
+        verifyNoInteractions(activityLogService);
+    }
+
+    // ── PUT /{id}/subclass-choices: the live session ─────────────────────────────
+
+    @Test
+    void settingAChoice_wakesTheLiveSessionTheCharacterSitsIn() {
+        stored("Warlock", "Vestige Patron", 5, 7L, null);
+        CombatSession session = new CombatSession();
+        session.setId(40L);
+        session.setCampaignId(7L);
+        session.setDmUserId(dmId);
+        session.setStatus(SessionStatus.ACTIVE);
+        session.setVersion(3L);
+        when(sessionRepository.findByCampaignIdAndStatusNot(7L, SessionStatus.ENDED)).thenReturn(Optional.of(session));
+        when(participantRepository.findBySessionIdAndPcId(40L, 1L)).thenReturn(Optional.of(new SessionParticipant()));
+
+        pcService.setSubclassChoices(1L, Map.of("vestigeType", "Fiend"), ownerId);
+
+        assertThat(session.getVersion()).isEqualTo(4L);
+        verify(sessionRepository).save(session);
+    }
+
     // ── Whole-sheet saves: the stored choices are kept, the body's never read ────
 
     private static PC body(String clazz, String subclass, int level, String choices) {
