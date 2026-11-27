@@ -256,23 +256,56 @@ public final class ClassProgression {
      * prerequisite of the Arcana Unleashed School Adept feats, Spell Subterfuge and two of its
      * Epic Boons.
      *
-     * <p>Class-based today: the full casters, the Warlock, and the half casters Paladin and Ranger
-     * (who have Spellcasting from level 1 in the 2024 rules), i.e. every class with a slot table
-     * here. {@code subclass} is not read yet. It is the seam for a subclass that brings its own
-     * Spellcasting feature and spell slots: extend this method (and {@link #highestSpellSlotLevel})
-     * for it, and every feat prerequisite and feat spell table follows.
+     * <p>The full casters, the Warlock, and the half casters Paladin and Ranger (who have
+     * Spellcasting from level 1 in the 2024 rules), i.e. every class with a slot table here, and
+     * one subclass with a table of its own: a Monk of the Warrior of the Mystic Arts from Monk
+     * level 3 ({@link #spellSlotsFor(String, String, int)}). Every feat prerequisite and feat
+     * spell table follows. Eldritch Knight and Arcane Trickster have no slot table and do not
+     * qualify.
      */
     public static boolean hasSpellcastingOrPactMagic(String clazz, String subclass, int level) {
-        return !spellSlotsFor(clazz, level).isEmpty();
+        return !spellSlotsFor(clazz, subclass, level).isEmpty();
     }
 
     /**
      * The highest spell slot level the character has at this level (a Warlock's Pact Magic slot
      * level counts), or 0 with no slots. From the class table alone: slots the DM added by hand do
-     * not count. {@code subclass} is not read yet; see {@link #hasSpellcastingOrPactMagic}.
+     * not count. The subclass counts where it brings slots; see {@link #hasSpellcastingOrPactMagic}.
      */
     public static int highestSpellSlotLevel(String clazz, String subclass, int level) {
-        return spellSlotsFor(clazz, level).keySet().stream().max(Integer::compareTo).orElse(0);
+        return spellSlotsFor(clazz, subclass, level).keySet().stream().max(Integer::compareTo).orElse(0);
+    }
+
+    // ── Spellcasting a subclass brings (the Warrior of the Mystic Arts) ─────────
+    // The lookups above are keyed by class alone and stay exactly as they were. These overloads
+    // also read the subclass: a Monk of the Warrior of the Mystic Arts gets its own third-caster
+    // table (MysticArtsSpellcasting); every other character gets the class's answer. Eldritch
+    // Knight and Arcane Trickster are NOT here: they have no slot table in this app.
+
+    /** {@link #spellSlotsFor(String, int)}, with the slots a subclass brings. */
+    public static Map<Integer, Integer> spellSlotsFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.spellSlots(level)
+                : spellSlotsFor(clazz, level);
+    }
+
+    /** {@link #cantripsKnownFor(String, int)}, with the cantrips a subclass's Spellcasting teaches. */
+    public static int cantripsKnownFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.cantripsKnown(level)
+                : cantripsKnownFor(clazz, level);
+    }
+
+    /** {@link #preparedSpellsFor(String, int)}, with a subclass's Prepared Spells column. */
+    public static int preparedSpellsFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.preparedSpells(level)
+                : preparedSpellsFor(clazz, level);
+    }
+
+    /** {@link #isCaster(String)}, or a subclass that brings Spellcasting of its own. */
+    public static boolean isCaster(String clazz, String subclass) {
+        return MysticArtsSpellcasting.applies(clazz, subclass) || isCaster(clazz);
     }
 
     // ── Subclass timing & catalog (Phase 3 — mechanism only) ────────────────────

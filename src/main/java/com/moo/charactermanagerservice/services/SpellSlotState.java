@@ -17,8 +17,9 @@ import java.util.TreeMap;
  * A character's spell slots: {@code pc.spell_slots}, a JSON object keyed by
  * spell level — {@code {"1":{"max":4,"used":1},"2":{"max":3,"used":0}}}.
  *
- * <p>The MAXIMUM is the server's. It is the class table
- * ({@link ClassProgression#spellSlotsFor}) plus the Dungeon Master's bonus
+ * <p>The MAXIMUM is the server's. It is the class table (or the table of a
+ * subclass that brings its own Spellcasting,
+ * {@link ClassProgression#spellSlotsFor(String, String, int)}) plus the Dungeon Master's bonus
  * lines for that spell level, which live with the other adjustment lines in
  * {@code pc.stat_adjustments} under the key {@code slot1} .. {@code slot9}
  * ({@link StatAdjustmentRules}) — {@code {"slot3":[{"value":1,"label":"Pearl
@@ -59,7 +60,7 @@ final class SpellSlotState {
 
     /** The maximum per spell level for this character: class table plus bonus lines. */
     static Map<Integer, Integer> maxFor(PC pc) {
-        return maxFor(pc.getClazz(), pc.getLevel() == null ? null : pc.getLevel().intValue(),
+        return maxFor(pc.getClazz(), pc.getSubclass(), pc.getLevel() == null ? null : pc.getLevel().intValue(),
                 pc.getStatAdjustments());
     }
 
@@ -71,7 +72,15 @@ final class SpellSlotState {
      * and a negative line can take a table slot level away entirely.
      */
     static Map<Integer, Integer> maxFor(String clazz, Integer level, String statAdjustments) {
-        Map<Integer, Integer> table = ClassProgression.spellSlotsFor(clazz, level == null ? 1 : level);
+        return maxFor(clazz, null, level, statAdjustments);
+    }
+
+    /**
+     * {@link #maxFor(String, Integer, String)} for a character with a subclass: the table is the
+     * subclass's own where it brings one (a Warrior of the Mystic Arts monk), the class's otherwise.
+     */
+    static Map<Integer, Integer> maxFor(String clazz, String subclass, Integer level, String statAdjustments) {
+        Map<Integer, Integer> table = ClassProgression.spellSlotsFor(clazz, subclass, level == null ? 1 : level);
         Map<String, List<StatAdjustmentRules.Line>> lines = StatAdjustmentRules.parse(statAdjustments);
         Map<Integer, Integer> max = new LinkedHashMap<>();
         for (int spellLevel = 1; spellLevel <= MAX_SPELL_LEVEL; spellLevel++) {
