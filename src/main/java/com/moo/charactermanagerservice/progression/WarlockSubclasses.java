@@ -175,8 +175,8 @@ final class WarlockSubclasses {
     /**
      * Vestige Patron (Arcana Unleashed). The companion's type and the domain behind Vestige Spells
      * are choices the player makes: see {@link SubclassChoices}. The companion is described in
-     * words here; nothing creates it as a follower yet. The domain's spells are granted by
-     * {@link VestigeSpells}.
+     * words here; the follower itself is built from the same numbers by {@link VestigeCompanion}.
+     * The domain's spells are granted by {@link VestigeSpells}.
      */
     private static Map<Integer, List<FeatureGain>> vestigePatron() {
         Map<Integer, List<FeatureGain>> f = new HashMap<>();
