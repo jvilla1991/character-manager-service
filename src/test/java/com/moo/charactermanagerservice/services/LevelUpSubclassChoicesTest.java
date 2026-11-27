@@ -362,6 +362,28 @@ class LevelUpSubclassChoicesTest {
                 .containsExactly("Fire Bolt", "Disintegrate", "Teleport", "Maze", "Light", "Meteor Swarm");
     }
 
+    // ── Arcane Archer: what a level-up to Fighter 3 carries ──────────────────────
+
+    private static final String LORE = "Arcane Archer Lore";
+    private static final String TWO_SHOTS = "\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\"]";
+
+    /** The Lore cantrip as the app sends it. */
+    private static List<Map<String, Object>> lore() {
+        return List.of(pick(0, "Druidcraft", LORE));
+    }
+
+    /** The request's choices on reaching Fighter 3: two options, and the skill picks if any are owed. */
+    private static Map<String, Object> twoShots(String... skills) {
+        Map<String, Object> choices = new LinkedHashMap<>();
+        if (skills.length > 0) choices.put("skills", List.of(skills));
+        choices.put("arcaneShots", List.of("Banishing Shot", "Seeking Shot"));
+        return choices;
+    }
+
+    private static Map<String, Object> shots(String... names) {
+        return Map.of("arcaneShots", List.of(names));
+    }
+
     // ── Arcane Archer: skills ────────────────────────────────────────────────────
 
     @Test
@@ -369,20 +391,22 @@ class LevelUpSubclassChoicesTest {
         PC fighter = pc("Fighter", 2);
         fighter.setSkills("{\"Athletics\":\"prof\"}");
 
-        levelUp(fighter, "Arcane Archer", null, null, null); // the key may be left out
+        levelUp(fighter, "Arcane Archer", lore(), twoShots(), null); // the skills key may be left out
 
         assertThat(fighter.getSubclass()).isEqualTo("Arcane Archer");
-        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[]}");
+        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[]," + TWO_SHOTS + "}");
         assertThat(skillsOf(fighter)).containsOnly(
                 Map.entry("Athletics", "prof"), Map.entry("Arcana", "prof"), Map.entry("Nature", "prof"));
 
         // A character with no skills recorded at all gets its first two.
         PC blank = pc("Fighter", 2);
-        levelUp(blank, "Arcane Archer", null, Map.of("skills", List.of()), null);
+        Map<String, Object> emptySkills = new LinkedHashMap<>(twoShots());
+        emptySkills.put("skills", List.of());
+        levelUp(blank, "Arcane Archer", lore(), emptySkills, null);
         assertThat(blank.getSkills()).isEqualTo("{\"Arcana\":\"prof\",\"Nature\":\"prof\"}");
 
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null,
-                Map.of("skills", List.of("Athletics")), null), "Arcane Archer requires exactly 0 skill choices");
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), twoShots("Athletics"), null),
+                "Arcane Archer requires exactly 0 skill choices");
     }
 
     @Test
@@ -390,9 +414,9 @@ class LevelUpSubclassChoicesTest {
         PC fighter = pc("Fighter", 2);
         fighter.setSkills("{\"Nature\":\"prof\",\"Athletics\":\"prof\"}");
 
-        levelUp(fighter, "Arcane Archer", null, Map.of("skills", List.of("Perception")), null);
+        levelUp(fighter, "Arcane Archer", lore(), twoShots("Perception"), null);
 
-        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[\"Perception\"]}");
+        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[\"Perception\"]," + TWO_SHOTS + "}");
         assertThat(skillsOf(fighter)).containsOnly(Map.entry("Nature", "prof"), Map.entry("Athletics", "prof"),
                 Map.entry("Arcana", "prof"), Map.entry("Perception", "prof"));
 
@@ -401,12 +425,12 @@ class LevelUpSubclassChoicesTest {
             f.setSkills("{\"Nature\":\"prof\"}");
             return f;
         };
-        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", null, null, null),
+        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", lore(), twoShots(), null),
                 "Arcane Archer requires exactly 1 skill choice");
-        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", null, Map.of("skills", List.of()), null),
+        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", lore(), Map.of("skills", List.of()), null),
                 "Arcane Archer requires exactly 1 skill choice");
-        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", null,
-                Map.of("skills", List.of("Stealth")), null), "'Stealth' is not a skill Arcane Archer can choose");
+        assertRefused(() -> levelUp(knowsNature.get(), "Arcane Archer", lore(), twoShots("Stealth"), null),
+                "'Stealth' is not a skill Arcane Archer can choose");
     }
 
     @Test
@@ -414,9 +438,10 @@ class LevelUpSubclassChoicesTest {
         PC fighter = pc("Fighter", 2);
         fighter.setSkills("{\"Arcana\":\"expert\",\"Nature\":\"prof\",\"Insight\":\"prof\"}");
 
-        levelUp(fighter, "Arcane Archer", null, Map.of("skills", List.of("Survival", "Acrobatics")), null);
+        levelUp(fighter, "Arcane Archer", lore(), twoShots("Survival", "Acrobatics"), null);
 
-        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[\"Survival\",\"Acrobatics\"]}");
+        assertThat(fighter.getSubclassChoices())
+                .isEqualTo("{\"skills\":[\"Survival\",\"Acrobatics\"]," + TWO_SHOTS + "}");
         assertThat(skillsOf(fighter)).containsOnly(Map.entry("Arcana", "expert"), Map.entry("Nature", "prof"),
                 Map.entry("Insight", "prof"), Map.entry("Survival", "prof"), Map.entry("Acrobatics", "prof"));
 
@@ -425,15 +450,23 @@ class LevelUpSubclassChoicesTest {
             f.setSkills("{\"Arcana\":\"prof\",\"Nature\":\"prof\",\"Insight\":\"prof\"}");
             return f;
         };
-        assertRefused(() -> levelUp(knowsBoth.get(), "Arcane Archer", null,
-                Map.of("skills", List.of("Survival")), null), "Arcane Archer requires exactly 2 skill choices");
-        assertRefused(() -> levelUp(knowsBoth.get(), "Arcane Archer", null,
-                Map.of("skills", List.of("Survival", "Insight")), null), "'Insight' is already a skill proficiency");
+        assertRefused(() -> levelUp(knowsBoth.get(), "Arcane Archer", lore(), twoShots("Survival"), null),
+                "Arcane Archer requires exactly 2 skill choices");
+        assertRefused(() -> levelUp(knowsBoth.get(), "Arcane Archer", lore(), twoShots("Survival", "Insight"), null),
+                "'Insight' is already a skill proficiency");
     }
 
     // ── Arcane Archer: Arcane Shot options ───────────────────────────────────────
 
+    /** An Arcane Archer past Fighter 3 with its skills settled and its Lore cantrip picked. */
     private static PC archer(int level, String choices) {
+        PC fighter = bareArcher(level, choices);
+        fighter.setSpells("[" + held(0, "Druidcraft", LORE) + "]");
+        return fighter;
+    }
+
+    /** An Arcane Archer the way a DM makes one by hand on the sheet: no cantrip picked. */
+    private static PC bareArcher(int level, String choices) {
         PC fighter = pc("Fighter", "Arcane Archer", level);
         fighter.setSubclassChoices(choices);
         fighter.setSkills("{\"Arcana\":\"prof\",\"Nature\":\"prof\"}");
@@ -441,109 +474,242 @@ class LevelUpSubclassChoicesTest {
     }
 
     @Test
-    void arcaneShots_mayWait_whileTheirPickerIsNotBuilt() {
-        // Level 3 without the key, level 7 without the key: both go through.
+    void arcaneArcher_atThree_takesTwoOptionsAndTheLoreCantrip() {
         PC fighter = pc("Fighter", 2);
-        levelUp(fighter, "Arcane Archer", null, null, null);
-        assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[]}");
+        levelUp(fighter, "Arcane Archer", List.of(pick(0, "Prestidigitation", LORE)),
+                shots("seeking shot", "Banishing Shot"), null);
 
-        PC seven = archer(6, "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\"]}");
-        service.applyLevelUp(seven, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
-        assertThat(seven.getLevel()).isEqualTo((short) 7);
-        assertThat(seven.getSubclassChoices())
-                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\"]}");
+        assertThat(fighter.getLevel()).isEqualTo((short) 3);
+        assertThat(fighter.getSubclass()).isEqualTo("Arcane Archer");
+        assertThat(fighter.getSubclassChoices())
+                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Seeking Shot\",\"Banishing Shot\"]}");
+        // A Fighter has no cantrips of its own and no spell slots: the cantrip is the feature's.
+        assertThat(spellNames(fighter)).containsExactly("Prestidigitation");
+        assertThat(saved(fighter, "Prestidigitation")).containsEntry("grantedBy", LORE)
+                .containsEntry("prepared", true).doesNotContainKey("alwaysPrepared");
+        assertThat(fighter.getSpellSlots()).isNull();
+        assertThat(fighter.getFeatures()).contains("\"Arcane Archer Lore\"", "\"Arcane Shot\"", "\"Arcane Shot Options\"");
     }
 
     @Test
-    void arcaneShots_whenSent_mustBeTheCountForTheNewLevel() {
-        PC fighter = pc("Fighter", 2);
-        levelUp(fighter, "Arcane Archer", null,
-                Map.of("arcaneShots", List.of("seeking shot", "Banishing Shot")), null);
-        assertThat(fighter.getSubclassChoices())
-                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Seeking Shot\",\"Banishing Shot\"]}");
+    void arcaneArcher_atThree_refusesToGoThroughWithoutItsTwoOptions() {
+        String message = "An Arcane Archer knows exactly 2 Arcane Shot options at level 3";
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), null, null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), Map.of(), null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), Map.of("skills", List.of()), null),
+                message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), shots(), null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(), shots("Seeking Shot"), null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(),
+                shots("Seeking Shot", "Shadow Shot", "Piercing Shot"), null), message);
 
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null,
-                Map.of("arcaneShots", List.of("Seeking Shot")), null),
-                "An Arcane Archer knows exactly 2 Arcane Shot options at level 3");
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null,
-                Map.of("arcaneShots", List.of("Seeking Shot", "Exploding Shot")), null),
-                "'Exploding Shot' is not an Arcane Shot option");
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null,
-                Map.of("arcaneShots", List.of("Seeking Shot", "Seeking Shot")), null),
-                "'Seeking Shot' is chosen twice");
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null,
+        // Nothing is saved by a refused level-up.
+        PC fighter = pc("Fighter", 2);
+        assertRefused(() -> levelUp(fighter, "Arcane Archer", lore(), null, null), message);
+        assertThat(fighter.getLevel()).isEqualTo((short) 2);
+        assertThat(fighter.getSubclassChoices()).isNull();
+        assertThat(fighter.getSpells()).isNull();
+    }
+
+    @Test
+    void arcaneArcher_atThree_refusesToGoThroughWithoutTheLoreCantrip() {
+        String message = "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation";
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", null, twoShots(), null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", List.of(), twoShots(), null), message);
+        // A cantrip that is not one of the two, or both of them.
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", List.of(pick(0, "Fire Bolt", LORE)),
+                twoShots(), null), message);
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer",
+                List.of(pick(0, "Druidcraft", LORE), pick(0, "Prestidigitation", LORE)), twoShots(), null), message);
+        // Unmarked, it is a Fighter's own cantrip, and a Fighter learns none: the Lore pick is still owed.
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", List.of(spell(0, "Druidcraft")),
+                twoShots(), null), message);
+    }
+
+    @Test
+    void arcaneShots_whenSent_mustBeRealOptions_noneTwice() {
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(),
+                shots("Seeking Shot", "Exploding Shot"), null), "'Exploding Shot' is not an Arcane Shot option");
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(),
+                shots("Seeking Shot", "Seeking Shot"), null), "'Seeking Shot' is chosen twice");
+        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", lore(),
                 Map.of("arcaneShots", "Seeking Shot"), null), "'arcaneShots' must be a list of names");
     }
 
     @Test
     void arcaneShots_atSeven_oneMoreIsLearned_andOneKnownMayBeSwapped() {
-        String two = "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\"]}";
+        String two = "{\"skills\":[]," + TWO_SHOTS + "}";
 
         PC kept = archer(6, two);
-        levelUp(kept, null, null, Map.of("arcaneShots", List.of("Banishing Shot", "Seeking Shot", "Shadow Shot")),
-                null);
+        levelUp(kept, null, null, shots("Banishing Shot", "Seeking Shot", "Shadow Shot"), null);
+        assertThat(kept.getLevel()).isEqualTo((short) 7);
         assertThat(kept.getSubclassChoices()).isEqualTo(
                 "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\",\"Shadow Shot\"]}");
+        // The cantrip was picked at 3: nothing more is asked, and it is still the only spell.
+        assertThat(spellNames(kept)).containsExactly("Druidcraft");
 
         PC swapped = archer(6, two);
-        levelUp(swapped, null, null,
-                Map.of("arcaneShots", List.of("Banishing Shot", "Bursting Shot", "Shadow Shot")), null);
+        levelUp(swapped, null, null, shots("Banishing Shot", "Bursting Shot", "Shadow Shot"), null);
         assertThat(swapped.getSubclassChoices()).isEqualTo(
                 "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Bursting Shot\",\"Shadow Shot\"]}");
 
+        // Two swapped is one too many; the same two again is one too few; and so is sending nothing.
         assertRefused(() -> levelUp(archer(6, two), null, null,
-                Map.of("arcaneShots", List.of("Grasping Shot", "Bursting Shot", "Shadow Shot")), null),
+                shots("Grasping Shot", "Bursting Shot", "Shadow Shot"), null),
                 "Only one known Arcane Shot option can be replaced at level 7");
-        assertRefused(() -> levelUp(archer(6, two), null, null,
-                Map.of("arcaneShots", List.of("Banishing Shot", "Seeking Shot")), null),
+        assertRefused(() -> levelUp(archer(6, two), null, null, shots("Banishing Shot", "Seeking Shot"), null),
+                "An Arcane Archer knows exactly 3 Arcane Shot options at level 7");
+        assertRefused(() -> levelUp(archer(6, two), null, null, null, null),
                 "An Arcane Archer knows exactly 3 Arcane Shot options at level 7");
     }
 
     @Test
-    void arcaneShots_atALevelThatAddsNone_nothingKnownMayBeSwapped_butAShortListMayBeFilled() {
-        String two = "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\"]}";
-        assertRefused(() -> levelUp(archer(4, two), null, null,
-                Map.of("arcaneShots", List.of("Banishing Shot", "Shadow Shot")), null),
-                "A known Arcane Shot option can only be replaced at a level that adds a new one");
+    void arcaneShots_oneMoreIsOwed_atTenFifteenAndEighteen() {
+        List<String> all = List.of("Banishing Shot", "Beguiling Shot", "Bursting Shot", "Enfeebling Shot",
+                "Grasping Shot", "Piercing Shot");
+        int[] levels = {10, 15, 18};
+        for (int i = 0; i < levels.length; i++) {
+            int level = levels[i];
+            int count = 4 + i;
+            String stored = "{\"skills\":[],\"arcaneShots\":[\""
+                    + String.join("\",\"", all.subList(0, count - 1)) + "\"]}";
+            assertRefused(() -> levelUp(archer(level - 1, stored), null, null, null, null),
+                    "An Arcane Archer knows exactly " + count + " Arcane Shot options at level " + level);
 
-        // Nothing stored yet at level 4: both are picked at 5.
-        PC late = archer(4, "{\"skills\":[]}");
-        levelUp(late, null, null, Map.of("arcaneShots", List.of("Piercing Shot", "Shadow Shot")), null);
-        assertThat(late.getSubclassChoices())
-                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Piercing Shot\",\"Shadow Shot\"]}");
+            PC fighter = archer(level - 1, stored);
+            levelUp(fighter, null, null, Map.of("arcaneShots", all.subList(0, count)), null);
+            assertThat(fighter.getLevel()).as("level").isEqualTo((short) level);
+            assertThat(fighter.getSubclassChoices()).isEqualTo("{\"skills\":[],\"arcaneShots\":[\""
+                    + String.join("\",\"", all.subList(0, count)) + "\"]}");
+        }
+    }
+
+    @Test
+    void arcaneShots_atALevelThatAddsNone_areLeftAlone_andNothingKnownMayBeSwapped() {
+        String two = "{\"skills\":[]," + TWO_SHOTS + "}";
+
+        // 4 -> 5 and 8 -> 9 with nothing sent: the stored options stay exactly as they are.
+        PC five = archer(4, two);
+        levelUp(five, null, null, null, null);
+        assertThat(five.getLevel()).isEqualTo((short) 5);
+        assertThat(five.getSubclassChoices()).isEqualTo(two);
+        assertThat(spellNames(five)).containsExactly("Druidcraft");
+
+        String three = "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\",\"Shadow Shot\"]}";
+        PC nine = archer(8, three);
+        levelUp(nine, null, null, Map.of(), null);
+        assertThat(nine.getSubclassChoices()).isEqualTo(three);
+
+        // The same options sent again are accepted; a different one is not.
+        PC same = archer(4, two);
+        levelUp(same, null, null, shots("Seeking Shot", "Banishing Shot"), null);
+        assertThat(same.getSubclassChoices())
+                .isEqualTo("{\"skills\":[],\"arcaneShots\":[\"Seeking Shot\",\"Banishing Shot\"]}");
+        assertRefused(() -> levelUp(archer(4, two), null, null, shots("Banishing Shot", "Shadow Shot"), null),
+                "A known Arcane Shot option can only be replaced at a level that adds a new one");
+    }
+
+    @Test
+    void arcaneArcher_madeByHandAtAHigherLevel_catchesUpAtItsNextLevelUp() {
+        // The DM changed the subclass on the sheet at Fighter 8: no options, no cantrip, no skills settled.
+        java.util.function.Supplier<PC> byHand = () -> {
+            PC f = pc("Fighter", "Arcane Archer", 8);
+            f.setSkills("{\"Athletics\":\"prof\"}");
+            return f;
+        };
+        assertRefused(() -> levelUp(byHand.get(), null, null, null, null),
+                "An Arcane Archer knows exactly 3 Arcane Shot options at level 9");
+        assertRefused(() -> levelUp(byHand.get(), null, lore(), shots("Piercing Shot", "Shadow Shot"), null),
+                "An Arcane Archer knows exactly 3 Arcane Shot options at level 9");
+        assertRefused(() -> levelUp(byHand.get(), null, null,
+                shots("Piercing Shot", "Shadow Shot", "Seeking Shot"), null),
+                "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation");
+
+        PC caughtUp = byHand.get();
+        levelUp(caughtUp, null, List.of(pick(0, "prestidigitation", LORE)),
+                shots("Piercing Shot", "Shadow Shot", "Seeking Shot"), null);
+        assertThat(caughtUp.getLevel()).isEqualTo((short) 9);
+        assertThat(caughtUp.getSubclassChoices()).isEqualTo(
+                "{\"skills\":[],\"arcaneShots\":[\"Piercing Shot\",\"Shadow Shot\",\"Seeking Shot\"]}");
+        assertThat(skillsOf(caughtUp)).containsOnly(
+                Map.entry("Athletics", "prof"), Map.entry("Arcana", "prof"), Map.entry("Nature", "prof"));
+        assertThat(spellNames(caughtUp)).containsExactly("prestidigitation");
+        assertThat(saved(caughtUp, "prestidigitation")).containsEntry("grantedBy", LORE);
+
+        // A list that is only short is filled up: what is known stays (9 adds no option, so no swap).
+        String two = "{\"skills\":[]," + TWO_SHOTS + "}";
+        PC filled = archer(8, two);
+        levelUp(filled, null, null, shots("Banishing Shot", "Seeking Shot", "Shadow Shot"), null);
+        assertThat(filled.getSubclassChoices()).isEqualTo(
+                "{\"skills\":[],\"arcaneShots\":[\"Banishing Shot\",\"Seeking Shot\",\"Shadow Shot\"]}");
+        assertRefused(() -> levelUp(archer(8, two), null, null,
+                shots("Banishing Shot", "Bursting Shot", "Shadow Shot"), null),
+                "A known Arcane Shot option can only be replaced at a level that adds a new one");
     }
 
     // ── Arcane Archer Lore: the cantrip ──────────────────────────────────────────
 
-    private static final String LORE = "Arcane Archer Lore";
+    @Test
+    void arcaneArcherLore_onceHeld_isNeverAskedForAgain_andCannotBeReplaced() {
+        String two = "{\"skills\":[]," + TWO_SHOTS + "}";
+        String message = "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation";
+
+        // It already has its cantrip: a second one is refused, and the cantrip is not replaceable.
+        assertRefused(() -> levelUp(archer(4, two), null, List.of(pick(0, "Prestidigitation", LORE)), null, null),
+                message);
+        assertRefused(() -> levelUp(archer(4, two), null, List.of(pick(0, "Prestidigitation", LORE)), null,
+                List.of("Druidcraft")), "'Druidcraft' is not a spell that can be replaced");
+    }
 
     @Test
-    void arcaneArcherLore_theCantripMayWait_andWhenSentIsOneOfTheTwo() {
-        PC without = pc("Fighter", 2);
-        levelUp(without, "Arcane Archer", null, null, null);
-        assertThat(without.getSpells()).isNull();
+    void arcaneArcherLore_skippedBeforeItWasRequired_isOwedAtTheNextLevelUp() {
+        String two = "{\"skills\":[]," + TWO_SHOTS + "}";
+        assertRefused(() -> levelUp(bareArcher(4, two), null, null, null, null),
+                "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation");
 
-        PC fighter = pc("Fighter", 2); // a Fighter has no cantrips of its own and no spell slots
-        levelUp(fighter, "Arcane Archer", List.of(pick(0, "Druidcraft", LORE)), null, null);
-        assertThat(saved(fighter, "Druidcraft")).containsEntry("grantedBy", LORE).containsEntry("prepared", true)
-                .doesNotContainKey("alwaysPrepared");
+        PC late = bareArcher(4, two);
+        levelUp(late, null, lore(), null, null);
+        assertThat(late.getLevel()).isEqualTo((short) 5);
+        assertThat(spellNames(late)).containsExactly("Druidcraft");
+        assertThat(saved(late, "Druidcraft")).containsEntry("grantedBy", LORE).containsEntry("prepared", true);
+    }
 
-        // A character that skipped it at 3 picks it at a later level-up.
-        PC late = archer(4, "{\"skills\":[]}");
-        levelUp(late, null, List.of(pick(0, "prestidigitation", LORE)), null, null);
-        assertThat(spellNames(late)).containsExactly("prestidigitation");
+    @Test
+    void arcaneArcherLore_aCantripKnownFromElsewhere_isAWastedPick_andTheOtherIsTaken() {
+        java.util.function.Supplier<PC> knowsDruidcraft = () -> {
+            PC f = pc("Fighter", 2);
+            f.setSpells("[{\"lvl\":0,\"name\":\"Druidcraft\",\"prepared\":true,\"grantedBy\":\"Magic Initiate\"}]");
+            return f;
+        };
+        assertRefused(() -> levelUp(knowsDruidcraft.get(), "Arcane Archer", lore(), twoShots(), null),
+                "'Druidcraft' is already known");
+        // Knowing one of the two does not settle the feature: the other is owed.
+        assertRefused(() -> levelUp(knowsDruidcraft.get(), "Arcane Archer", null, twoShots(), null),
+                "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation");
 
-        String message = "Arcane Archer Lore requires one cantrip, Druidcraft or Prestidigitation";
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer", List.of(pick(0, "Fire Bolt", LORE)),
-                null, null), message);
-        assertRefused(() -> levelUp(pc("Fighter", 2), "Arcane Archer",
-                List.of(pick(0, "Druidcraft", LORE), pick(0, "Prestidigitation", LORE)), null, null), message);
-        // It already has its cantrip: a second one is refused, and the cantrip is not replaceable.
-        PC has = archer(4, "{\"skills\":[]}");
-        has.setSpells("[" + held(0, "Druidcraft", LORE) + "]");
-        assertRefused(() -> levelUp(has, null, List.of(pick(0, "Prestidigitation", LORE)), null, null), message);
-        assertRefused(() -> levelUp(has, null, List.of(pick(0, "Prestidigitation", LORE)), null,
-                List.of("Druidcraft")), "'Druidcraft' is not a spell that can be replaced");
+        PC fighter = knowsDruidcraft.get();
+        levelUp(fighter, "Arcane Archer", List.of(pick(0, "Prestidigitation", LORE)), twoShots(), null);
+        assertThat(spellNames(fighter)).containsExactly("Druidcraft", "Prestidigitation");
+        assertThat(saved(fighter, "Druidcraft")).containsEntry("grantedBy", "Magic Initiate");
+        assertThat(saved(fighter, "Prestidigitation")).containsEntry("grantedBy", LORE);
+    }
+
+    @Test
+    void arcaneArcherLore_aCharacterThatKnowsBothCantrips_hasNothingToPick_andIsNotHeldUp() {
+        String both = "[{\"lvl\":0,\"name\":\"Druidcraft\",\"prepared\":true,\"grantedBy\":\"Magic Initiate\"},"
+                + "{\"lvl\":0,\"name\":\"prestidigitation\",\"prepared\":true}]";
+        PC fighter = pc("Fighter", 2);
+        fighter.setSpells(both);
+
+        levelUp(fighter, "Arcane Archer", null, twoShots(), null);
+
+        assertThat(fighter.getLevel()).isEqualTo((short) 3);
+        assertThat(fighter.getSpells()).isEqualTo(both); // untouched: neither cantrip becomes the feature's
+        // The options are a separate matter and stay owed.
+        PC other = pc("Fighter", 2);
+        other.setSpells(both);
+        assertRefused(() -> levelUp(other, "Arcane Archer", null, null, null),
+                "An Arcane Archer knows exactly 2 Arcane Shot options at level 3");
     }
 
     // ── Vestige Patron ───────────────────────────────────────────────────────────

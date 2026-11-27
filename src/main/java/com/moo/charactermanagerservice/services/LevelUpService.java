@@ -855,8 +855,10 @@ public class LevelUpService {
             List<Map<String, Object>> held = spells.stream()
                     .filter(s -> pickRuleOf(List.of(rule), s) != null).toList();
             if (picks.isEmpty() && !replaced.contains(rule.feature())) {
-                // Nothing sent for this feature: fine once its picks are made, or while it may wait.
-                if (held.size() < rule.count() && SubclassChoices.isRequired(rule.feature())) {
+                // Nothing sent for this feature: fine once its picks are made, while it may wait,
+                // or when the character already knows every spell the feature offers.
+                if (held.size() < rule.count() && SubclassChoices.isRequired(rule.feature())
+                        && rule.hasPickLeft(spells.stream().map(this::spellName).toList())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
                 }
                 continue;

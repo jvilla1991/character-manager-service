@@ -73,11 +73,11 @@ public final class SubclassChoices {
     /**
      * The choices a level-up refuses to go through without, named by stored key or by spell-pick
      * feature. Everything else is optional for now: valid when sent, accepted when absent. To make
-     * one required, add its key ({@link #ARCANE_SHOTS}, {@link #VESTIGE_TYPE},
-     * {@link #VESTIGE_DOMAIN}) or its feature ({@link #ARCANE_ARCHER_LORE}) here; nothing else
-     * needs to change.
+     * one required, add its key ({@link #VESTIGE_TYPE}, {@link #VESTIGE_DOMAIN}) here; nothing
+     * else needs to change.
      */
-    static final Set<String> REQUIRED = Set.of(SKILLS, STUDENT_OF_ARCANA, MAGICAL_MASTERY);
+    static final Set<String> REQUIRED = Set.of(SKILLS, STUDENT_OF_ARCANA, MAGICAL_MASTERY,
+            ARCANE_SHOTS, ARCANE_ARCHER_LORE);
 
     /** True when a level-up must leave this stored key or spell-pick feature complete. */
     public static boolean isRequired(String keyOrFeature) {
@@ -625,6 +625,20 @@ public final class SubclassChoices {
         /** True when the feature lets this spell be picked (by name; any name when it lists none). */
         public boolean allows(String spellName) {
             return names.isEmpty() || spelling(names, spellName) != null;
+        }
+
+        /**
+         * True when the character can still make a pick: always for a feature that takes any
+         * spell; for one that names its spells, while there is a named spell the character does
+         * not know yet. (An Arcane Archer that already knows both Druidcraft and Prestidigitation
+         * has nothing left to choose, and is not held up for it.)
+         *
+         * @param knownSpells the names of the spells the character knows, from any source
+         */
+        public boolean hasPickLeft(Collection<String> knownSpells) {
+            if (names.isEmpty()) return true;
+            Set<String> known = lowerCased(knownSpells);
+            return names.stream().anyMatch(name -> !known.contains(name.toLowerCase(Locale.ROOT)));
         }
 
         /** The sentence a refused set of picks is answered with. */

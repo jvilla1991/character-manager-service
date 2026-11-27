@@ -37,6 +37,13 @@ class SubclassChoicesTest {
         return new Choices(null, null, type, domain);
     }
 
+    private static final List<String> TWO_SHOTS = List.of("Banishing Shot", "Seeking Shot");
+
+    /** What an Arcane Archer sends on reaching Fighter 3: its two options, and these skill picks. */
+    private static Choices archerAtThree(String... skills) {
+        return new Choices(List.of(skills), TWO_SHOTS, null, null);
+    }
+
     private static void assertRefused(ThrowingCallable call, String message) {
         assertThatThrownBy(call).isInstanceOf(InvalidChoice.class).hasMessage(message);
     }
@@ -89,14 +96,14 @@ class SubclassChoicesTest {
     }
 
     @Test
-    void onlySkillsAndTheTwoArcanaDomainSpellFeatures_areRequiredForNow() {
+    void skillsTheArcaneArchersChoicesAndTheArcanaDomainSpellFeatures_areRequired() {
         assertThat(SubclassChoices.isRequired("skills")).isTrue();
         assertThat(SubclassChoices.isRequired("Student of Arcana")).isTrue();
         assertThat(SubclassChoices.isRequired("Magical Mastery")).isTrue();
-        assertThat(SubclassChoices.isRequired("arcaneShots")).isFalse();
+        assertThat(SubclassChoices.isRequired("arcaneShots")).isTrue();
+        assertThat(SubclassChoices.isRequired("Arcane Archer Lore")).isTrue();
         assertThat(SubclassChoices.isRequired("vestigeType")).isFalse();
         assertThat(SubclassChoices.isRequired("vestigeDomain")).isFalse();
-        assertThat(SubclassChoices.isRequired("Arcane Archer Lore")).isFalse();
     }
 
     // ── Reading, writing and cleaning the stored value ───────────────────────────
@@ -280,13 +287,13 @@ class SubclassChoicesTest {
     @Test
     void arcaneArcher_withNeitherSkill_gainsArcanaAndNature_andPicksNone() {
         // The key may be left out; it is stored as an empty list so the choice counts as made.
-        Change omitted = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, Choices.NONE,
-                List.of("Athletics"));
+        Change omitted = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE,
+                shots("Banishing Shot", "Seeking Shot"), List.of("Athletics"));
         assertThat(omitted.choices().skills()).isEmpty();
         assertThat(omitted.skillsGained()).containsExactly("Arcana", "Nature");
 
-        Change sentEmpty = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, skills(),
-                List.of("Athletics"));
+        Change sentEmpty = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE,
+                archerAtThree(), List.of("Athletics"));
         assertThat(sentEmpty.choices().skills()).isEmpty();
         assertThat(sentEmpty.skillsGained()).containsExactly("Arcana", "Nature");
         assertThat(SubclassChoices.skillsOwed("Fighter", "Arcane Archer", List.of("Athletics"))).isZero();
@@ -298,7 +305,7 @@ class SubclassChoicesTest {
     @Test
     void arcaneArcher_withOneOfTheTwo_picksOneFighterSkillInstead() {
         Change change = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE,
-                skills("animal handling"), List.of("Nature", "Athletics"));
+                archerAtThree("animal handling"), List.of("Nature", "Athletics"));
         assertThat(change.choices().skills()).containsExactly("Animal Handling");
         assertThat(change.skillsGained()).containsExactly("Arcana", "Nature", "Animal Handling");
         assertThat(SubclassChoices.skillsOwed("Fighter", "Arcane Archer", List.of("Nature"))).isEqualTo(1);
@@ -317,7 +324,7 @@ class SubclassChoicesTest {
     @Test
     void arcaneArcher_withBoth_picksTwoFighterSkills() {
         Change change = SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE,
-                skills("Perception", "Survival"), List.of("Arcana", "Nature"));
+                archerAtThree("Perception", "Survival"), List.of("Arcana", "Nature"));
         assertThat(change.choices().skills()).containsExactly("Perception", "Survival");
         assertThat(change.skillsGained()).containsExactly("Arcana", "Nature", "Perception", "Survival");
         assertThat(SubclassChoices.skillsOwed("Fighter", "Arcane Archer", List.of("arcana", " Nature "))).isEqualTo(2);
@@ -396,13 +403,68 @@ class SubclassChoicesTest {
     }
 
     @Test
-    void arcaneShots_notSent_areLeftAsTheyAre() {
-        Choices two = new Choices(List.of(), List.of("Banishing Shot", "Seeking Shot"), null, null);
-        // Even at a level that adds an option: the choice may wait.
-        assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 7, two, Choices.NONE, NO_SKILLS).choices())
-                .isEqualTo(two);
-        assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, Choices.NONE, NO_SKILLS)
-                .choices().arcaneShots()).isNull();
+    void arcaneShots_notSent_areLeftAsTheyAre_whileTheLevelAsksForNoMore() {
+        Choices two = new Choices(List.of(), TWO_SHOTS, null, null);
+        for (int level = 4; level <= 6; level++) {
+            assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", level, two, Choices.NONE, NO_SKILLS)
+                    .choices()).as("level " + level).isEqualTo(two);
+        }
+        Choices six = new Choices(List.of(), SubclassChoices.ARCANE_SHOT_OPTIONS.subList(0, 6), null, null);
+        assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 19, six, Choices.NONE, NO_SKILLS).choices())
+                .isEqualTo(six);
+    }
+
+    @Test
+    void arcaneShots_notSent_areRefused_wheneverTheLevelLeavesTheListShort() {
+        // Reaching Fighter 3: the first two are owed.
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, Choices.NONE,
+                NO_SKILLS), "An Arcane Archer knows exactly 2 Arcane Shot options at level 3");
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, skills(),
+                NO_SKILLS), "An Arcane Archer knows exactly 2 Arcane Shot options at level 3");
+        // Every level that adds one: 7, 10, 15 and 18.
+        int[] adds = {7, 10, 15, 18};
+        for (int i = 0; i < adds.length; i++) {
+            int level = adds[i];
+            int count = 3 + i;
+            Choices known = new Choices(List.of(), SubclassChoices.ARCANE_SHOT_OPTIONS.subList(0, count - 1),
+                    null, null);
+            assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", level, known, Choices.NONE,
+                    NO_SKILLS), "An Arcane Archer knows exactly " + count + " Arcane Shot options at level " + level);
+        }
+        // A character made an Arcane Archer by hand, at a level that adds none: still owed.
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 6, skills(), Choices.NONE,
+                NO_SKILLS), "An Arcane Archer knows exactly 2 Arcane Shot options at level 6");
+        Choices one = new Choices(List.of(), List.of("Seeking Shot"), null, null);
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 9, one, Choices.NONE, NO_SKILLS),
+                "An Arcane Archer knows exactly 3 Arcane Shot options at level 9");
+        // An empty list is not a way around it.
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 3, Choices.NONE, shots(),
+                NO_SKILLS), "An Arcane Archer knows exactly 2 Arcane Shot options at level 3");
+    }
+
+    @Test
+    void arcaneShots_aDirectEdit_stillAsksForNothingThatIsNotSent() {
+        // The endpoint settles one key at a time: the skills alone, on a character with no options yet.
+        Change change = SubclassChoices.direct("Fighter", "Arcane Archer", 5, Choices.NONE, skills(), NO_SKILLS);
+        assertThat(change.choices().skills()).isEmpty();
+        assertThat(change.choices().arcaneShots()).isNull();
+    }
+
+    @Test
+    void arcaneShots_catchingUpAtALevelThatAddsOne_mayLeaveOutOneKnownOption() {
+        // One stored at level 6 (two were owed): at 7 three are picked, and the swap still applies.
+        Choices one = new Choices(List.of(), List.of("Seeking Shot"), null, null);
+        assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 7, one,
+                shots("Banishing Shot", "Bursting Shot", "Shadow Shot"), NO_SKILLS).choices().arcaneShots())
+                .containsExactly("Banishing Shot", "Bursting Shot", "Shadow Shot");
+        Choices three = new Choices(List.of(), List.of("Seeking Shot", "Shadow Shot", "Piercing Shot"), null, null);
+        // Three stored at 14, five known at 15: two are added, and one of the three may go.
+        assertThat(SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 15, three,
+                shots("Seeking Shot", "Shadow Shot", "Banishing Shot", "Bursting Shot", "Grasping Shot"),
+                NO_SKILLS).choices().arcaneShots()).hasSize(5);
+        assertRefused(() -> SubclassChoices.atLevelUp("Fighter", "Arcane Archer", 15, three,
+                shots("Seeking Shot", "Beguiling Shot", "Banishing Shot", "Bursting Shot", "Grasping Shot"),
+                NO_SKILLS), "Only one known Arcane Shot option can be replaced at level 15");
     }
 
     // ── vestigeType, vestigeDomain ───────────────────────────────────────────────
@@ -587,6 +649,18 @@ class SubclassChoicesTest {
         assertThat(SubclassChoices.spellPicksFor("Warlock", "Vestige Patron", 20)).isEmpty();
         assertThat(SubclassChoices.spellPicksFor("Cleric", "Life Domain", 20)).isEmpty();
         assertThat(SubclassChoices.spellPicksFor("Wizard", "Necromancer", 20)).isEmpty();
+    }
+
+    @Test
+    void spellPicks_aFeatureThatNamesItsSpells_hasNoPickLeftOnceTheCharacterKnowsThemAll() {
+        SpellPicks lore = SubclassChoices.spellPicksFor("Fighter", "Arcane Archer", 3).get(0);
+        assertThat(lore.hasPickLeft(List.of())).isTrue();
+        assertThat(lore.hasPickLeft(null)).isTrue();
+        assertThat(lore.hasPickLeft(List.of("Druidcraft", "Fire Bolt"))).isTrue();
+        assertThat(lore.hasPickLeft(List.of(" druidcraft ", "PRESTIDIGITATION"))).isFalse();
+        // A feature that takes any spell always has one left.
+        SpellPicks student = SubclassChoices.spellPicksFor("Cleric", "Arcana Domain", 3).get(0);
+        assertThat(student.hasPickLeft(List.of("Druidcraft", "Prestidigitation"))).isTrue();
     }
 
     @Test
