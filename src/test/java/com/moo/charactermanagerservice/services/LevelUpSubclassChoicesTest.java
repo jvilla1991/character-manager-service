@@ -715,11 +715,28 @@ class LevelUpSubclassChoicesTest {
     // ── Vestige Patron ───────────────────────────────────────────────────────────
 
     @Test
-    void vestigePatron_typeAndDomainMayWait_andAreCheckedWhenSent() {
-        PC waiting = pc("Warlock", "Vestige Patron", 2);
-        levelUp(waiting, null, null, null, null);
-        assertThat(waiting.getLevel()).isEqualTo((short) 3);
-        assertThat(waiting.getSubclassChoices()).isNull();
+    void vestigePatron_reachingWarlockThree_needsItsTypeAndItsDomain() {
+        assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 2), null, null, null, null),
+                "A Vestige Patron must choose a Vestige type");
+        assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 2), null, null,
+                Map.of("vestigeType", "Fiend"), null), "A Vestige Patron must choose a Vestige domain");
+        assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 2), null, null,
+                Map.of("vestigeDomain", "War"), null), "A Vestige Patron must choose a Vestige type");
+        // A refused level-up leaves the character where it was.
+        PC refused = pc("Warlock", "Vestige Patron", 2);
+        assertRefused(() -> levelUp(refused, null, null, null, null), "A Vestige Patron must choose a Vestige type");
+        assertThat(refused.getLevel()).isEqualTo((short) 2);
+        assertThat(refused.getSubclassChoices()).isNull();
+
+        // Below Warlock 3 the patron has nothing to choose, and no other patron is ever asked.
+        PC early = pc("Warlock", "Vestige Patron", 1);
+        levelUp(early, null, null, null, null);
+        assertThat(early.getLevel()).isEqualTo((short) 2);
+        assertThat(early.getSubclassChoices()).isNull();
+        PC fiend = pc("Warlock", "Fiend Patron", 2);
+        levelUp(fiend, null, null, null, null);
+        assertThat(fiend.getLevel()).isEqualTo((short) 3);
+        assertThat(fiend.getSubclassChoices()).isNull();
 
         PC warlock = pc("Warlock", "Vestige Patron", 2);
         levelUp(warlock, null, null, Map.of("vestigeType", "celestial", "vestigeDomain", "Life"), null);
@@ -729,7 +746,7 @@ class LevelUpSubclassChoicesTest {
         assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 2), null, null,
                 Map.of("vestigeType", "Dragon"), null), "'Dragon' is not a Vestige type (Celestial, Fiend or Undead)");
         assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 2), null, null,
-                Map.of("vestigeDomain", "Arcana"), null),
+                Map.of("vestigeType", "Fiend", "vestigeDomain", "Arcana"), null),
                 "'Arcana' is not a Vestige domain (Life, Light, Trickery or War)");
         // Its features, and so its choices, arrive at Warlock 3: at 2 there is nothing to choose.
         assertRefused(() -> levelUp(pc("Warlock", "Vestige Patron", 1), null, null,
@@ -746,11 +763,18 @@ class LevelUpSubclassChoicesTest {
 
         assertRefused(() -> levelUp(warlock, null, null, Map.of("vestigeDomain", "War"), null),
                 "The Vestige domain cannot be changed once it is chosen");
-        // A domain chosen late is still a first choice.
+        // A domain chosen late is still a first choice, and the level-up waits for it.
         PC late = pc("Warlock", "Vestige Patron", 5);
         late.setSubclassChoices("{\"vestigeType\":\"Fiend\"}");
+        assertRefused(() -> levelUp(late, null, null, null, null), "A Vestige Patron must choose a Vestige domain");
         levelUp(late, null, null, Map.of("vestigeDomain", "war"), null);
         assertThat(late.getSubclassChoices()).isEqualTo("{\"vestigeType\":\"Fiend\",\"vestigeDomain\":\"War\"}");
+        // A subclass the DM set by hand at a higher level: both are owed at the next level-up.
+        PC byHand = pc("Warlock", "Vestige Patron", 8);
+        assertRefused(() -> levelUp(byHand, null, null, null, null), "A Vestige Patron must choose a Vestige type");
+        levelUp(byHand, null, null, Map.of("vestigeType", "Undead", "vestigeDomain", "Trickery"), null);
+        assertThat(byHand.getSubclassChoices())
+                .isEqualTo("{\"vestigeType\":\"Undead\",\"vestigeDomain\":\"Trickery\"}");
     }
 
     // ── Everyone else levels up exactly as before ────────────────────────────────
