@@ -530,12 +530,11 @@ class PcFollowerServiceTest {
     }
 
     @Test
-    void dismiss_byTheCampaignDm_removesEveryKind_asADmEdit() {
+    void dismiss_byTheCampaignDm_removesAGrantASummonAndAFamiliar_asADmEdit() {
         List<PcFollower> all = List.of(
                 stored(5L, "Brannoc", FollowerKind.DM_GRANT),
                 stored(6L, "Thorn", FollowerKind.SUMMON),
-                stored(7L, "Pip", FollowerKind.FAMILIAR),
-                stored(8L, "Fang", FollowerKind.COMPANION));
+                stored(7L, "Pip", FollowerKind.FAMILIAR));
         for (PcFollower follower : all) {
             when(followerRepository.findById(follower.getId())).thenReturn(Optional.of(follower));
             followerService.dismiss(1L, follower.getId(), dmId);
@@ -545,8 +544,166 @@ class PcFollowerServiceTest {
         verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Brannoc", dmId);
         verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Thorn", dmId);
         verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the familiar Pip", dmId);
-        verify(activityLogService).log(1L, PcActivityType.DM_EDIT, "DM dismissed the follower Fang", dmId);
         verify(activityLogService, never()).log(any(), eq(PcActivityType.FOLLOWER), any(), any());
+    }
+
+    // --- companions: the server's own ---
+
+    private static final String VESTIGE_BLOCK = "{\"companion\":\"vestige\",\"clazz\":\"Vestige\","
+            + "\"hp\":{\"max\":24,\"cur\":24,\"temp\":0},\"ac\":17,\"conditions\":[],"
+            + "\"conditionImmunities\":[\"charmed\",\"frightened\",\"prone\"],"
+            + "\"features\":[{\"name\":\"Vestige's Strike\",\"source\":\"Action\",\"desc\":\"+7 to hit\"}]}";
+
+    private PcFollower companion() {
+        PcFollower follower = stored(8L, "Vestige", FollowerKind.COMPANION);
+        follower.setStatBlock(VESTIGE_BLOCK);
+        lenient().when(followerRepository.findById(8L)).thenReturn(Optional.of(follower));
+        lenient().when(followerRepository.save(any(PcFollower.class))).thenAnswer(inv -> inv.getArgument(0));
+        return follower;
+    }
+
+    private static Map<String, Object> hp(int cur, int max, int temp) {
+        Map<String, Object> hp = new LinkedHashMap<>();
+        hp.put("cur", cur);
+        hp.put("max", max);
+        hp.put("temp", temp);
+        return hp;
+    }
+
+    @Test
+    void dismiss_ofACompanion_isRefusedToEveryone_theDmIncluded() {
+        PcFollower follower = companion();
+
+        for (UUID caller : List.of(ownerId, dmId)) {
+            assertThatThrownBy(() -> followerService.dismiss(1L, 8L, caller))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .satisfies(e -> {
+                        assertThat(status(e)).isEqualTo(403);
+                        assertThat(((ResponseStatusException) e).getReason()).isEqualTo("A companion cannot be "
+                                + "dismissed. It stays for as long as its character has the feature that gives it");
+                    });
+        }
+        // Not even for a character in no campaign, where the owner stands in for the DM elsewhere.
+        pc.setCampaignId(null);
+        assertThatThrownBy(() -> followerService.dismiss(1L, 8L, ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+
+        verify(followerRepository, never()).delete(any());
+        verify(activityLogService, never()).log(any(), any(), any(), any());
+        verify(pcService, never()).bumpLiveSessionVersion(any());
+        assertThat(follower.getStatBlock()).isEqualTo(VESTIGE_BLOCK);
+    }
+
+    @Test
+    void update_ofACompanion_takesOnlyHitPointsTemporaryHitPointsAndConditions() {
+        for (UUID caller : List.of(ownerId, dmId)) {
+            PcFollower follower = companion();
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("companion", "pet");
+            body.put("clazz", "Dragon");
+            body.put("ac", 30);
+            body.put("hp", hp(9, 999, 5));
+            body.put("conditions", List.of("poisoned"));
+            body.put("conditionImmunities", List.of());
+            body.put("features", List.of(Map.of("name", "Breath Weapon", "source", "Action", "desc", "9d6")));
+            body.put("spells", List.of(Map.of("name", "Wish", "lvl", 9)));
+
+            FollowerView view = followerService.update(1L, 8L, new FollowerRequest(null, body), caller);
+
+            Map<String, Object> expected = readJson(VESTIGE_BLOCK);
+            expected.put("hp", Map.of("max", 24, "cur", 9, "temp", 5));
+            expected.put("conditions", List.of("poisoned"));
+            assertThat(view.statBlock()).isEqualTo(expected);
+            assertThat(view.statBlock()).doesNotContainKey("spells");
+            assertThat(view.kind()).isEqualTo("COMPANION");
+            assertThat(view.name()).isEqualTo("Vestige");
+        }
+        verify(pcService, times(2)).bumpLiveSessionVersion(pc);
+    }
+
+    private static Map<String, Object> readJson(String json) {
+        try {
+            return new ObjectMapper().readValue(json, new com.fasterxml.jackson.core.type.TypeReference<>() {});
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    void update_ofACompanion_keepsHitPointsWithinTheStoredMaximum_andDropsWhatItIsImmuneTo() {
+        PcFollower follower = companion();
+
+        // Above the maximum, a negative temporary value, an immune condition, a duplicate, junk.
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("hp", hp(60, 60, -4));
+        body.put("conditions", java.util.Arrays.asList("Prone", "poisoned", "Poisoned", " ", 7, "blinded"));
+        Map<String, Object> saved = followerService.update(1L, 8L, new FollowerRequest(null, body), ownerId)
+                .statBlock();
+        assertThat(saved.get("hp")).isEqualTo(Map.of("max", 24, "cur", 24, "temp", 0));
+        assertThat(saved.get("conditions")).isEqualTo(List.of("poisoned", "blinded"));
+
+        // Below zero stops at zero.
+        saved = followerService.update(1L, 8L, new FollowerRequest(null, Map.of("hp", hp(-3, 24, 0))), dmId)
+                .statBlock();
+        assertThat(((Map<?, ?>) saved.get("hp")).get("cur")).isEqualTo(0);
+        assertThat(follower.getKind()).isEqualTo(FollowerKind.COMPANION);
+    }
+
+    @Test
+    void update_ofACompanion_keepsWhatTheBodyLeavesOut() {
+        PcFollower follower = companion();
+        follower.setStatBlock(VESTIGE_BLOCK.replace("\"cur\":24,\"temp\":0", "\"cur\":11,\"temp\":3")
+                .replace("\"conditions\":[]", "\"conditions\":[\"stunned\"]"));
+
+        // A body with nothing the server takes: the block is saved as it was.
+        Map<String, Object> saved = followerService.update(1L, 8L,
+                new FollowerRequest(null, Map.of("ac", 2, "hp", "full")), ownerId).statBlock();
+        assertThat(saved.get("hp")).isEqualTo(Map.of("max", 24, "cur", 11, "temp", 3));
+        assertThat(saved.get("conditions")).isEqualTo(List.of("stunned"));
+        assertThat(saved.get("ac")).isEqualTo(17);
+
+        // Only the conditions sent: the Hit Points stay.
+        saved = followerService.update(1L, 8L,
+                new FollowerRequest(null, Map.of("conditions", List.of())), ownerId).statBlock();
+        assertThat(saved.get("hp")).isEqualTo(Map.of("max", 24, "cur", 11, "temp", 3));
+        assertThat(saved.get("conditions")).isEqualTo(List.of());
+    }
+
+    @Test
+    void update_ofACompanion_canRenameIt_andANameAloneLeavesTheBlockAlone() {
+        PcFollower follower = companion();
+
+        FollowerView view = followerService.update(1L, 8L, new FollowerRequest(" Ashmaw ", null), ownerId);
+
+        assertThat(view.name()).isEqualTo("Ashmaw");
+        assertThat(follower.getStatBlock()).isEqualTo(VESTIGE_BLOCK);
+        assertThatThrownBy(() -> followerService.update(1L, 8L, new FollowerRequest(" ", null), ownerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(400));
+    }
+
+    @Test
+    void update_ofACompanion_logsAHitPointChangeMidSession_likeAnyFollower() {
+        pc.setName("Aelindra");
+        companion();
+        CombatSession session = new CombatSession();
+        session.setId(3L);
+        when(pcService.liveSessionFor(pc)).thenReturn(Optional.of(session));
+
+        followerService.update(1L, 8L, new FollowerRequest(null, Map.of("hp", hp(20, 24, 0))), ownerId);
+
+        ArgumentCaptor<SessionCombatLog> row = ArgumentCaptor.forClass(SessionCombatLog.class);
+        verify(combatLogRepository).save(row.capture());
+        assertThat(row.getValue().getSubjectName()).isEqualTo("Vestige (Aelindra's follower)");
+        assertThat(row.getValue().getDescription()).isEqualTo("HP 24 → 20. Changed on the sheet by the player.");
+    }
+
+    @Test
+    void update_ofACompanion_isStillRefusedToStrangers() {
+        companion();
+        assertThatThrownBy(() -> followerService.update(1L, 8L,
+                new FollowerRequest(null, Map.of("hp", hp(1, 24, 0))), strangerId))
+                .satisfies(e -> assertThat(status(e)).isEqualTo(403));
+        verify(followerRepository, never()).save(any());
     }
 
     @Test

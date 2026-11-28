@@ -73,11 +73,13 @@ public final class SubclassChoices {
     /**
      * The choices a level-up refuses to go through without, named by stored key or by spell-pick
      * feature. Everything else is optional for now: valid when sent, accepted when absent. To make
-     * one required, add its key ({@link #VESTIGE_TYPE}, {@link #VESTIGE_DOMAIN}) here; nothing
-     * else needs to change.
+     * one required, add its key or its spell-pick feature here; nothing else needs to change.
+     * An Arcane Archer's options and Lore cantrip are required, and so are a Vestige Patron's
+     * type and domain: the type is what its companion is built from, the domain what its
+     * Vestige Spells are read from.
      */
     static final Set<String> REQUIRED = Set.of(SKILLS, STUDENT_OF_ARCANA, MAGICAL_MASTERY,
-            ARCANE_SHOTS, ARCANE_ARCHER_LORE);
+            ARCANE_SHOTS, ARCANE_ARCHER_LORE, VESTIGE_TYPE, VESTIGE_DOMAIN);
 
     /** True when a level-up must leave this stored key or spell-pick feature complete. */
     public static boolean isRequired(String keyOrFeature) {

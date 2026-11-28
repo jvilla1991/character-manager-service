@@ -96,14 +96,14 @@ class SubclassChoicesTest {
     }
 
     @Test
-    void skillsTheArcaneArchersChoicesAndTheArcanaDomainSpellFeatures_areRequired() {
+    void everyChoiceKeyAndSpellPickFeature_isRequired() {
         assertThat(SubclassChoices.isRequired("skills")).isTrue();
         assertThat(SubclassChoices.isRequired("Student of Arcana")).isTrue();
         assertThat(SubclassChoices.isRequired("Magical Mastery")).isTrue();
         assertThat(SubclassChoices.isRequired("arcaneShots")).isTrue();
         assertThat(SubclassChoices.isRequired("Arcane Archer Lore")).isTrue();
-        assertThat(SubclassChoices.isRequired("vestigeType")).isFalse();
-        assertThat(SubclassChoices.isRequired("vestigeDomain")).isFalse();
+        assertThat(SubclassChoices.isRequired("vestigeType")).isTrue();
+        assertThat(SubclassChoices.isRequired("vestigeDomain")).isTrue();
     }
 
     // ── Reading, writing and cleaning the stored value ───────────────────────────
@@ -479,7 +479,7 @@ class SubclassChoicesTest {
         assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE,
                 vestige("Dragon", null), NO_SKILLS), "'Dragon' is not a Vestige type (Celestial, Fiend or Undead)");
         assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE,
-                vestige(null, "Twilight"), NO_SKILLS),
+                vestige("Fiend", "Twilight"), NO_SKILLS),
                 "'Twilight' is not a Vestige domain (Life, Light, Trickery or War)");
     }
 
@@ -496,10 +496,32 @@ class SubclassChoicesTest {
     }
 
     @Test
-    void vestige_notSent_isAccepted() {
-        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE, Choices.NONE, NO_SKILLS)
+    void vestige_typeAndDomain_areOwedFromWarlockThree_untilBothAreStored() {
+        // Reaching Warlock 3 with neither: the type is asked for first, then the domain.
+        assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE, Choices.NONE,
+                NO_SKILLS), "A Vestige Patron must choose a Vestige type");
+        assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE,
+                vestige("Fiend", null), NO_SKILLS), "A Vestige Patron must choose a Vestige domain");
+        assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE,
+                vestige(null, "War"), NO_SKILLS), "A Vestige Patron must choose a Vestige type");
+        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 3, Choices.NONE, vestige("Fiend", "War"),
+                NO_SKILLS).choices()).isEqualTo(vestige("Fiend", "War"));
+
+        // A later level-up while one is still unset (the DM set the subclass by hand): still owed.
+        assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 6, vestige("Fiend", null),
+                Choices.NONE, NO_SKILLS), "A Vestige Patron must choose a Vestige domain");
+        assertRefused(() -> SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 6, vestige(null, "War"),
+                Choices.NONE, NO_SKILLS), "A Vestige Patron must choose a Vestige type");
+        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 6, vestige("Fiend", null),
+                vestige(null, "Life"), NO_SKILLS).choices()).isEqualTo(vestige("Fiend", "Life"));
+
+        // Both stored: nothing to send. Below Warlock 3 there is nothing to choose yet.
+        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 7, vestige("Fiend", "War"), Choices.NONE,
+                NO_SKILLS).choices()).isEqualTo(vestige("Fiend", "War"));
+        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 2, Choices.NONE, Choices.NONE, NO_SKILLS)
                 .choices()).isEqualTo(Choices.NONE);
-        assertThat(SubclassChoices.atLevelUp("Warlock", "Vestige Patron", 6, vestige("Fiend", null), Choices.NONE,
+        // A direct edit asks for nothing it was not sent.
+        assertThat(SubclassChoices.direct("Warlock", "Vestige Patron", 5, Choices.NONE, vestige("Fiend", null),
                 NO_SKILLS).choices()).isEqualTo(vestige("Fiend", null));
     }
 

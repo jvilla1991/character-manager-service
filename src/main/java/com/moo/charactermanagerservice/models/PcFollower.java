@@ -13,6 +13,7 @@ import java.util.UUID;
  * stored and returned verbatim, never interpreted here. {@code kind} (V64)
  * says what it is and so who creates and dismisses it (see
  * {@link FollowerKind}); the owning player and the DM may both update it.
+ * A {@code COMPANION}'s block is the exception: the server writes it.
  * Mirrors {@link PcNote}'s conventions.
  */
 @Getter
