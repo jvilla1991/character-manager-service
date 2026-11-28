@@ -194,11 +194,14 @@ class ClassProgressionTest {
     }
 
     @Test
-    void warriorOfTheMysticArts_hasNoSpellSlotsYet() {
-        // Its Spellcasting is feature text only for now: no slot table, no Spellcasting prerequisite.
+    void warriorOfTheMysticArts_bringsItsOwnSlots_throughTheSubclassAwareLookups() {
+        // The class alone still has none; the subclass does (the whole table: MysticArtsSpellcastingTest).
         assertThat(ClassProgression.spellSlotsFor("monk", 10)).isEmpty();
-        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Monk", "Warrior of the Mystic Arts", 10)).isFalse();
-        assertThat(ClassProgression.highestSpellSlotLevel("Monk", "Warrior of the Mystic Arts", 20)).isZero();
+        assertThat(ClassProgression.spellSlotsFor("Monk", "Warrior of the Mystic Arts", 10))
+                .isEqualTo(Map.of(1, 4, 2, 3));
+        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Monk", "Warrior of the Mystic Arts", 10)).isTrue();
+        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Monk", "Warrior of the Mystic Arts", 2)).isFalse();
+        assertThat(ClassProgression.highestSpellSlotLevel("Monk", "Warrior of the Mystic Arts", 20)).isEqualTo(4);
         assertThat(ClassProgression.hasSpellcastingOrPactMagic("Fighter", "Arcane Archer", 10)).isFalse();
     }
 

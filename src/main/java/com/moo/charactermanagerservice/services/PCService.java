@@ -759,6 +759,36 @@ public class PCService {
         return new SpellSlotResult(saved.getId(), SpellSlotState.view(saved));
     }
 
+    // --- Mystic Focus (Warrior of the Mystic Arts, Monk 6) ---------------------
+
+    /**
+     * One Mystic Focus conversion: a spell slot into Focus Points ({@code SLOT_TO_FOCUS}) or Focus
+     * Points into a spell slot ({@code FOCUS_TO_SLOT}), for the slot of {@code slotLevel} (1-4).
+     * The rules, their 400s and 409s are {@link MysticFocusRules#apply}'s.
+     *
+     * <p>Who may: the owner, in a campaign or not (it is the player's own feature, usable at the
+     * table without a cast), and the DM of the PC's campaign. Anyone else gets a 403, as on the
+     * other PC endpoints. Not tied to the rest clock: when the rule allows a conversion is left to
+     * the table.
+     *
+     * <p>The row is locked like a spend: both counts are read-modify-write. Writes one activity
+     * log line and wakes the PC's live session ({@link #bumpLiveSessionVersion}).
+     */
+    @Transactional
+    public PC mysticFocus(Long id, String action, Integer slotLevel, UUID userId) {
+        PC pc = findPCByIdForUpdate(id);
+        boolean owner = userId.equals(pc.getUserId());
+        if (!owner) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        String done = MysticFocusRules.apply(pc, action, slotLevel);
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(), PcActivityType.SPELL_SLOT,
+                (owner ? "Mystic Focus: " : "DM used Mystic Focus: ") + done, userId);
+        bumpLiveSessionVersion(saved);
+        return saved;
+    }
+
     /** Load a PC under the row lock (see {@link PCRepository#findByIdForUpdate}); 404 like {@link #findPCById}. */
     private PC findPCByIdForUpdate(Long id) {
         return pcRepository.findByIdForUpdate(id)

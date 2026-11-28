@@ -5,6 +5,7 @@ import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.SpellGrant;
+import com.moo.charactermanagerservice.dto.SubclassSpellcasting;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
@@ -44,8 +45,8 @@ import java.util.random.RandomGenerator;
  *
  * <p><strong>Spell slots (Phase 2):</strong> the {@code spellSlots} column is rebuilt by
  * {@link SpellSlotState#rebuild} — {@code max} is the class table for the new level
- * ({@link ClassProgression#spellSlotsFor}: full casters, warlock, and the half casters Paladin and
- * Ranger) plus the DM's bonus lines, the same sum every sheet save uses, while the player's
+ * ({@link ClassProgression#spellSlotsFor}: full casters, warlock, the half casters Paladin and
+ * Ranger, and a Warrior of the Mystic Arts monk's own table) plus the DM's bonus lines, the same sum every sheet save uses, while the player's
  * {@code used} count is preserved (clamped to the new max). A character with no slots is left
  * untouched.
  *
@@ -101,24 +102,47 @@ public class LevelUpService {
                 proficiencyBonus(pc, currentLevel),
                 proficiencyBonus(pc, newLevel),
                 SpellSlotState.storedMax(pc.getSpellSlots()),
-                SpellSlotState.maxFor(pc.getClazz(), newLevel, pc.getStatAdjustments()),
+                SpellSlotState.maxFor(pc.getClazz(), pc.getSubclass(), newLevel, pc.getStatAdjustments()),
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
                 featOptions,
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
-                ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
-                ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
-                ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
-                ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), currentLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), newLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), currentLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), newLevel),
                 fightingStyleDue,
                 fightingStyleOptions,
                 subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null,
                 recommendedFightingStyles,
                 grantsOwed(pc, pc.getSubclass(), newLevel),
                 subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of(),
-                grantsOwedByFeat(pc, featOptions, newLevel)
+                grantsOwedByFeat(pc, featOptions, newLevel),
+                subclassDue ? spellcastingBySubclass(pc, newLevel) : Map.of()
         );
+    }
+
+    /**
+     * For each subclass on offer that brings Spellcasting of its own (a Monk's Warrior of the
+     * Mystic Arts): the new level's slots, cantrips known and prepared spells with that option
+     * chosen. Options that leave the three numbers as they are without it are left out.
+     */
+    private Map<String, SubclassSpellcasting> spellcastingBySubclass(PC pc, int newLevel) {
+        SubclassSpellcasting base = spellcastingWith(pc, pc.getSubclass(), newLevel);
+        Map<String, SubclassSpellcasting> bySubclass = new LinkedHashMap<>();
+        for (String option : ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization())) {
+            SubclassSpellcasting with = spellcastingWith(pc, option, newLevel);
+            if (!with.equals(base)) bySubclass.put(option, with);
+        }
+        return bySubclass;
+    }
+
+    private static SubclassSpellcasting spellcastingWith(PC pc, String subclass, int level) {
+        return new SubclassSpellcasting(
+                SpellSlotState.maxFor(pc.getClazz(), subclass, level, pc.getStatAdjustments()),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), subclass, level),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), subclass, level));
     }
 
     /** The character as the feat catalog sees it when it reaches {@code newLevel}. */
@@ -308,6 +332,9 @@ public class LevelUpService {
 
         int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int oldDexMod = ClassProgression.abilityModifier(nz(pc.getAbilityDex()));
+        // Read before the subclass choice below: a subclass that brings Spellcasting (a Warrior
+        // of the Mystic Arts at Monk 3) counts its first cantrips and spells from nothing.
+        String oldSubclass = pc.getSubclass();
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         // A WoW-only subclass (Oath of the Holy) is unlocked by the specialization, so the subclass
@@ -325,7 +352,7 @@ public class LevelUpService {
         SubclassChoiceRules.applyAtLevelUp(pc, newLevel, subclassChoices);
         // A subclass's own spell picks are taken out first: what is left are the class's.
         List<Map<String, Object>> classSpells = applySubclassSpellPicks(pc, newLevel, newSpells, forgetSpells);
-        applySpellChoices(pc, currentLevel, newLevel, classSpells, style, feat);
+        applySpellChoices(pc, currentLevel, oldSubclass, newLevel, classSpells, style, feat);
         recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
@@ -596,6 +623,9 @@ public class LevelUpService {
      * higher level than the character has spell slots for at the NEW level (2024 5e: you can only
      * learn spells you have slots to cast — the max key of {@link ClassProgression#spellSlotsFor},
      * which also covers warlock pact slots). Duplicates (by name, case-insensitive) are rejected.
+     * All three numbers read the subclass too: a Monk who picks the Warrior of the Mystic Arts in
+     * this request (already applied to the PC; {@code oldSubclass} is what it had before) learns
+     * its two cantrips and three level 1 spells here, as ordinary picks.
      * Individual spell <em>names</em> are NOT validated — the spell list lives in the frontend
      * (the backend must not depend on the external D&D API), so the client-supplied spell objects
      * are accepted as-is. Same trust posture as feats and subclasses.
@@ -626,7 +656,7 @@ public class LevelUpService {
      * list cannot be checked here). They too sit outside the class counts and the slot cap, and
      * are saved with the feat as {@code grantedBy}, a leveled one always prepared.
      */
-    private void applySpellChoices(PC pc, int currentLevel, int newLevel,
+    private void applySpellChoices(PC pc, int currentLevel, String oldSubclass, int newLevel,
                                    List<Map<String, Object>> chosen, String fightingStyle, String feat) {
         FeatCatalog.CantripFightingStyle cantripStyle = FeatCatalog.cantripFightingStyle(fightingStyle).orElse(null);
         int bonusCantrips = cantripStyle == null ? 0 : cantripStyle.extraCantrips();
@@ -635,13 +665,15 @@ public class LevelUpService {
         if (chosen == null) chosen = List.of();
 
         // The highest spell level the character has slots for at the new level (0 = none).
-        int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel).keySet().stream()
-                .max(Integer::compareTo).orElse(0);
+        int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                .keySet().stream().max(Integer::compareTo).orElse(0);
 
-        int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
-                - ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel);
-        int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
-                - ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel);
+        // The subclass chosen in this request is already on the PC: the deltas run from the
+        // character as it was (old level, old subclass) to the character as it will be.
+        int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                - ClassProgression.cantripsKnownFor(pc.getClazz(), oldSubclass, currentLevel);
+        int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                - ClassProgression.preparedSpellsFor(pc.getClazz(), oldSubclass, currentLevel);
 
         // The subclass and the feat chosen in this request are already on the PC, so their spells
         // are recognized.

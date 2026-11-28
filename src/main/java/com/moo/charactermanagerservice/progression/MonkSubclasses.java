@@ -108,8 +108,9 @@ final class MonkSubclasses {
     }
 
     /**
-     * Warrior of the Mystic Arts (Arcana Unleashed). Its Spellcasting is described here and
-     * nothing more: the subclass has no spell slot table in {@link ClassProgression} yet.
+     * Warrior of the Mystic Arts (Arcana Unleashed). Its Spellcasting is described here; the
+     * numbers behind it (slots, cantrips, prepared spells, the Mystic Focus costs) are
+     * {@link MysticArtsSpellcasting}'s.
      */
     private static Map<Integer, List<FeatureGain>> warriorOfTheMysticArts() {
         Map<Integer, List<FeatureGain>> f = new HashMap<>();
