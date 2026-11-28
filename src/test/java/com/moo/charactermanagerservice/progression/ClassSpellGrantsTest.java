@@ -160,8 +160,10 @@ class ClassSpellGrantsTest {
     @Test
     void everyAlwaysPreparedSentenceInTheCatalogIsAccountedFor() {
         // Spells the player chooses (a land type after each Long Rest, two wizard spells of their
-        // own), so there is no fixed spell to hand over.
-        Set<String> notGranted = Set.of("Circle of the Land Spells", "Signature Spells");
+        // own, an Arcana Domain cleric's four Wizard spells, the domain behind a Vestige Patron's
+        // spells), so there is no fixed spell to hand over.
+        Set<String> notGranted = Set.of("Circle of the Land Spells", "Signature Spells",
+                SubclassChoices.MAGICAL_MASTERY, "Vestige Spells");
         List<String> unaccounted = new ArrayList<>();
         int lists = 0;
         for (String clazz : CLASSES) {
@@ -178,7 +180,64 @@ class ClassSpellGrantsTest {
             }
         }
         assertThat(unaccounted).isEmpty();
-        // 5 cleric domains, 2 druid circles, 4 oaths, 2 ranger, 3 sorcerer, 4 warlock patrons.
-        assertThat(lists).isEqualTo(20);
+        // 6 cleric domains (the Arcana Domain among them), 2 druid circles, 4 oaths, 2 ranger,
+        // 3 sorcerer, 4 warlock patrons.
+        assertThat(lists).isEqualTo(21);
+    }
+
+    // --- Arcana Unleashed subclasses ---
+
+    @Test
+    void arcanaDomain_grantsEachRowOfItsListAtItsLevel() {
+        assertThat(ClassSpellGrants.grantsThrough("Cleric", "Arcana Domain", null, 2)).isEmpty();
+        assertThat(ClassSpellGrants.grantsAt("Cleric", "Arcana Domain", null, 3)).containsExactly(
+                new SpellGrant("Detect Magic", "Arcana Domain Spells"),
+                new SpellGrant("Magic Missile", "Arcana Domain Spells"),
+                new SpellGrant("Magic Weapon", "Arcana Domain Spells"),
+                new SpellGrant("Nystul's Magic Aura", "Arcana Domain Spells"));
+        assertThat(ClassSpellGrants.grantsAt("Cleric", "Arcana Domain", null, 4)).isEmpty();
+        assertThat(names(ClassSpellGrants.grantsAt("cleric", "arcana domain", null, 5)))
+                .containsExactly("Counterspell", "Dispel Magic");
+        assertThat(names(ClassSpellGrants.grantsAt("Cleric", "Arcana Domain", null, 7)))
+                .containsExactly("Arcane Eye", "Leomund's Secret Chest");
+        assertThat(names(ClassSpellGrants.grantsAt("Cleric", "Arcana Domain", null, 9)))
+                .containsExactly("Bigby's Hand", "Teleportation Circle");
+        // Nothing after the last row: Magical Mastery's spells are the player's picks.
+        assertThat(names(ClassSpellGrants.grantsThrough("Cleric", "Arcana Domain", null, 20))).containsExactly(
+                "Detect Magic", "Magic Missile", "Magic Weapon", "Nystul's Magic Aura",
+                "Counterspell", "Dispel Magic", "Arcane Eye", "Leomund's Secret Chest",
+                "Bigby's Hand", "Teleportation Circle");
+        // A World of Warcraft Priest who takes the domain is granted the same list.
+        assertThat(names(ClassSpellGrants.grantsAt("Cleric", "Arcana Domain", "Holy", 5)))
+                .containsExactly("Counterspell", "Dispel Magic");
+    }
+
+    @Test
+    void necromancerAndTransmuter_gainTheSpellsTheirFeaturesKeepPrepared() {
+        assertThat(ClassSpellGrants.grantsAt("Wizard", "Necromancer", null, 3))
+                .containsExactly(new SpellGrant("Find Familiar", "Necromancy Spellbook"));
+        assertThat(ClassSpellGrants.grantsAt("Wizard", "Necromancer", null, 6))
+                .containsExactly(new SpellGrant("Animate Dead", "Undead Thralls"));
+        assertThat(names(ClassSpellGrants.grantsThrough("Wizard", "Necromancer", null, 20)))
+                .containsExactly("Find Familiar", "Animate Dead");
+
+        assertThat(ClassSpellGrants.grantsAt("Wizard", "Transmuter", null, 3))
+                .containsExactly(new SpellGrant("Alter Self", "Wondrous Alteration"));
+        assertThat(ClassSpellGrants.grantsAt("Wizard", "Transmuter", null, 10))
+                .containsExactly(new SpellGrant("Polymorph", "Shape-Shifter"));
+        assertThat(names(ClassSpellGrants.grantsThrough("wizard", "transmuter", null, 9)))
+                .containsExactly("Alter Self");
+    }
+
+    @Test
+    void theOtherArcanaUnleashedSubclasses_grantNoFixedSpell() {
+        assertThat(ClassSpellGrants.grantsThrough("Wizard", "Conjurer", null, 20)).isEmpty();
+        assertThat(ClassSpellGrants.grantsThrough("Wizard", "Enchanter", null, 20)).isEmpty();
+        assertThat(ClassSpellGrants.grantsThrough("Fighter", "Arcane Archer", null, 20)).isEmpty();
+        assertThat(ClassSpellGrants.grantsThrough("Monk", "Warrior of the Mystic Arts", null, 20)).isEmpty();
+        // A Vestige Patron keeps the Warlock's own Contact Other Plane; its Vestige Spells depend
+        // on the domain the player chose and are not granted here.
+        assertThat(names(ClassSpellGrants.grantsThrough("Warlock", "Vestige Patron", null, 20)))
+                .containsExactly("Contact Other Plane");
     }
 }

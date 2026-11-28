@@ -256,23 +256,56 @@ public final class ClassProgression {
      * prerequisite of the Arcana Unleashed School Adept feats, Spell Subterfuge and two of its
      * Epic Boons.
      *
-     * <p>Class-based today: the full casters, the Warlock, and the half casters Paladin and Ranger
-     * (who have Spellcasting from level 1 in the 2024 rules), i.e. every class with a slot table
-     * here. {@code subclass} is not read yet. It is the seam for a subclass that brings its own
-     * Spellcasting feature and spell slots: extend this method (and {@link #highestSpellSlotLevel})
-     * for it, and every feat prerequisite and feat spell table follows.
+     * <p>The full casters, the Warlock, and the half casters Paladin and Ranger (who have
+     * Spellcasting from level 1 in the 2024 rules), i.e. every class with a slot table here, and
+     * one subclass with a table of its own: a Monk of the Warrior of the Mystic Arts from Monk
+     * level 3 ({@link #spellSlotsFor(String, String, int)}). Every feat prerequisite and feat
+     * spell table follows. Eldritch Knight and Arcane Trickster have no slot table and do not
+     * qualify.
      */
     public static boolean hasSpellcastingOrPactMagic(String clazz, String subclass, int level) {
-        return !spellSlotsFor(clazz, level).isEmpty();
+        return !spellSlotsFor(clazz, subclass, level).isEmpty();
     }
 
     /**
      * The highest spell slot level the character has at this level (a Warlock's Pact Magic slot
      * level counts), or 0 with no slots. From the class table alone: slots the DM added by hand do
-     * not count. {@code subclass} is not read yet; see {@link #hasSpellcastingOrPactMagic}.
+     * not count. The subclass counts where it brings slots; see {@link #hasSpellcastingOrPactMagic}.
      */
     public static int highestSpellSlotLevel(String clazz, String subclass, int level) {
-        return spellSlotsFor(clazz, level).keySet().stream().max(Integer::compareTo).orElse(0);
+        return spellSlotsFor(clazz, subclass, level).keySet().stream().max(Integer::compareTo).orElse(0);
+    }
+
+    // ── Spellcasting a subclass brings (the Warrior of the Mystic Arts) ─────────
+    // The lookups above are keyed by class alone and stay exactly as they were. These overloads
+    // also read the subclass: a Monk of the Warrior of the Mystic Arts gets its own third-caster
+    // table (MysticArtsSpellcasting); every other character gets the class's answer. Eldritch
+    // Knight and Arcane Trickster are NOT here: they have no slot table in this app.
+
+    /** {@link #spellSlotsFor(String, int)}, with the slots a subclass brings. */
+    public static Map<Integer, Integer> spellSlotsFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.spellSlots(level)
+                : spellSlotsFor(clazz, level);
+    }
+
+    /** {@link #cantripsKnownFor(String, int)}, with the cantrips a subclass's Spellcasting teaches. */
+    public static int cantripsKnownFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.cantripsKnown(level)
+                : cantripsKnownFor(clazz, level);
+    }
+
+    /** {@link #preparedSpellsFor(String, int)}, with a subclass's Prepared Spells column. */
+    public static int preparedSpellsFor(String clazz, String subclass, int level) {
+        return MysticArtsSpellcasting.applies(clazz, subclass)
+                ? MysticArtsSpellcasting.preparedSpells(level)
+                : preparedSpellsFor(clazz, level);
+    }
+
+    /** {@link #isCaster(String)}, or a subclass that brings Spellcasting of its own. */
+    public static boolean isCaster(String clazz, String subclass) {
+        return MysticArtsSpellcasting.applies(clazz, subclass) || isCaster(clazz);
     }
 
     // ── Subclass timing & catalog (Phase 3 — mechanism only) ────────────────────
@@ -302,7 +335,13 @@ public final class ClassProgression {
             Map.entry("rogue", 3)
     );
 
-    /** Valid subclass names per class (2024 PHB, plus Twilight Domain from Tasha's). */
+    /**
+     * Valid subclass names per class: the 2024 PHB, plus Twilight Domain from Tasha's and the
+     * eight subclasses of Arcana Unleashed (Arcana Domain, Arcane Archer, Warrior of the Mystic
+     * Arts, Vestige Patron, and the Conjurer, Enchanter, Necromancer and Transmuter). The Arcana
+     * Unleashed ones are ordinary catalog subclasses: a base-game member of the class and its
+     * World of Warcraft variant are both offered them.
+     */
     private static final Map<String, List<String>> SUBCLASS_CATALOG = Map.ofEntries(
             // The WoW Shaman's two paths are offered on top of these to WoW barbarians only — see
             // WOW_ONLY_SUBCLASSES.
@@ -313,13 +352,15 @@ public final class ClassProgression {
             // The WoW Priest's Discipline and Shadow Domains are offered on top of these to WoW
             // clerics only — see WOW_ONLY_SUBCLASSES.
             Map.entry("cleric", List.of(
-                    "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain")),
+                    "Arcana Domain", "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain",
+                    "War Domain")),
             Map.entry("druid", List.of(
                     "Circle of the Land", "Circle of the Moon", "Circle of the Sea", "Circle of the Stars")),
             Map.entry("fighter", List.of(
-                    "Battle Master", "Champion", "Eldritch Knight", "Psi Warrior")),
+                    "Arcane Archer", "Battle Master", "Champion", "Eldritch Knight", "Psi Warrior")),
             Map.entry("monk", List.of(
-                    "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements", "Warrior of the Open Hand")),
+                    "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements",
+                    "Warrior of the Mystic Arts", "Warrior of the Open Hand")),
             // Oath of the Ebon Blade (Death Knight) is a creation-only hero subclass — see
             // HERO_SUBCLASSES — and is intentionally absent from this level-up list. Oath of the
             // Holy is offered on top of these to WoW paladins only — see WOW_ONLY_SUBCLASSES.
@@ -332,12 +373,14 @@ public final class ClassProgression {
             Map.entry("rogue", List.of(
                     "Arcane Trickster", "Assassin", "Soulknife", "Thief")),
             Map.entry("wizard", List.of(
-                    "Abjurer", "Diviner", "Evoker", "Illusionist")),
+                    "Abjurer", "Conjurer", "Diviner", "Enchanter", "Evoker", "Illusionist", "Necromancer",
+                    "Transmuter")),
             // Sorcerer/Warlock choose at level 1 (creation); listed for catalog completeness.
             Map.entry("sorcerer", List.of(
                     "Aberrant Sorcery", "Clockwork Sorcery", "Draconic Sorcery", "Wild Magic Sorcery")),
             Map.entry("warlock", List.of(
-                    "Archfey Patron", "Celestial Patron", "Fiend Patron", "Great Old One Patron"))
+                    "Archfey Patron", "Celestial Patron", "Fiend Patron", "Great Old One Patron",
+                    "Vestige Patron"))
     );
 
     /** The character level at which the given class selects its subclass. */

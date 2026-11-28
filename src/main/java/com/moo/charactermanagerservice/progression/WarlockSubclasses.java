@@ -8,9 +8,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Subclass features for the Warlock's 2024 Player's Handbook subclasses, keyed by the exact
- * subclass name in ClassProgression's subclass catalog, then by the Warlock level at which
- * each feature is gained. Descriptions are concise summaries, not rules text.
+ * Subclass features for the Warlock's 2024 Player's Handbook subclasses (plus the Vestige Patron
+ * from Arcana Unleashed), keyed by the exact subclass name in ClassProgression's subclass
+ * catalog, then by the Warlock level at which each feature is gained. Descriptions are concise
+ * summaries, not rules text.
  */
 final class WarlockSubclasses {
 
@@ -27,6 +28,7 @@ final class WarlockSubclasses {
         m.put("Celestial Patron", celestialPatron());
         m.put("Fiend Patron", fiendPatron());
         m.put("Great Old One Patron", greatOldOnePatron());
+        m.put(SubclassChoices.VESTIGE_PATRON, vestigePatron());
         return m;
     }
 
@@ -167,6 +169,67 @@ final class WarlockSubclasses {
                                 + "minute and the Aberration gains Temporary Hit Points equal to "
                                 + "your Warlock level + Charisma modifier. Once per turn, it "
                                 + "deals Hex's bonus damage as Psychic to a Hexed target.")));
+        return f;
+    }
+
+    /**
+     * Vestige Patron (Arcana Unleashed). The companion's type and the domain behind Vestige Spells
+     * are choices the player makes: see {@link SubclassChoices}. The companion is described in
+     * words here; the follower itself is built from the same numbers by {@link VestigeCompanion}.
+     * The domain's spells are granted by {@link VestigeSpells}.
+     */
+    private static Map<Integer, List<FeatureGain>> vestigePatron() {
+        Map<Integer, List<FeatureGain>> f = new HashMap<>();
+        f.put(3, List.of(
+                f("Vestige Companion",
+                        "The vestige of a dying god appears as your companion: a Celestial, a "
+                                + "Fiend or an Undead (your choice), Friendly to you and your allies. "
+                                + "It acts on your turn and only Dodges unless you use a Bonus Action "
+                                + "to command it, or give up one attack of your Attack action for its "
+                                + "Vestige's Strike. At 0 Hit Points it vanishes until you perform a "
+                                + "1-minute ceremony. A Magic action dismisses or recalls it, and "
+                                + "after a Long Rest you can give it a new form and type."),
+                f("Vestige Companion Stat Block",
+                        "Small Celestial, Fiend or Undead. AC 13 + your Charisma modifier. Hit "
+                                + "Points 4 + four times your Warlock level. Speed 5 ft., Fly 30 ft. "
+                                + "(hover). STR 1, DEX 14, CON 10, INT 15, WIS 15, CHA 16; it adds "
+                                + "your Proficiency Bonus to its ability checks and saving throws. "
+                                + "Resistance by type: Radiant (Celestial), Fire (Fiend) or Necrotic "
+                                + "(Undead). Immune to Charmed, Frightened and Prone. Vestige's "
+                                + "Strike: a melee (5 ft.) or ranged (60 ft.) attack with your spell "
+                                + "attack modifier for 1d6 + 3 + your Charisma modifier damage of "
+                                + "the type it resists. Divine Power (Bonus Action, one use): "
+                                + "Healing Touch (Celestial) restores 2d8 + your Charisma modifier "
+                                + "Hit Points to another creature and ends Blinded, Deafened or "
+                                + "Poisoned on it; Fiendish Swap (Fiend) makes you and the vestige "
+                                + "trade places within 60 feet; Cursed Invocation (Undead) gives a "
+                                + "creature within 30 feet Disadvantage on attack rolls against you "
+                                + "and the vestige for 1 minute."),
+                f("Vestige Spells",
+                        "Choose a Cleric domain: Life, Light, Trickery or War. That domain's spells "
+                                + "are Warlock spells for you, and you always have each of them "
+                                + "prepared once your Warlock level reaches the Cleric level the "
+                                + "domain lists it at.")));
+        f.put(6, List.of(
+                f("Vestige Power",
+                        "Your vestige regains its Divine Power when you finish a Short or Long Rest "
+                                + "or use Magical Cunning. While you are within 30 feet of it, you "
+                                + "have Resistance to the damage types it resists.")));
+        f.put(10, List.of(
+                f("Vestige Recovery",
+                        "When your vestige would drop to 0 Hit Points, you can use your Reaction "
+                                + "and expend a Pact Magic slot to set it to its Hit Point maximum "
+                                + "instead; it then teleports up to 30 feet to a space you can see. "
+                                + "Once per Long Rest.")));
+        f.put(14, List.of(
+                f("Semblance of Life",
+                        "As a Magic action while your vestige is within 90 feet, you turn it for 1 "
+                                + "hour into the spirit of its type: a Celestial, Fiendish or Undead "
+                                + "Spirit, as the matching Summon spell cast at half your Warlock "
+                                + "level (maximum 9). It keeps its personality, Divine Power, Hit "
+                                + "Points and Hit Dice and gains Temporary Hit Points equal to the "
+                                + "spirit's Hit Points; the form ends early when those are gone. "
+                                + "Once per Long Rest.")));
         return f;
     }
 }

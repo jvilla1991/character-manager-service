@@ -1,0 +1,17 @@
+-- The choices a subclass lets the player make and that are not spells, as one
+-- JSON object per character. Every key is optional:
+--   {"skills":["Insight"],
+--    "arcaneShots":["Banishing Shot","Seeking Shot"],
+--    "vestigeType":"Celestial",
+--    "vestigeDomain":"Life"}
+-- skills         the skill proficiencies the subclass let the player pick
+--                (Arcana Domain, Arcane Archer); [] = asked and none was owed
+-- arcaneShots    the Arcane Shot options an Arcane Archer knows
+-- vestigeType    a Vestige Patron's companion: Celestial, Fiend or Undead
+-- vestigeDomain  the Cleric domain behind its Vestige Spells
+-- NULL = nothing chosen. Server-owned: a level-up and the subclass-choices
+-- endpoint write it; a whole-sheet save keeps the stored value and drops the
+-- keys the character's class, subclass or level no longer has. The rules live
+-- in progression/SubclassChoices. Spells a subclass lets the player pick are
+-- not here: they are in pc.spells, marked with the feature that granted them.
+ALTER TABLE pc ADD COLUMN subclass_choices TEXT;

@@ -5,12 +5,15 @@ import com.moo.charactermanagerservice.dto.FeatureGain;
 import com.moo.charactermanagerservice.dto.HpMode;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.SpellGrant;
+import com.moo.charactermanagerservice.dto.SubclassSpellcasting;
 import com.moo.charactermanagerservice.models.PC;
 import com.moo.charactermanagerservice.progression.ClassFeatures;
 import com.moo.charactermanagerservice.progression.ClassProgression;
 import com.moo.charactermanagerservice.progression.ClassSpellGrants;
 import com.moo.charactermanagerservice.progression.FeatCatalog;
 import com.moo.charactermanagerservice.progression.FeatSpellGrants;
+import com.moo.charactermanagerservice.progression.SubclassChoices;
+import com.moo.charactermanagerservice.progression.VestigeSpells;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -43,8 +46,8 @@ import java.util.random.RandomGenerator;
  *
  * <p><strong>Spell slots (Phase 2):</strong> the {@code spellSlots} column is rebuilt by
  * {@link SpellSlotState#rebuild} — {@code max} is the class table for the new level
- * ({@link ClassProgression#spellSlotsFor}: full casters, warlock, and the half casters Paladin and
- * Ranger) plus the DM's bonus lines, the same sum every sheet save uses, while the player's
+ * ({@link ClassProgression#spellSlotsFor}: full casters, warlock, the half casters Paladin and
+ * Ranger, and a Warrior of the Mystic Arts monk's own table) plus the DM's bonus lines, the same sum every sheet save uses, while the player's
  * {@code used} count is preserved (clamped to the new max). A character with no slots is left
  * untouched.
  *
@@ -100,24 +103,48 @@ public class LevelUpService {
                 proficiencyBonus(pc, currentLevel),
                 proficiencyBonus(pc, newLevel),
                 SpellSlotState.storedMax(pc.getSpellSlots()),
-                SpellSlotState.maxFor(pc.getClazz(), newLevel, pc.getStatAdjustments()),
+                SpellSlotState.maxFor(pc.getClazz(), pc.getSubclass(), newLevel, pc.getStatAdjustments()),
                 subclassDue,
                 ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization()),
                 asiDue,
                 featOptions,
                 ClassFeatures.featuresAt(pc.getClazz(), pc.getSubclass(), pc.getSpecialization(), newLevel),
-                ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel),
-                ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel),
-                ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel),
-                ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), currentLevel),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), newLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), currentLevel),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), newLevel),
                 fightingStyleDue,
                 fightingStyleOptions,
                 subclassDue ? ClassProgression.recommendedSubclass(pc.getClazz(), pc.getSpecialization()) : null,
                 recommendedFightingStyles,
                 grantsOwed(pc, pc.getSubclass(), newLevel),
                 subclassDue ? grantsOwedBySubclass(pc, newLevel) : Map.of(),
-                grantsOwedByFeat(pc, featOptions, newLevel)
+                grantsOwedByFeat(pc, featOptions, newLevel),
+                subclassDue ? spellcastingBySubclass(pc, newLevel) : Map.of(),
+                grantsOwedByVestigeDomain(pc, newLevel)
         );
+    }
+
+    /**
+     * For each subclass on offer that brings Spellcasting of its own (a Monk's Warrior of the
+     * Mystic Arts): the new level's slots, cantrips known and prepared spells with that option
+     * chosen. Options that leave the three numbers as they are without it are left out.
+     */
+    private Map<String, SubclassSpellcasting> spellcastingBySubclass(PC pc, int newLevel) {
+        SubclassSpellcasting base = spellcastingWith(pc, pc.getSubclass(), newLevel);
+        Map<String, SubclassSpellcasting> bySubclass = new LinkedHashMap<>();
+        for (String option : ClassProgression.subclassesFor(pc.getClazz(), pc.getSpecialization())) {
+            SubclassSpellcasting with = spellcastingWith(pc, option, newLevel);
+            if (!with.equals(base)) bySubclass.put(option, with);
+        }
+        return bySubclass;
+    }
+
+    private static SubclassSpellcasting spellcastingWith(PC pc, String subclass, int level) {
+        return new SubclassSpellcasting(
+                SpellSlotState.maxFor(pc.getClazz(), subclass, level, pc.getStatAdjustments()),
+                ClassProgression.cantripsKnownFor(pc.getClazz(), subclass, level),
+                ClassProgression.preparedSpellsFor(pc.getClazz(), subclass, level));
     }
 
     /** The character as the feat catalog sees it when it reaches {@code newLevel}. */
@@ -164,6 +191,9 @@ public class LevelUpService {
                 ClassSpellGrants.grantsThrough(pc.getClazz(), subclass, pc.getSpecialization(), level).stream()
                         .filter(g -> !held.hasClassSpell(g))
                         .toList());
+        for (SpellGrant grant : vestigeSpells(pc, subclass, level)) {
+            if (!held.hasClassSpell(grant) && !names(owed, grant)) owed.add(grant);
+        }
         for (SpellGrant grant : FeatSpellGrants.grantsThrough(
                 CharacterFeats.namesOn(pc), pc.getClazz(), subclass, level)) {
             if (!held.hasFeatSpell(grant) && !names(owed, grant)) owed.add(grant);
@@ -193,6 +223,43 @@ public class LevelUpService {
             if (!owed.isEmpty()) byFeat.put(option, owed);
         }
         return byFeat;
+    }
+
+    /**
+     * A Vestige Patron's Vestige Spells through {@code level}, for the domain stored on the
+     * character ({@link VestigeSpells}); empty for everyone else and while no domain is chosen.
+     * A level-up applies the request's subclass choices first, so the domain chosen in the same
+     * request already counts.
+     */
+    private static List<SpellGrant> vestigeSpells(PC pc, String subclass, int level) {
+        String domain = SubclassChoices.cleaned(SubclassChoices.parse(pc.getSubclassChoices()),
+                pc.getClazz(), subclass, level).vestigeDomain();
+        return VestigeSpells.grantsThrough(pc.getClazz(), subclass, domain, level);
+    }
+
+    /**
+     * For a Vestige Patron that has not chosen its domain yet: the Vestige Spells each domain
+     * would hand over at {@code level} on top of {@link #grantsOwed}, keyed by domain. Empty once
+     * the domain is stored (its spells are then part of {@link #grantsOwed} itself), below
+     * Warlock 3, and for every other character.
+     */
+    private Map<String, List<SpellGrant>> grantsOwedByVestigeDomain(PC pc, int level) {
+        Map<String, List<SpellGrant>> byDomain = new LinkedHashMap<>();
+        Map<String, List<SpellGrant>> all =
+                VestigeSpells.grantsThroughByDomain(pc.getClazz(), pc.getSubclass(), level);
+        if (all.isEmpty() || SubclassChoices.isComplete(SubclassChoices.VESTIGE_DOMAIN,
+                SubclassChoices.parse(pc.getSubclassChoices()), pc.getClazz(), pc.getSubclass(), level)) {
+            return byDomain;
+        }
+        HeldSpells held = heldSpells(pc);
+        List<SpellGrant> base = grantsOwed(pc, pc.getSubclass(), level);
+        all.forEach((domain, grants) -> {
+            List<SpellGrant> owed = grants.stream()
+                    .filter(g -> !held.hasClassSpell(g) && !names(base, g))
+                    .toList();
+            if (!owed.isEmpty()) byDomain.put(domain, owed);
+        });
+        return byDomain;
     }
 
     /** {@link #grantsOwed} for each subclass on offer; options that add nothing are left out. */
@@ -247,6 +314,14 @@ public class LevelUpService {
                 specialization, null);
     }
 
+    /** Convenience overload with no subclass choices and no subclass spell to give up. */
+    public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
+                           String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                           String specialization, String fightingStyle) {
+        return applyLevelUp(pc, chosenSubclass, abilityIncreases, chosenFeat, newSpells, hpMode,
+                specialization, fightingStyle, null, null);
+    }
+
     /**
      * Mutate the given (managed) PC in place to its next level: validate and apply the player's
      * choices (subclass; at an ASI level exactly one of an Ability Score Improvement or a feat;
@@ -278,16 +353,30 @@ public class LevelUpService {
      *                         {@value FeatCatalog#DRUIDIC_WARRIOR}, {@value FeatCatalog#VOID_WARRIOR})
      *                         requires exactly {@value FeatCatalog#CANTRIP_STYLE_CANTRIPS} extra
      *                         cantrips in {@code newSpells}
+     * @param subclassChoices  the choices a subclass lets the player make that are not spells (an
+     *                         Arcana Domain cleric's skill, an Arcane Archer's skills and Arcane
+     *                         Shot options, a Vestige Patron's type and domain), as a partial object
+     *                         whose keys replace the stored ones, or {@code null}; applied after the
+     *                         subclass choice, for the character at its new level
+     *                         ({@link SubclassChoiceRules#applyAtLevelUp})
+     * @param forgetSpells     names of spells picked for Student of Arcana or Magical Mastery to
+     *                         give up in this level-up, at most one per feature, or {@code null};
+     *                         {@code newSpells} must carry each one's replacement (see
+     *                         {@link #applySubclassSpellPicks})
      */
     public PC applyLevelUp(PC pc, String chosenSubclass, Map<String, Integer> abilityIncreases,
                            String chosenFeat, List<Map<String, Object>> newSpells, HpMode hpMode,
-                           String specialization, String fightingStyle) {
+                           String specialization, String fightingStyle,
+                           Map<String, Object> subclassChoices, List<String> forgetSpells) {
         int currentLevel = currentLevel(pc);
         assertCanLevelUp(currentLevel);
         int newLevel = currentLevel + 1;
 
         int oldConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
         int oldDexMod = ClassProgression.abilityModifier(nz(pc.getAbilityDex()));
+        // Read before the subclass choice below: a subclass that brings Spellcasting (a Warrior
+        // of the Mystic Arts at Monk 3) counts its first cantrips and spells from nothing.
+        String oldSubclass = pc.getSubclass();
 
         // Validate + apply choices first — an ASI can change ability scores (including CON).
         // A WoW-only subclass (Oath of the Holy) is unlocked by the specialization, so the subclass
@@ -302,7 +391,10 @@ public class LevelUpService {
         applySpecializationChoice(pc, specialization);
         String feat = applyMilestoneChoice(pc, newLevel, abilityIncreases, chosenFeat);
         grantClassFeatures(pc, newLevel);
-        applySpellChoices(pc, currentLevel, newLevel, newSpells, style, feat);
+        SubclassChoiceRules.applyAtLevelUp(pc, newLevel, subclassChoices);
+        // A subclass's own spell picks are taken out first: what is left are the class's.
+        List<Map<String, Object>> classSpells = applySubclassSpellPicks(pc, newLevel, newSpells, forgetSpells);
+        applySpellChoices(pc, currentLevel, oldSubclass, newLevel, classSpells, style, feat);
         recordFightingStyle(pc, newLevel, style);
 
         int newConMod = ClassProgression.abilityModifier(nz(pc.getAbilityCon()));
@@ -573,6 +665,9 @@ public class LevelUpService {
      * higher level than the character has spell slots for at the NEW level (2024 5e: you can only
      * learn spells you have slots to cast — the max key of {@link ClassProgression#spellSlotsFor},
      * which also covers warlock pact slots). Duplicates (by name, case-insensitive) are rejected.
+     * All three numbers read the subclass too: a Monk who picks the Warrior of the Mystic Arts in
+     * this request (already applied to the PC; {@code oldSubclass} is what it had before) learns
+     * its two cantrips and three level 1 spells here, as ordinary picks.
      * Individual spell <em>names</em> are NOT validated — the spell list lives in the frontend
      * (the backend must not depend on the external D&D API), so the client-supplied spell objects
      * are accepted as-is. Same trust posture as feats and subclasses.
@@ -594,7 +689,9 @@ public class LevelUpService {
      *
      * <p>The spells of the character's feats ({@link FeatSpellGrants#grantsThrough}, the feat taken
      * in this request included) are handled the same way: outside the counts and the cap, saved
-     * always prepared with the feat as {@code grantedBy}.
+     * always prepared with the feat as {@code grantedBy}. So are a Vestige Patron's Vestige Spells
+     * ({@link VestigeSpells}): the rows of the Cleric domain it chose, the one chosen in this
+     * request included, saved with {@value VestigeSpells#FEATURE} as {@code grantedBy}.
      *
      * <p>{@code feat} is the feat taken in this request. When it lets the player pick spells
      * ({@link FeatSpellGrants#pickRule}) the request must carry exactly those picks, each with the
@@ -603,7 +700,7 @@ public class LevelUpService {
      * list cannot be checked here). They too sit outside the class counts and the slot cap, and
      * are saved with the feat as {@code grantedBy}, a leveled one always prepared.
      */
-    private void applySpellChoices(PC pc, int currentLevel, int newLevel,
+    private void applySpellChoices(PC pc, int currentLevel, String oldSubclass, int newLevel,
                                    List<Map<String, Object>> chosen, String fightingStyle, String feat) {
         FeatCatalog.CantripFightingStyle cantripStyle = FeatCatalog.cantripFightingStyle(fightingStyle).orElse(null);
         int bonusCantrips = cantripStyle == null ? 0 : cantripStyle.extraCantrips();
@@ -612,13 +709,15 @@ public class LevelUpService {
         if (chosen == null) chosen = List.of();
 
         // The highest spell level the character has slots for at the new level (0 = none).
-        int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), newLevel).keySet().stream()
-                .max(Integer::compareTo).orElse(0);
+        int maxSpellLevel = ClassProgression.spellSlotsFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                .keySet().stream().max(Integer::compareTo).orElse(0);
 
-        int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), newLevel)
-                - ClassProgression.cantripsKnownFor(pc.getClazz(), currentLevel);
-        int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), newLevel)
-                - ClassProgression.preparedSpellsFor(pc.getClazz(), currentLevel);
+        // The subclass chosen in this request is already on the PC: the deltas run from the
+        // character as it was (old level, old subclass) to the character as it will be.
+        int cantripDelta = ClassProgression.cantripsKnownFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                - ClassProgression.cantripsKnownFor(pc.getClazz(), oldSubclass, currentLevel);
+        int spellDelta = ClassProgression.preparedSpellsFor(pc.getClazz(), pc.getSubclass(), newLevel)
+                - ClassProgression.preparedSpellsFor(pc.getClazz(), oldSubclass, currentLevel);
 
         // The subclass and the feat chosen in this request are already on the PC, so their spells
         // are recognized.
@@ -626,6 +725,8 @@ public class LevelUpService {
                 pc.getSubclass(), pc.getSpecialization(), newLevel));
         grants.addAll(FeatSpellGrants.grantsThrough(CharacterFeats.namesOn(pc), pc.getClazz(),
                 pc.getSubclass(), newLevel));
+        // A Vestige Patron's domain, as it stands after this request's subclass choices.
+        grants.addAll(vestigeSpells(pc, pc.getSubclass(), newLevel));
 
         int newCantrips = 0;
         int newLeveled = 0;
@@ -722,6 +823,146 @@ public class LevelUpService {
             spells.add(spell);
         }
         pc.setSpells(jsonColumns.write(spells));
+    }
+
+    // ── Spells a subclass lets the player pick ───────────────────────────────────
+
+    /**
+     * Take a subclass's spell picks out of the request, check them and save them: an Arcana
+     * Domain cleric's two Wizard cantrips (Student of Arcana) and, from Cleric 17, four Wizard
+     * spells of level 6 to 9 (Magical Mastery), and an Arcane Archer's cantrip (Arcane Archer
+     * Lore) — see {@link SubclassChoices#spellPicksFor}. A pick is a spell in {@code newSpells}
+     * whose {@code grantedBy} is the feature's name, on a character that has the feature at the
+     * new level. Like a feat's picks they sit outside the class's cantrip and prepared-spell
+     * counts and the slot cap, and are saved prepared, a leveled one always prepared, with the
+     * feature as {@code grantedBy}. Returns the spells that are NOT subclass picks, for
+     * {@link #applySpellChoices}.
+     *
+     * <p>What is checked is the character's picks as they stand after this level-up: the spells
+     * it already holds for the feature, less the one given up, plus the ones sent. They must be
+     * exactly what the feature asks for — the right number at the right spell levels, and only
+     * the feature's named spells when it names any. So the first level-up with the feature needs
+     * all its picks, a later one needs none, and a character that is short catches up. A feature
+     * that is not {@link SubclassChoices#isRequired required} yet may be left without picks; when
+     * picks are sent for it they must be complete. Whether a spell is on the Wizard list cannot
+     * be checked here: the spell lists live in the app.
+     *
+     * <p>{@code forgetSpells} gives up picks, by name: each must be a spell the character holds
+     * for a feature that allows replacing (Student of Arcana, Magical Mastery), and at most one
+     * per feature. The check above then demands its replacement, which for Magical Mastery can
+     * only be a spell of the same level.
+     *
+     * <p>A character with none of these features is not touched: a spell of its own marked with
+     * one of the names is an ordinary pick, as before, and a non-empty {@code forgetSpells} is
+     * refused.
+     */
+    private List<Map<String, Object>> applySubclassSpellPicks(PC pc, int newLevel,
+                                                              List<Map<String, Object>> chosen,
+                                                              List<String> forgetSpells) {
+        List<String> forget = new ArrayList<>();
+        if (forgetSpells != null) {
+            for (String name : forgetSpells) {
+                if (!isBlank(name)) forget.add(name.trim());
+            }
+        }
+        List<SubclassChoices.SpellPicks> rules =
+                SubclassChoices.spellPicksFor(pc.getClazz(), pc.getSubclass(), newLevel);
+        if (rules.isEmpty()) {
+            if (!forget.isEmpty()) throw notReplaceable(forget.get(0));
+            return chosen;
+        }
+
+        List<Map<String, Object>> classSpells = new ArrayList<>();
+        Map<String, List<Map<String, Object>>> picksByFeature = new LinkedHashMap<>();
+        for (Map<String, Object> spell : chosen == null ? List.<Map<String, Object>>of() : chosen) {
+            SubclassChoices.SpellPicks rule = pickRuleOf(rules, spell);
+            if (rule == null) classSpells.add(spell);
+            else picksByFeature.computeIfAbsent(rule.feature(), k -> new ArrayList<>()).add(spell);
+        }
+
+        List<Map<String, Object>> spells = jsonColumns.parse(pc.getSpells());
+        Set<String> replaced = new HashSet<>();
+        for (String name : forget) {
+            Map<String, Object> held = spells.stream()
+                    .filter(s -> spellName(s).trim().equalsIgnoreCase(name))
+                    .findFirst().orElse(null);
+            SubclassChoices.SpellPicks rule = held == null ? null : pickRuleOf(rules, held);
+            if (rule == null || !rule.replaceable()) throw notReplaceable(name);
+            if (!replaced.add(rule.feature())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Only one " + rule.feature() + " spell can be replaced per level");
+            }
+            spells.remove(held);
+        }
+
+        boolean changed = !forget.isEmpty();
+        for (SubclassChoices.SpellPicks rule : rules) {
+            List<Map<String, Object>> picks = picksByFeature.getOrDefault(rule.feature(), List.of());
+            List<Map<String, Object>> held = spells.stream()
+                    .filter(s -> pickRuleOf(List.of(rule), s) != null).toList();
+            if (picks.isEmpty() && !replaced.contains(rule.feature())) {
+                // Nothing sent for this feature: fine once its picks are made, while it may wait,
+                // or when the character already knows every spell the feature offers.
+                if (held.size() < rule.count() && SubclassChoices.isRequired(rule.feature())
+                        && rule.hasPickLeft(spells.stream().map(this::spellName).toList())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+                }
+                continue;
+            }
+            List<Integer> levels = new ArrayList<>(held.stream().map(this::spellLevelOf).toList());
+            Set<String> names = new HashSet<>();
+            held.forEach(s -> names.add(spellName(s).trim().toLowerCase()));
+            for (Map<String, Object> pick : picks) {
+                String name = spellName(pick).trim();
+                if (name.isBlank()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each spell must have a name");
+                }
+                // A spell picked twice, or one the feature does not offer, is not a valid set of picks.
+                if (!rule.allows(name) || !names.add(name.toLowerCase())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+                }
+                levels.add(spellLevelOf(pick));
+            }
+            if (!rule.satisfiedBy(levels)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rule.message());
+            }
+            for (Map<String, Object> pick : picks) {
+                String name = spellName(pick).trim();
+                boolean cantrip = spellLevelOf(pick) == 0;
+                // As for a feat's pick: a leveled spell the character already has becomes the
+                // feature's; a cantrip it already knows would be a wasted pick.
+                Map<String, Object> entry = spells.stream()
+                        .filter(s -> spellName(s).trim().equalsIgnoreCase(name))
+                        .findFirst().orElse(null);
+                if (entry != null && cantrip) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + name + "' is already known");
+                }
+                if (entry == null) {
+                    entry = new LinkedHashMap<>(pick);
+                    spells.add(entry);
+                }
+                entry.put("prepared", true);
+                if (!cantrip) entry.put("alwaysPrepared", true);
+                entry.put("grantedBy", rule.feature());
+                changed = true;
+            }
+        }
+        if (changed) pc.setSpells(jsonColumns.write(spells));
+        return classSpells;
+    }
+
+    /** The spell-pick feature a spell is marked with (its {@code grantedBy}), or null. */
+    private static SubclassChoices.SpellPicks pickRuleOf(List<SubclassChoices.SpellPicks> rules,
+                                                        Map<String, Object> spell) {
+        Object grantedBy = spell.get("grantedBy");
+        if (grantedBy == null) return null;
+        String feature = grantedBy.toString().trim();
+        return rules.stream().filter(r -> r.feature().equalsIgnoreCase(feature)).findFirst().orElse(null);
+    }
+
+    private static ResponseStatusException notReplaceable(String spellName) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "'" + spellName + "' is not a spell that can be replaced");
     }
 
     /** True when the spell is marked as a pick for the feat taken in this request. */

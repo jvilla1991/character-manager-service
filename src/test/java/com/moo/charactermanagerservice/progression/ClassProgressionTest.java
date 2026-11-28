@@ -152,6 +152,59 @@ class ClassProgressionTest {
         assertThat(ClassProgression.spellSlotsFor("paladin", 0)).isEmpty();
     }
 
+    // --- the subclass catalog: Arcana Unleashed ---
+
+    @Test
+    void subclassCatalog_carriesTheEightArcanaUnleashedSubclasses() {
+        assertThat(ClassProgression.subclassesFor("cleric")).containsExactly(
+                "Arcana Domain", "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain");
+        assertThat(ClassProgression.subclassesFor("fighter")).containsExactly(
+                "Arcane Archer", "Battle Master", "Champion", "Eldritch Knight", "Psi Warrior");
+        assertThat(ClassProgression.subclassesFor("monk")).containsExactly(
+                "Warrior of Mercy", "Warrior of Shadow", "Warrior of the Elements", "Warrior of the Mystic Arts",
+                "Warrior of the Open Hand");
+        assertThat(ClassProgression.subclassesFor("warlock")).containsExactly(
+                "Archfey Patron", "Celestial Patron", "Fiend Patron", "Great Old One Patron", "Vestige Patron");
+        assertThat(ClassProgression.subclassesFor("Wizard")).containsExactly(
+                "Abjurer", "Conjurer", "Diviner", "Enchanter", "Evoker", "Illusionist", "Necromancer", "Transmuter");
+        // The classes the book adds nothing to keep their four.
+        for (String clazz : new String[] {"barbarian", "bard", "druid", "paladin", "ranger", "rogue", "sorcerer"}) {
+            assertThat(ClassProgression.subclassesFor(clazz)).as(clazz).hasSize(4);
+        }
+    }
+
+    @Test
+    void arcanaUnleashedSubclasses_areOfferedToTheWorldOfWarcraftVariantsToo() {
+        // Ordinary catalog subclasses: the WoW variant sees them beside its WoW-only ones.
+        assertThat(ClassProgression.subclassesFor("cleric", "Shadow"))
+                .contains("Arcana Domain", ClassProgression.SHADOW_DOMAIN);
+        assertThat(ClassProgression.subclassesFor("fighter", "Arms")).contains("Arcane Archer");
+        assertThat(ClassProgression.subclassesFor("monk", "Windwalker"))
+                .contains("Warrior of the Mystic Arts", ClassProgression.WARRIOR_OF_MYSTIC_BREWS);
+        assertThat(ClassProgression.subclassesFor("warlock", "Affliction")).contains("Vestige Patron");
+        assertThat(ClassProgression.subclassesFor("wizard", "Frost"))
+                .contains("Conjurer", "Enchanter", "Necromancer", "Transmuter");
+        // None of them is a hero subclass, and their pick level is the class's.
+        for (String name : new String[] {"Arcana Domain", "Arcane Archer", "Warrior of the Mystic Arts",
+                "Vestige Patron", "Conjurer", "Enchanter", "Necromancer", "Transmuter"}) {
+            assertThat(ClassProgression.isHeroSubclass(name)).as(name).isFalse();
+        }
+        assertThat(ClassProgression.subclassLevelFor("warlock")).isEqualTo(1);
+        assertThat(ClassProgression.subclassLevelFor("cleric")).isEqualTo(3);
+    }
+
+    @Test
+    void warriorOfTheMysticArts_bringsItsOwnSlots_throughTheSubclassAwareLookups() {
+        // The class alone still has none; the subclass does (the whole table: MysticArtsSpellcastingTest).
+        assertThat(ClassProgression.spellSlotsFor("monk", 10)).isEmpty();
+        assertThat(ClassProgression.spellSlotsFor("Monk", "Warrior of the Mystic Arts", 10))
+                .isEqualTo(Map.of(1, 4, 2, 3));
+        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Monk", "Warrior of the Mystic Arts", 10)).isTrue();
+        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Monk", "Warrior of the Mystic Arts", 2)).isFalse();
+        assertThat(ClassProgression.highestSpellSlotLevel("Monk", "Warrior of the Mystic Arts", 20)).isEqualTo(4);
+        assertThat(ClassProgression.hasSpellcastingOrPactMagic("Fighter", "Arcane Archer", 10)).isFalse();
+    }
+
     @Test
     void spellSlotsFor_listsSpellLevelsInOrder() {
         assertThat(ClassProgression.spellSlotsFor("paladin", 17).keySet()).containsExactly(1, 2, 3, 4, 5);

@@ -45,6 +45,20 @@ import java.util.Map;
  * due, {@code alwaysPreparedSpellsByFeat} lists, for each feat on offer that gives spells of its
  * own (Warlike Familiar's Battle Familiar, a School Adept's rows), the ones the character would
  * be owed on top of that list, keyed by feat name; the SPA adds the entry for the feat picked.
+ *
+ * <p>Spellcasting a subclass brings: when a subclass choice is due, {@code spellcastingBySubclass}
+ * carries, for each option that changes the spellcasting numbers (a Monk's Warrior of the Mystic
+ * Arts: slots, two cantrips and three prepared spells at Monk 3), the new level's slots, cantrips
+ * known and prepared spells with that option chosen, keyed by option name. The SPA uses the entry
+ * for the subclass the player picks in place of {@code newSpellSlots}, {@code newCantripsKnown}
+ * and {@code newSpellsKnown}. Empty otherwise.
+ *
+ * <p>Vestige Patron: while the warlock has not chosen the Cleric domain behind its Vestige Spells
+ * (reaching Warlock 3, or later when the DM set the subclass by hand),
+ * {@code alwaysPreparedSpellsByVestigeDomain} lists, for each of Life, Light, Trickery and War,
+ * the spells that domain would hand over at the new level, keyed by domain; the SPA adds the
+ * entry for the domain picked. Empty for everyone else, and once the domain is stored: its
+ * spells are then part of {@code alwaysPreparedSpells}.
  */
 public record LevelUpPreview(
         int currentLevel,
@@ -72,8 +86,34 @@ public record LevelUpPreview(
         List<String> recommendedFightingStyles,
         List<SpellGrant> alwaysPreparedSpells,
         Map<String, List<SpellGrant>> alwaysPreparedSpellsBySubclass,
-        Map<String, List<SpellGrant>> alwaysPreparedSpellsByFeat
+        Map<String, List<SpellGrant>> alwaysPreparedSpellsByFeat,
+        Map<String, SubclassSpellcasting> spellcastingBySubclass,
+        Map<String, List<SpellGrant>> alwaysPreparedSpellsByVestigeDomain
 ) {
+    /**
+     * Convenience constructor with no subclass option that changes the spellcasting numbers and
+     * no spells that depend on a Vestige domain still to be chosen.
+     */
+    public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
+                          int newHpMax, int currentProfBonus, int newProfBonus,
+                          Map<Integer, Integer> currentSpellSlots, Map<Integer, Integer> newSpellSlots,
+                          boolean subclassDue, List<String> subclassOptions, boolean asiDue,
+                          List<String> featOptions, List<FeatureGain> featuresGained,
+                          int currentCantripsKnown, int newCantripsKnown,
+                          int currentSpellsKnown, int newSpellsKnown,
+                          boolean fightingStyleDue, List<String> fightingStyleOptions,
+                          String recommendedSubclass, List<String> recommendedFightingStyles,
+                          List<SpellGrant> alwaysPreparedSpells,
+                          Map<String, List<SpellGrant>> alwaysPreparedSpellsBySubclass,
+                          Map<String, List<SpellGrant>> alwaysPreparedSpellsByFeat) {
+        this(currentLevel, newLevel, hitDie, conModifier, hpGained, newHpMax, currentProfBonus,
+                newProfBonus, currentSpellSlots, newSpellSlots, subclassDue, subclassOptions, asiDue,
+                featOptions, featuresGained, currentCantripsKnown, newCantripsKnown,
+                currentSpellsKnown, newSpellsKnown, fightingStyleDue, fightingStyleOptions,
+                recommendedSubclass, recommendedFightingStyles, alwaysPreparedSpells,
+                alwaysPreparedSpellsBySubclass, alwaysPreparedSpellsByFeat, Map.of(), Map.of());
+    }
+
     /** Convenience constructor with no spells that depend on the feat chosen. */
     public LevelUpPreview(int currentLevel, int newLevel, int hitDie, int conModifier, int hpGained,
                           int newHpMax, int currentProfBonus, int newProfBonus,

@@ -1720,7 +1720,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPC(1L, ownerId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
         verify(pcRepository).save(pc);
     }
 
@@ -1745,7 +1745,7 @@ class PCServiceTest {
         List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null, null, null);
     }
 
     @Test
@@ -1756,7 +1756,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, HpMode.ROLL));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.ROLL, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.ROLL, null, null, null, null);
     }
 
     @Test
@@ -1768,7 +1768,7 @@ class PCServiceTest {
         // hpMode explicitly null in the request -> service coalesces to AVERAGE.
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, null));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
     }
 
     @Test
@@ -1780,7 +1780,8 @@ class PCServiceTest {
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode().value())
                         .isEqualTo(403));
 
-        verify(levelUpService, never()).applyLevelUp(any(), any(), any(), any(), any());
+        verify(levelUpService, never())
+                .applyLevelUp(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(pcRepository, never()).save(any());
     }
 
@@ -1807,7 +1808,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, null);
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
     }
 
     @Test
@@ -1820,7 +1821,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, null);
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
         assertThat(pc.getPendingLevelGrant()).isFalse(); // grant consumed
     }
 
@@ -1837,7 +1838,7 @@ class PCServiceTest {
         PC result = pcService.levelUpPCAsDm(1L, dmId, null);
 
         assertThat(result).isSameAs(pc);
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, null, null, null);
     }
 
     @Test
@@ -1850,7 +1851,7 @@ class PCServiceTest {
         List<Map<String, Object>> spells = List.of(Map.of("lvl", 0, "name", "Light"));
         pcService.levelUpPCAsDm(1L, dmId, new LevelUpRequest("Life Domain", Map.of("STR", 2), "Sentinel", spells));
 
-        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null);
+        verify(levelUpService).applyLevelUp(pc, "Life Domain", Map.of("STR", 2), "Sentinel", spells, HpMode.AVERAGE, null, null, null, null);
     }
 
     @Test
@@ -2389,7 +2390,7 @@ class PCServiceTest {
 
         pcService.levelUpPC(1L, ownerId, new LevelUpRequest(null, null, null, null, null, "Frost"));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, "Frost", null);
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, "Frost", null, null, null);
     }
 
     // --- Demon Hunter hero class (ranger + Demon Hunter, specialization) ---
@@ -2509,7 +2510,7 @@ class PCServiceTest {
         pcService.levelUpPC(1L, ownerId,
                 new LevelUpRequest(null, null, null, null, null, null, "Void Warrior"));
 
-        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, "Void Warrior");
+        verify(levelUpService).applyLevelUp(pc, null, null, null, null, HpMode.AVERAGE, null, "Void Warrior", null, null);
     }
 
     // --- WoW Druid (druid + class specialization, no subclass lock) ---
@@ -3613,7 +3614,7 @@ class PCServiceTest {
         when(pcRepository.save(pc)).thenReturn(pc);
         // The level-up re-specializes the hunter into Marksmanship.
         doAnswer(inv -> { pc.setSpecialization("Marksmanship"); return null; })
-                .when(levelUpService).applyLevelUp(eq(pc), any(), any(), any(), any(), any(), any(), any());
+                .when(levelUpService).applyLevelUp(eq(pc), any(), any(), any(), any(), any(), any(), any(), any(), any());
 
         assertThat(pcService.levelUpPC(1L, ownerId, null).getPetFamily()).isNull();
     }

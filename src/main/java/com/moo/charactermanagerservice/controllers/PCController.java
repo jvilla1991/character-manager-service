@@ -4,6 +4,7 @@ import com.moo.charactermanagerservice.dto.AddPcNoteRequest;
 import com.moo.charactermanagerservice.dto.LevelGrantRequest;
 import com.moo.charactermanagerservice.dto.LevelUpPreview;
 import com.moo.charactermanagerservice.dto.LevelUpRequest;
+import com.moo.charactermanagerservice.dto.MysticFocusRequest;
 import com.moo.charactermanagerservice.dto.RestoreSpellSlotsRequest;
 import com.moo.charactermanagerservice.dto.SetInspirationRequest;
 import com.moo.charactermanagerservice.dto.SetPetRequest;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/pc")
@@ -172,6 +174,28 @@ public class PCController {
     }
 
     /**
+     * Set choices a subclass lets the player make, outside a level-up. The body is a partial
+     * choices object; each key present replaces the stored one:
+     * {@code {"skills":["Insight"]}}, {@code {"arcaneShots":["Banishing Shot","Seeking Shot"]}},
+     * {@code {"vestigeType":"Celestial","vestigeDomain":"Life"}}. Returns the saved character.
+     * The generic {@code PUT /{id}} ignores {@code subclassChoices}, so besides a level-up this
+     * is the only way to change them.
+     *
+     * <p>The campaign's DM, or the owner of a character in no campaign, may set any key. The
+     * owner of a character in a campaign may always set {@code vestigeType}, and any other key
+     * only while it is missing or short of what the level asks for (403 once it is complete).
+     * 400 for an empty body, an unknown key, a key the character does not have, or a value the
+     * rules refuse.
+     */
+    @PutMapping("/{id}/subclass-choices")
+    public ResponseEntity<PC> setSubclassChoices(@PathVariable Long id,
+                                                 @RequestBody(required = false) Map<String, Object> choices,
+                                                 Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.setSubclassChoices(id, choices, user.getUuid()));
+    }
+
+    /**
      * Spend Heroic Inspiration — the owning player (or the campaign's DM)
      * clears the badge after the reroll is used. 409 when there is none.
      */
@@ -213,6 +237,28 @@ public class PCController {
         return ResponseEntity.ok(pcService.restoreSpellSlots(id,
                 request == null ? null : request.level(),
                 request != null && Boolean.TRUE.equals(request.all()),
+                user.getUuid()));
+    }
+
+    /**
+     * Mystic Focus of a Warrior of the Mystic Arts monk (Monk level 6+): turn a spell slot into
+     * Focus Points or Focus Points into a spell slot. Body
+     * {@code {"action": "SLOT_TO_FOCUS", "slotLevel": 2}} or
+     * {@code {"action": "FOCUS_TO_SLOT", "slotLevel": 1}}. The owner (in a campaign or not) or
+     * the campaign's DM. Returns the saved character.
+     *
+     * <p>400 for a character without the feature, an unknown action, a slot level outside 1-4, or
+     * a slot level its Monk level cannot recover yet; 409 when there is no slot to spend or to
+     * recover, no expended Focus Point to regain, or too few Focus Points to pay.
+     */
+    @PostMapping("/{id}/mystic-focus")
+    public ResponseEntity<PC> mysticFocus(@PathVariable Long id,
+                                          @RequestBody(required = false) MysticFocusRequest request,
+                                          Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.mysticFocus(id,
+                request == null ? null : request.action(),
+                request == null ? null : request.slotLevel(),
                 user.getUuid()));
     }
 

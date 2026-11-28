@@ -47,7 +47,10 @@ public class PcFollowerController {
                 .body(followerService.grant(pcId, request, user.getUuid()));
     }
 
-    /** Update a follower's name and/or stat block — owner or the campaign's DM. */
+    /**
+     * Update a follower's name and/or stat block — owner or the campaign's DM. Of a
+     * COMPANION only the name, Hit Points and conditions are taken.
+     */
     @PutMapping("/{followerId}")
     public ResponseEntity<FollowerView> updateFollower(@PathVariable Long pcId,
                                                        @PathVariable Long followerId,
@@ -59,7 +62,8 @@ public class PcFollowerController {
 
     /**
      * Dismiss (permanently remove) a follower: the campaign's DM any of them,
-     * the owning player only their own SUMMON or FAMILIAR.
+     * the owning player only their own SUMMON or FAMILIAR. A COMPANION is the
+     * server's own: 403 for everyone.
      */
     @DeleteMapping("/{followerId}")
     public ResponseEntity<Void> dismissFollower(@PathVariable Long pcId,

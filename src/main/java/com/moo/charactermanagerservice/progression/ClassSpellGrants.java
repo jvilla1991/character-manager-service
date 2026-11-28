@@ -34,7 +34,10 @@ import java.util.regex.Pattern;
  * The World of Warcraft subclasses (hero subclasses and the WoW-only oaths, domains and paths) are
  * left out on purpose: the app shows their always-prepared spells from its own tables, by
  * specialization and level. Circle of the Land is left out too — its spells are a choice made
- * again after each Long Rest.
+ * again after each Long Rest. Also left out: the spells a subclass has the player pick (an Arcana
+ * Domain cleric's Magical Mastery: see {@link SubclassChoices#spellPicksFor}) and a Vestige
+ * Patron's Vestige Spells, which depend on the domain the player chose: {@link VestigeSpells}
+ * grants those, from the chosen domain's list here.
  */
 public final class ClassSpellGrants {
 
@@ -73,7 +76,13 @@ public final class ClassSpellGrants {
                     // Abjurer.
                     "Spell Breaker", List.of("Counterspell", "Dispel Magic"),
                     // Illusionist.
-                    "Phantasmal Creatures", List.of("Summon Beast", "Summon Fey"))
+                    "Phantasmal Creatures", List.of("Summon Beast", "Summon Fey"),
+                    // Necromancer (Arcana Unleashed).
+                    "Necromancy Spellbook", List.of("Find Familiar"),
+                    "Undead Thralls", List.of("Animate Dead"),
+                    // Transmuter (Arcana Unleashed).
+                    "Wondrous Alteration", List.of("Alter Self"),
+                    "Shape-Shifter", List.of("Polymorph"))
     );
 
     /** One row of a subclass spell list in a feature's text: {@code "5th — Aid, Zone of Truth;"}. */
