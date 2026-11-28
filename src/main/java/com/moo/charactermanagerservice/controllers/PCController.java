@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/pc")
@@ -169,6 +170,28 @@ public class PCController {
         User user = (User) authentication.getPrincipal();
         return ResponseEntity.ok(pcService.setPetFamily(id, request == null ? null : request.family(),
                 user.getUuid()));
+    }
+
+    /**
+     * Set choices a subclass lets the player make, outside a level-up. The body is a partial
+     * choices object; each key present replaces the stored one:
+     * {@code {"skills":["Insight"]}}, {@code {"arcaneShots":["Banishing Shot","Seeking Shot"]}},
+     * {@code {"vestigeType":"Celestial","vestigeDomain":"Life"}}. Returns the saved character.
+     * The generic {@code PUT /{id}} ignores {@code subclassChoices}, so besides a level-up this
+     * is the only way to change them.
+     *
+     * <p>The campaign's DM, or the owner of a character in no campaign, may set any key. The
+     * owner of a character in a campaign may always set {@code vestigeType}, and any other key
+     * only while it is missing or short of what the level asks for (403 once it is complete).
+     * 400 for an empty body, an unknown key, a key the character does not have, or a value the
+     * rules refuse.
+     */
+    @PutMapping("/{id}/subclass-choices")
+    public ResponseEntity<PC> setSubclassChoices(@PathVariable Long id,
+                                                 @RequestBody(required = false) Map<String, Object> choices,
+                                                 Authentication authentication) {
+        User user = (User) authentication.getPrincipal();
+        return ResponseEntity.ok(pcService.setSubclassChoices(id, choices, user.getUuid()));
     }
 
     /**

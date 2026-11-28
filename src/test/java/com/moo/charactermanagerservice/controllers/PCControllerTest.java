@@ -397,6 +397,37 @@ class PCControllerTest {
         verify(pcService).setPetFamily(1L, null, ownerId);
     }
 
+    // --- PUT /{id}/subclass-choices ---
+
+    @Test
+    void setSubclassChoices_returns200_withTheSavedCharacter_andPassesTheBodyAsSent() {
+        Map<String, Object> choices = Map.of("arcaneShots", List.of("Banishing Shot", "Seeking Shot"));
+        when(pcService.setSubclassChoices(1L, choices, ownerId)).thenReturn(pc);
+
+        ResponseEntity<PC> response = pcController.setSubclassChoices(1L, choices, auth);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isSameAs(pc);
+    }
+
+    @Test
+    void setSubclassChoices_passesAMissingBodyOn_andLetsARefusalThrough() {
+        when(pcService.setSubclassChoices(1L, null, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST, "No subclass choice was sent"));
+        assertThatThrownBy(() -> pcController.setSubclassChoices(1L, null, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        Map<String, Object> locked = Map.of("vestigeDomain", "War");
+        when(pcService.setSubclassChoices(1L, locked, ownerId))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied"));
+        assertThatThrownBy(() -> pcController.setSubclassChoices(1L, locked, auth))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.FORBIDDEN));
+    }
+
     // --- POST /{id}/spell-slots/spend and /restore ---
 
     private static final SpellSlotResult SLOTS =

@@ -241,7 +241,8 @@ public final class ClassFeatures {
     }
 
     // ── Subclass features ──────────────────────────────────────────────────────
-    // Every subclass a character can have. The catalog subclasses (2024 PHB plus Twilight Domain)
+    // Every subclass a character can have. The catalog subclasses (2024 PHB plus Twilight Domain
+    // and the eight of Arcana Unleashed)
     // live in one <Class>Subclasses file per class; the World of Warcraft module's subclasses (the
     // Death Knight and Demon Hunter hero subclasses, the WoW Paladin's Oath of the Holy, the WoW
     // Rogue's Swashbuckler, the WoW Shaman's Path of the Elements and Path of the Spiritual

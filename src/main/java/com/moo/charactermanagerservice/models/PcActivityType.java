@@ -13,5 +13,7 @@ public enum PcActivityType {
     DM_EDIT,
     SPELL_SLOT,
     /** The player summoned or dismissed a follower of their own (a summon or a familiar). */
-    FOLLOWER
+    FOLLOWER,
+    /** The player set a choice of their subclass outside a level-up (an Arcane Shot option, a Vestige type). */
+    SUBCLASS_CHOICE
 }

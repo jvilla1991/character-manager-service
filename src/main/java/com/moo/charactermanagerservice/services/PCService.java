@@ -72,6 +72,7 @@ public class PCService {
         pc.setPortraitVersion(null); // a new character has no portrait; only the portrait endpoints set it
         pc.setRuneWeapon(LongRestRules.normalizeRuneWeapon(pc, null));
         pc.setClassResources(ClassResourceState.normalize(pc, null));
+        pc.setSubclassChoices(null); // server-owned: only a level-up or the subclass-choices endpoint sets them
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         pc.setStatAdjustments(StatAdjustmentRules.normalizeJson(pc.getStatAdjustments()));
         // After the level and the adjustment lines: both decide how many slots there are.
@@ -207,6 +208,14 @@ public class PCService {
      * while the species itself is unchanged — so a client built before V56, or a body made from a
      * projection without the fields, can't wipe a character's lineage. Changing the species takes
      * the body as sent, NULLs included: a Night Elf turned into a Dwarf does not stay a Night Elf.
+     *
+     * <p>The subclass choices (V65: an Arcana Domain cleric's skill, an Arcane Archer's skills and
+     * Arcane Shot options, a Vestige Patron's type and domain) are fully server-owned, like the
+     * pet family: only a level-up and the subclass-choices endpoint
+     * ({@code PUT /{id}/subclass-choices}) write them, so a body's {@code subclassChoices} is
+     * never read. The stored choices are kept and fitted to the class, subclass and level being
+     * saved — a key the character no longer has is dropped, so changing the subclass clears them
+     * (see {@link SubclassChoiceRules#keep}).
      */
     private void preserveServerOwnedColumns(PC incoming, PC existing) {
         if (Objects.equals(incoming.getSpecies(), existing.getSpecies())) {
@@ -247,6 +256,7 @@ public class PCService {
         // are taken, cleaned against the rules table (unknown resources dropped,
         // each clamped to 0..max). A body without the field keeps the stored amounts.
         incoming.setClassResources(ClassResourceState.normalize(incoming, existing));
+        incoming.setSubclassChoices(SubclassChoiceRules.keep(incoming, existing));
     }
 
     /**
@@ -439,8 +449,10 @@ public class PCService {
         HpMode hpMode = request == null || request.hpMode() == null ? HpMode.AVERAGE : request.hpMode();
         String specialization = request == null ? null : request.specialization();
         String fightingStyle = request == null ? null : request.fightingStyle();
+        Map<String, Object> subclassChoices = request == null ? null : request.subclassChoices();
+        List<String> forgetSpells = request == null ? null : request.forgetSpells();
         levelUpService.applyLevelUp(pc, subclass, abilityIncreases, feat, newSpells, hpMode,
-                specialization, fightingStyle);
+                specialization, fightingStyle, subclassChoices, forgetSpells);
         dropPetFamilyIfIneligible(pc); // e.g. a WoW Hunter re-specialized into Marksmanship
         pc.setPendingLevelGrant(false); // the grant (if any) is consumed by this level-up
         PC saved = pcRepository.save(pc);
@@ -549,6 +561,49 @@ public class PCService {
                 pc.getClazz(), pc.getSubclass(), pc.getSpecialization())) {
             pc.setPetFamily(null);
         }
+    }
+
+    // --- Subclass choices (V65) ------------------------------------------------
+
+    /**
+     * Set choices a subclass lets the player make, outside a level-up: an Arcana Domain cleric's
+     * skill, an Arcane Archer's skills and Arcane Shot options, a Vestige Patron's companion type
+     * and domain. The body is a partial choices object; a key present replaces the stored one,
+     * checked against the character's current level without a level-up's swap limits
+     * ({@link com.moo.charactermanagerservice.progression.SubclassChoices#direct}). A skill
+     * choice also marks the proficiency on the sheet.
+     *
+     * <p>Who may:
+     * <ul>
+     *   <li>the DM of the PC's campaign: any key;</li>
+     *   <li>the owner of a character in no campaign (there is no DM): any key;</li>
+     *   <li>the owner of a character in a campaign: the Vestige type always (it may change after
+     *       every Long Rest), and any other key only to catch up, while its stored value is
+     *       missing or short of what the level asks for. Changing a choice that is already made
+     *       is the DM's call: 403;</li>
+     *   <li>anyone else: 403, as on the other PC endpoints.</li>
+     * </ul>
+     *
+     * <p>400 for a body without a key, a key that is not a subclass choice, a key this character
+     * does not have at its level, and a value that breaks the choice's rule. Writes one activity
+     * log line and wakes the PC's live session ({@link #bumpLiveSessionVersion}), like the other
+     * sheet writes a table needs to see.
+     */
+    @Transactional
+    public PC setSubclassChoices(Long id, Map<String, Object> choices, UUID userId) {
+        PC pc = findPCById(id);
+        boolean owner = userId.equals(pc.getUserId());
+        if (!owner) {
+            assertCampaignDm(pc, userId); // not the owner → must be the campaign's DM
+        }
+        boolean unrestricted = !owner || pc.getCampaignId() == null || runsCampaignOf(pc, userId);
+        List<String> set = SubclassChoiceRules.applyDirect(pc, choices, unrestricted);
+        PC saved = pcRepository.save(pc);
+        activityLogService.log(saved.getId(),
+                owner ? PcActivityType.SUBCLASS_CHOICE : PcActivityType.DM_EDIT,
+                (owner ? "Set " : "DM set ") + String.join("; ", set), userId);
+        bumpLiveSessionVersion(saved);
+        return saved;
     }
 
     // --- Heroic Inspiration meter (V38) --------------------------------------

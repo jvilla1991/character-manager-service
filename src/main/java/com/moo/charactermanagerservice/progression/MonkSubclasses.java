@@ -8,9 +8,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Subclass features for the Monk's 2024 Player's Handbook subclasses, keyed by the exact
- * subclass name in ClassProgression's subclass catalog, then by the Monk level at which
- * each feature is gained. Descriptions are concise summaries, not rules text.
+ * Subclass features for the Monk's 2024 Player's Handbook subclasses (plus the Warrior of the
+ * Mystic Arts from Arcana Unleashed), keyed by the exact subclass name in ClassProgression's
+ * subclass catalog, then by the Monk level at which each feature is gained. Descriptions are
+ * concise summaries, not rules text.
  */
 final class MonkSubclasses {
 
@@ -26,6 +27,7 @@ final class MonkSubclasses {
         m.put("Warrior of Mercy", warriorOfMercy());
         m.put("Warrior of Shadow", warriorOfShadow());
         m.put("Warrior of the Elements", warriorOfTheElements());
+        m.put("Warrior of the Mystic Arts", warriorOfTheMysticArts());
         m.put("Warrior of the Open Hand", warriorOfTheOpenHand());
         return m;
     }
@@ -102,6 +104,38 @@ final class MonkSubclasses {
                         + "damage types, Step of the Wind adds 20 feet of Speed and harms creatures you pass "
                         + "within 5 feet of, and once per turn an Unarmed Strike deals an extra Martial Arts die "
                         + "of damage.")));
+        return f;
+    }
+
+    /**
+     * Warrior of the Mystic Arts (Arcana Unleashed). Its Spellcasting is described here and
+     * nothing more: the subclass has no spell slot table in {@link ClassProgression} yet.
+     */
+    private static Map<Integer, List<FeatureGain>> warriorOfTheMysticArts() {
+        Map<Integer, List<FeatureGain>> f = new HashMap<>();
+        f.put(3, List.of(
+                f("Spellcasting", "You cast Sorcerer spells with Wisdom and can use an Arcane Focus. You know two "
+                        + "Sorcerer cantrips (three from Monk level 10) and prepare Sorcerer spells of the levels "
+                        + "you have slots for: three at Monk level 3, rising to thirteen at level 20. Your spell "
+                        + "slots return on a Long Rest and reach spell level 2 at Monk level 7, level 3 at 13 and "
+                        + "level 4 at 19. Each time you gain a Monk level, you can swap one cantrip and one "
+                        + "prepared spell.")));
+        f.put(6, List.of(
+                f("Mystic Fighting Style", "When you take the Attack action, you can replace one Unarmed Strike "
+                        + "with a casting of one of your Sorcerer cantrips that has a casting time of an action."),
+                f("Mystic Focus", "You can expend a spell slot (no action) to regain Focus Points equal to the "
+                        + "slot's level. When you finish a Short Rest or use Uncanny Metabolism, you can spend "
+                        + "unexpended Focus Points to recover one spell slot: 2 points for a level 1 slot, 3 for "
+                        + "level 2 (Monk level 7+), 5 for level 3 (Monk level 13+) and 6 for level 4 (Monk level "
+                        + "19+).")));
+        f.put(11, List.of(
+                f("Focused Strike", "When you use Stunning Strike, the target has Disadvantage on saving throws "
+                        + "against your spells until the start of your next turn, whether or not it fails the "
+                        + "save.")));
+        f.put(17, List.of(
+                f("Improved Mystic Fighting Style", "When you use Flurry of Blows, you can replace two of its "
+                        + "Unarmed Strikes with a casting of one of your level 1 or 2 Sorcerer spells that has a "
+                        + "casting time of an action, as part of the same Bonus Action.")));
         return f;
     }
 

@@ -44,6 +44,20 @@ import java.util.Map;
  * spells in {@code newSpells}, each with the feat's name as its {@code grantedBy}. That marker is
  * how they are told from the class's own picks: they sit outside the class counts and the slot
  * cap, and are checked against the feat's own rule (number, spell level, school).
+ *
+ * <p>Subclass choices: {@code subclassChoices} — the choices a subclass lets the player make that
+ * are not spells, as a partial object with the keys {@code skills}, {@code arcaneShots},
+ * {@code vestigeType} and {@code vestigeDomain}; a key present replaces the stored one. Only an
+ * Arcana Domain cleric, an Arcane Archer and a Vestige Patron have any, from level 3; a key the
+ * character does not have is refused. See
+ * {@link com.moo.charactermanagerservice.progression.SubclassChoices#atLevelUp}.
+ *
+ * <p>Subclass spell picks: spells in {@code newSpells} whose {@code grantedBy} is
+ * {@code "Student of Arcana"}, {@code "Magical Mastery"} or {@code "Arcane Archer Lore"}, on a
+ * character that has that feature, are the feature's picks: outside the class counts and the
+ * slot cap, like a feat's. {@code forgetSpells} names picks of the first two features to give up
+ * in this level-up (at most one per feature); {@code newSpells} must then carry the replacement,
+ * marked with the same feature (and, for Magical Mastery, of the same spell level).
  */
 public record LevelUpRequest(
         String subclass,
@@ -52,24 +66,33 @@ public record LevelUpRequest(
         List<Map<String, Object>> newSpells,
         HpMode hpMode,
         @JsonAlias("rune") String specialization,
-        String fightingStyle
+        String fightingStyle,
+        Map<String, Object> subclassChoices,
+        List<String> forgetSpells
 ) {
     /** Back-compat constructor for callers that don't choose an HP mode: defaults to AVERAGE. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells) {
-        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE, null, null);
+        this(subclass, abilityIncreases, feat, newSpells, HpMode.AVERAGE, null, null, null, null);
     }
 
     /** Back-compat constructor for callers that don't change the specialization. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells, HpMode hpMode) {
-        this(subclass, abilityIncreases, feat, newSpells, hpMode, null, null);
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, null, null, null, null);
     }
 
     /** Back-compat constructor for callers that don't choose a Fighting Style. */
     public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
                           String feat, List<Map<String, Object>> newSpells, HpMode hpMode,
                           String specialization) {
-        this(subclass, abilityIncreases, feat, newSpells, hpMode, specialization, null);
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, specialization, null, null, null);
+    }
+
+    /** Back-compat constructor for callers with no subclass choices and no spell to give up. */
+    public LevelUpRequest(String subclass, Map<String, Integer> abilityIncreases,
+                          String feat, List<Map<String, Object>> newSpells, HpMode hpMode,
+                          String specialization, String fightingStyle) {
+        this(subclass, abilityIncreases, feat, newSpells, hpMode, specialization, fightingStyle, null, null);
     }
 }

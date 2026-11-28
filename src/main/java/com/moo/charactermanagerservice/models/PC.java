@@ -2,6 +2,8 @@ package com.moo.charactermanagerservice.models;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonRawValue;
 import com.moo.charactermanagerservice.validation.ValidDndClass;
 import com.moo.charactermanagerservice.validation.ValidationGroups.OnCreate;
 import jakarta.persistence.*;
@@ -245,6 +247,17 @@ public class PC implements Serializable {
     @Column(columnDefinition = "TEXT")
     private String classResources;
 
+    // Choices a subclass lets the player make (V65), as JSON:
+    // {"skills":["Insight"],"arcaneShots":["Banishing Shot","Seeking Shot"],
+    //  "vestigeType":"Celestial","vestigeDomain":"Life"}; NULL = none. Server-owned: only a
+    // level-up and PUT /pc/{id}/subclass-choices write it (progression/SubclassChoices holds the
+    // rules). A response carries it as a JSON object, not as text, and a value in a request
+    // body is never read: whole-sheet saves keep the stored choices (PCService).
+    @Column(columnDefinition = "TEXT")
+    @JsonRawValue
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String subclassChoices;
+
     // --- Setters (all fields; needed by Jackson + controller) ---
 
     public void setId(Long id) { this.id = id; }
@@ -310,6 +323,7 @@ public class PC implements Serializable {
     public void setNotes(String notes) { this.notes = notes; }
     public void setRuneWeapon(String runeWeapon) { this.runeWeapon = runeWeapon; }
     public void setClassResources(String classResources) { this.classResources = classResources; }
+    public void setSubclassChoices(String subclassChoices) { this.subclassChoices = subclassChoices; }
 
     // --- Builder (kept for backward compat; not used by current REST layer) ---
     public static class Builder {

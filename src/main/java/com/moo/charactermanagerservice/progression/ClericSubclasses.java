@@ -9,9 +9,10 @@ import java.util.Map;
 
 /**
  * Subclass features for the Cleric's 2024 Player's Handbook subclasses (plus the Twilight Domain
- * from Tasha's Cauldron, adapted to the 2024 level structure), keyed by the exact subclass name
- * in ClassProgression's subclass catalog, then by the Cleric level at which each feature is
- * gained. Descriptions are concise summaries, not rules text.
+ * from Tasha's Cauldron, adapted to the 2024 level structure, and the Arcana Domain from Arcana
+ * Unleashed), keyed by the exact subclass name in ClassProgression's subclass catalog, then by
+ * the Cleric level at which each feature is gained. Descriptions are concise summaries, not
+ * rules text.
  */
 final class ClericSubclasses {
 
@@ -24,12 +25,53 @@ final class ClericSubclasses {
     /** subclass name (exact catalog spelling) -> level -> features gained at that level. */
     static Map<String, Map<Integer, List<FeatureGain>>> all() {
         Map<String, Map<Integer, List<FeatureGain>>> m = new LinkedHashMap<>();
+        m.put(SubclassChoices.ARCANA_DOMAIN, arcana());
         m.put("Life Domain", life());
         m.put("Light Domain", light());
         m.put("Trickery Domain", trickery());
         m.put("Twilight Domain", twilight());
         m.put("War Domain", war());
         return m;
+    }
+
+    /**
+     * Arcana Domain (Arcana Unleashed). Its skill and its Wizard spells are choices the player
+     * makes: see {@link SubclassChoices}. The domain spell list is read from the text below by
+     * {@link ClassSpellGrants}.
+     */
+    private static Map<Integer, List<FeatureGain>> arcana() {
+        Map<Integer, List<FeatureGain>> f = new HashMap<>();
+        f.put(3, List.of(
+                f("Arcana Domain Spells",
+                        "You always have these spells prepared. "
+                                + "3rd — Detect Magic, Magic Missile, Magic Weapon, Nystul's Magic Aura; "
+                                + "5th — Counterspell, Dispel Magic; "
+                                + "7th — Arcane Eye, Leomund's Secret Chest; "
+                                + "9th — Bigby's Hand, Teleportation Circle."),
+                f("Modify Magic",
+                        "When you cast a spell, you can spend a Channel Divinity use (no action) to "
+                                + "change it in one way. Fortifying Spell: one target gains Temporary "
+                                + "Hit Points equal to 2d8 + your Cleric level. Tenacious Spell: when "
+                                + "a creature you can see succeeds on a saving throw the spell forces, "
+                                + "subtract 1d6 from its first saving throw against the spell."),
+                f(SubclassChoices.STUDENT_OF_ARCANA,
+                        "You gain proficiency in Arcana or in one skill from the Cleric's level 1 "
+                                + "skill list. You also learn two Wizard cantrips; each time you gain "
+                                + "a Cleric level, you can swap one of them for another Wizard "
+                                + "cantrip.")));
+        f.put(6, List.of(
+                f("Dispelling Recovery",
+                        "Right after you cast a spell with a spell slot that restores Hit Points to a "
+                                + "creature or ends a condition on one, you can cast Dispel Magic as "
+                                + "part of the same action without a spell slot. Once per Short or "
+                                + "Long Rest, or spend a Channel Divinity use to regain the use.")));
+        f.put(17, List.of(
+                f(SubclassChoices.MAGICAL_MASTERY,
+                        "You learn four Wizard spells, one each of levels 6, 7, 8 and 9, and you "
+                                + "always have them prepared. Each time you gain a Cleric level, you "
+                                + "can swap one of them for another Wizard spell of the same "
+                                + "level.")));
+        return f;
     }
 
     private static Map<Integer, List<FeatureGain>> life() {

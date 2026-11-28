@@ -2672,8 +2672,8 @@ class LevelUpServiceTest {
     private static final String DISCIPLINE_DOMAIN = "Discipline Domain";
     private static final String SHADOW_DOMAIN = "Shadow Domain";
     private static final List<String> PRIEST_SPECS = List.of("Discipline", "Holy", "Shadow");
-    private static final List<String> PHB_CLERIC_SUBCLASSES =
-            List.of("Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain");
+    private static final List<String> CATALOG_CLERIC_SUBCLASSES =
+            List.of("Arcana Domain", "Life Domain", "Light Domain", "Trickery Domain", "Twilight Domain", "War Domain");
 
     private static PC cleric(int level) {
         PC c = pc("Cleric", level, 14, 8 * level, 8 * level);
@@ -2739,14 +2739,14 @@ class LevelUpServiceTest {
     void preview_priestDomains_offeredOnlyToWowClerics() {
         LevelUpPreview base = service.preview(cleric(2)); // 2 -> 3, no specialization
         assertThat(base.subclassDue()).isTrue();
-        assertThat(base.subclassOptions()).containsExactlyElementsOf(PHB_CLERIC_SUBCLASSES);
+        assertThat(base.subclassOptions()).containsExactlyElementsOf(CATALOG_CLERIC_SUBCLASSES);
 
         for (String spec : PRIEST_SPECS) {
             assertThat(service.preview(wowCleric(2, spec)).subclassOptions())
-                    .containsAll(PHB_CLERIC_SUBCLASSES)
+                    .containsAll(CATALOG_CLERIC_SUBCLASSES)
                     .contains(DISCIPLINE_DOMAIN, SHADOW_DOMAIN)
                     .doesNotContain(SWASHBUCKLER, OATH_OF_THE_HOLY, PATH_OF_THE_ELEMENTS)
-                    .hasSize(PHB_CLERIC_SUBCLASSES.size() + 2);
+                    .hasSize(CATALOG_CLERIC_SUBCLASSES.size() + 2);
         }
 
         // Other WoW classes don't get them.
