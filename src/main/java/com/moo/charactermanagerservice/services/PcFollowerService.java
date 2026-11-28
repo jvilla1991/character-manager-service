@@ -35,8 +35,8 @@ import java.util.stream.Collectors;
  *
  * <p>A {@code COMPANION} is the server's own: it comes and goes with the
  * feature that gives it and its stat block is worked out from its character
- * (a Vestige Patron's vestige). So nothing here creates one, nobody
- * dismisses one — not the DM either — and an update takes
+ * (a Vestige Patron's vestige: {@link VestigeCompanionSync}). So nothing here
+ * creates one, nobody dismisses one — not the DM either — and an update takes
  * only its name, its current and temporary Hit Points and its conditions
  * ({@link CompanionVitals}); whatever else the request carries is left unread.
  *

@@ -60,6 +60,9 @@ class PCServiceSubclassChoicesTest {
     private SessionParticipantRepository participantRepository;
     @Mock
     private CombatLogService combatLogService;
+    // A Vestige Patron's saves reach the companion step; what it does is VestigeCompanionSyncTest's.
+    @Mock
+    private VestigeCompanionSync vestigeCompanionSync;
 
     @InjectMocks
     private PCService pcService;

@@ -13,6 +13,7 @@ import com.moo.charactermanagerservice.models.PcActivityType;
 import com.moo.charactermanagerservice.models.PcNote;
 import com.moo.charactermanagerservice.models.SessionStatus;
 import com.moo.charactermanagerservice.progression.ClassProgression;
+import com.moo.charactermanagerservice.progression.VestigeCompanion;
 import com.moo.charactermanagerservice.progression.XpThresholds;
 import com.moo.charactermanagerservice.repositories.CampaignRepository;
 import com.moo.charactermanagerservice.repositories.CombatSessionRepository;
@@ -45,6 +46,9 @@ public class PCService {
     private final CombatSessionRepository sessionRepository;
     private final SessionParticipantRepository participantRepository;
     private final CombatLogService combatLogService;
+    // Its own component over the follower repository, not PcFollowerService: that
+    // service depends on this class. See syncVestigeCompanion.
+    private final VestigeCompanionSync vestigeCompanionSync;
 
     @Autowired
     public PCService(PCRepository pcRepository, LevelUpService levelUpService,
@@ -52,7 +56,8 @@ public class PCService {
                      PcActivityLogService activityLogService,
                      CombatSessionRepository sessionRepository,
                      SessionParticipantRepository participantRepository,
-                     CombatLogService combatLogService) {
+                     CombatLogService combatLogService,
+                     VestigeCompanionSync vestigeCompanionSync) {
         this.pcRepository = pcRepository;
         this.levelUpService = levelUpService;
         this.campaignRepository = campaignRepository;
@@ -61,6 +66,7 @@ public class PCService {
         this.sessionRepository = sessionRepository;
         this.participantRepository = participantRepository;
         this.combatLogService = combatLogService;
+        this.vestigeCompanionSync = vestigeCompanionSync;
     }
 
     public PC addPC(PC pc) {
@@ -108,6 +114,7 @@ public class PCService {
         PC existing = findPCById(pc.getId());
         assertOwnership(existing, userId);
         // Read BEFORE save(): inside the transaction save() merges the body onto `existing`.
+        boolean hadVestige = VestigeCompanion.isPatron(existing.getClazz(), existing.getSubclass());
         CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
         String immunitiesBefore = existing.getConditionImmunities();
         preserveServerOwnedColumns(pc, existing);
@@ -145,6 +152,7 @@ public class PCService {
         pc.setCoins(CoinPurse.normalizeJson(pc.getCoins()));
         PC saved = pcRepository.save(pc);
         logSheetVitals(saved, vitalsBefore, immunitiesBefore, false, userId);
+        if (syncVestigeCompanion(saved, hadVestige)) bumpLiveSessionVersion(saved);
         return saved;
     }
 
@@ -296,6 +304,7 @@ public class PCService {
         PC existing = findPCById(incoming.getId());
         assertCampaignDm(existing, dmUserId);
         PC before = snapshot(existing); // taken BEFORE save() clobbers `existing`
+        boolean hadVestige = VestigeCompanion.isPatron(existing.getClazz(), existing.getSubclass());
         CombatLogService.Vitals vitalsBefore = combatLogService.vitalsOf(existing);
         String immunitiesBefore = existing.getConditionImmunities();
         incoming.setUserId(existing.getUserId());
@@ -314,6 +323,7 @@ public class PCService {
         PC saved = pcRepository.save(incoming);
         activityLogService.logDmEdit(before, saved, dmUserId, description);
         logSheetVitals(saved, vitalsBefore, immunitiesBefore, true, dmUserId);
+        if (syncVestigeCompanion(saved, hadVestige)) bumpLiveSessionVersion(saved);
         return saved;
     }
 
@@ -458,6 +468,7 @@ public class PCService {
         PC saved = pcRepository.save(pc);
         activityLogService.log(saved.getId(), PcActivityType.LEVEL_UP,
                 logDescriptionPrefix + saved.getLevel(), actorUserId);
+        syncVestigeCompanion(saved, false); // a subclass is never lost in a level-up
         bumpLiveSessionVersion(saved);
         return saved;
     }
@@ -602,8 +613,32 @@ public class PCService {
         activityLogService.log(saved.getId(),
                 owner ? PcActivityType.SUBCLASS_CHOICE : PcActivityType.DM_EDIT,
                 (owner ? "Set " : "DM set ") + String.join("; ", set), userId);
+        syncVestigeCompanion(saved, false); // the choices change, the subclass does not
         bumpLiveSessionVersion(saved);
         return saved;
+    }
+
+    // --- Vestige companion (server-owned follower) ------------------------------
+
+    /**
+     * Keep a Vestige Patron's companion in step with the character just saved
+     * ({@link VestigeCompanionSync}): created once the warlock has a type chosen at level 3,
+     * rebuilt when its level, Charisma, Proficiency Bonus, languages or type changed, removed
+     * when it is no longer a Vestige Patron of level 3. Called by every write that can change one
+     * of those: a whole-sheet save (owner or DM), a level-up, a subclass-choices write.
+     *
+     * <p>Every other character returns at the first line without a query. {@code wasPatron} is
+     * what the character was before a whole-sheet save: one that just lost the subclass is no
+     * Vestige Patron any more, but still has a vestige to remove.
+     *
+     * @return true when a follower was created, rewritten or removed; a caller that does not
+     *         wake the live session anyway then does ({@link #bumpLiveSessionVersion})
+     */
+    private boolean syncVestigeCompanion(PC saved, boolean wasPatron) {
+        if (!wasPatron && !VestigeCompanion.isPatron(saved.getClazz(), saved.getSubclass())) {
+            return false;
+        }
+        return vestigeCompanionSync.sync(saved);
     }
 
     // --- Heroic Inspiration meter (V38) --------------------------------------
